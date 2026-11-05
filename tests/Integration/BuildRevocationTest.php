@@ -106,7 +106,7 @@ function signedIn(Kernel $kernel, string $database): array
 function demoAuthHash(Signer $signer, string $database): string
 {
     $row = new \PDO('sqlite:' . $database)->query(
-        "SELECT c.id, COALESCE(e.epoch, 0) AS epoch FROM customers c LEFT JOIN auth_epochs e ON e.customer_id = c.id WHERE c.email = '" . DemoAccount::EMAIL . "'",
+        "SELECT c.id, COALESCE(e.epoch, 0) AS epoch FROM customers c LEFT JOIN auth_epochs e ON e.user_id = c.id WHERE c.email = '" . DemoAccount::EMAIL . "'",
     )?->fetch(\PDO::FETCH_ASSOC);
 
     return TokenClaims::hashAuth($signer, (string) ($row['id'] ?? ''), (string) ($row['epoch'] ?? '0'));

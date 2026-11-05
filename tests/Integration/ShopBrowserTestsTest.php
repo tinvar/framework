@@ -150,8 +150,8 @@ it('seeds a customer of its own, and signs them in through the shop\'s sessions'
     // A session row, as signing in writes one, and the customer's epoch
     // moved on, as signing in moves it.
     $database = PdoConnection::sqlite(Served::$database, 'shop');
-    expect($database->select('SELECT COUNT(*) AS n FROM sessions WHERE customer_id = ?', [$user])[0]['n'] ?? null)->toBe(1)
-        ->and($database->select('SELECT epoch FROM auth_epochs WHERE customer_id = ?', [$user])[0]['epoch'] ?? 0)->toBeGreaterThan(0);
+    expect($database->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [$user])[0]['n'] ?? null)->toBe(1)
+        ->and($database->select('SELECT epoch FROM auth_epochs WHERE user_id = ?', [$user])[0]['epoch'] ?? 0)->toBeGreaterThan(0);
 });
 
 it('signs in the demo account, which its scenario names and writes nothing for', function () {

@@ -72,7 +72,7 @@ it('puts the admin pages in the admin panel by their namespace, behind the custo
     $panels = Kernel::panels();
 
     expect($panels->panelOf(Orders::class))->toBe(StaffMemberships::PANEL)
-        ->and($panels->definition(StaffMemberships::PANEL)?->guard)->toBe(\Shop\Http\Middleware\RequireCustomer::class)
+        ->and($panels->definition(StaffMemberships::PANEL)?->guard)->toBe(\Tinvar\Accounts\RequireSignIn::class)
         ->and($panels->panelOf(\Shop\Http\Pages\Orders\Orders::class))->toBeNull();
 });
 

@@ -76,7 +76,7 @@ function act(Kernel $kernel, array $browser, string $action, array $input): Resp
 /** @param list<string> $scopes */
 function issue(Kernel $kernel, Customer $customer, array $scopes = ['orders:read'], string $name = 'A script', ?array $browser = null): string
 {
-    $response = act($kernel, $browser ?? browser($kernel, $customer), 'account.createApiToken', ['name' => $name, 'scopes' => $scopes, 'password' => DemoAccount::PASSWORD, 'lifetime' => '30']);
+    $response = act($kernel, $browser ?? browser($kernel, $customer), 'account.createApiToken', ['name' => $name, 'scopes' => $scopes, 'currentPassword' => DemoAccount::PASSWORD, 'lifetime' => '30']);
     $token = body($response)['value']['token'] ?? null;
     \assert($response->status === 200 && \is_string($token), $response->body());
 
@@ -138,8 +138,10 @@ it('issues a token from the settings page\'s action, shown once and kept as a di
 
 // Audit (ADR 0159): a token outlives the session that made it and every
 // sign-in, so a session alone -- a stolen cookie -- minted a lasting
-// credential. The shop has no "confirm it's you", so the password is typed
-// again, counted as a sign-in's guess; and a token lasts a year at most.
+// credential. The shop has no "confirm it's you" dialog, so the password is
+// typed again on the form, confirming the session through the accounts kit
+// as a sign-in's guess is counted (ADR 0162); a token lasts a year at most,
+// and each one made is told to the customer by email.
 it('asks for the customer\'s password before it issues a token, and lets none last past a year', function () {
     $customer = customer($this->kernel, '=');
     $browser = browser($this->kernel, $customer);
@@ -148,24 +150,31 @@ it('asks for the customer\'s password before it issues a token, and lets none la
     $ask = fn (array $input): Response => act($this->kernel, $browser, 'account.createApiToken', ['name' => 'Stolen', 'scopes' => ['orders:read'], 'lifetime' => '30', ...$input]);
 
     $none = $ask([]);
-    $wrong = $ask(['password' => 'a guess']);
-    $forever = $ask(['password' => DemoAccount::PASSWORD, 'lifetime' => 'never']);
+    $wrong = $ask(['currentPassword' => 'a guess']);
+    $forever = $ask(['currentPassword' => DemoAccount::PASSWORD, 'lifetime' => 'never']);
+    $mail = fn (): int => \count(array_filter(
+        $this->kernel->orm->connection()->select('SELECT payload FROM jobs'),
+        static fn (array $row): bool => str_contains((string) $row['payload'], 'api-token-created'),
+    ));
     expect($none->status)->toBe(422)
-        ->and(body($none)['errors'])->toHaveKey('password')
+        ->and(body($none)['errors'])->toHaveKey('currentPassword')
         ->and($wrong->status)->toBe(422)
-        ->and(body($wrong)['errors']['password'] ?? null)->toBe([\Shop\Http\Actions\Account\ApiTokenActions::WRONG_PASSWORD])
+        ->and(body($wrong)['errors']['currentPassword'] ?? null)->toBe([\Shop\Http\Actions\Account\ApiTokenActions::WRONG_PASSWORD])
         ->and($forever->status)->toBe(422)
         ->and(body($forever)['errors'])->toHaveKey('lifetime')
         ->and($tokens())->toBe($before)
-        ->and($ask(['password' => DemoAccount::PASSWORD])->status)->toBe(200)
-        ->and($tokens())->toBe($before + 1);
+        ->and($mail())->toBe(0)
+        ->and($ask(['currentPassword' => DemoAccount::PASSWORD])->status)->toBe(200)
+        ->and($tokens())->toBe($before + 1)
+        // And the customer is told, by an email naming it (ADR 0153, 0162).
+        ->and($mail())->toBe(1);
 });
 
 it('offers the scopes the shop\'s API declares, and refuses any other', function () {
     $customer = customer($this->kernel, '=');
 
     expect($this->kernel->kernel()->apiTokens?->grantable())->toBe(['orders:cancel', 'orders:read']);
-    $refused = act($this->kernel, browser($this->kernel, $customer), 'account.createApiToken', ['name' => 'x', 'scopes' => ['admin:everything'], 'password' => DemoAccount::PASSWORD, 'lifetime' => '30']);
+    $refused = act($this->kernel, browser($this->kernel, $customer), 'account.createApiToken', ['name' => 'x', 'scopes' => ['admin:everything'], 'currentPassword' => DemoAccount::PASSWORD, 'lifetime' => '30']);
 
     expect($refused->status)->toBe(422)
         ->and(body($refused)['errors'])->toHaveKey('scopes');

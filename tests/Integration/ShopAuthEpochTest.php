@@ -4,16 +4,19 @@ declare(strict_types=1);
 
 /**
  * The shop's auth epochs: the number the framework binds client-held data to
- * beside the session and the customer (AuthContext), and which the shop
- * moves on sign-in and sign-out -- where a role change or an impersonation
- * would move it, if the shop had either.
+ * beside the session and the customer (AuthContext), which the accounts kit
+ * moves on sign-in and sign-out (ADR 0153, 0162) -- and the shop on a staff
+ * role granted or taken away.
  */
 
 namespace Tinvar\Tests\Integration\ShopAuthEpoch;
 
-use Shop\Auth\Sessions\AuthEpochs;
-use Shop\Auth\Sessions\Sessions;
-use Shop\Http\Middleware\StartSession;
+use Shop\Auth\Account\Customers;
+use Tinvar\Accounts\AuthEpochs;
+use Tinvar\Accounts\CredentialEpochs;
+use Tinvar\Accounts\SessionCookie;
+use Tinvar\Accounts\Sessions;
+use Tinvar\Accounts\StartSession;
 use Shop\Database\Migrations;
 use Shop\Database\Seeders\Seeder;
 use Shop\Support\DemoAccount;
@@ -47,9 +50,10 @@ function shop(): array
         }
     });
     $orm = new Orm($connection, new IdentityMap('shop'));
-    $epochs = new AuthEpochs($orm);
+    $epochs = new AuthEpochs($connection);
+    $sessions = new Sessions($connection, new SessionCookie(KEY, Kernel::SESSION_COOKIE), new Customers($orm), $epochs, new CredentialEpochs($connection));
 
-    return [new Sessions($orm, KEY, epochs: $epochs), $epochs, $orm, new \PDO("sqlite:{$path}")];
+    return [$sessions, $epochs, $orm, new \PDO("sqlite:{$path}")];
 }
 
 function demo(Orm $orm, \PDO $pdo): Customer
@@ -69,10 +73,10 @@ function request(string $cookie): Request
 /** Signs the demo customer in on a fresh session, and returns the cookie it is under now. */
 function signIn(Sessions $sessions, Customer $customer): string
 {
-    $context = $sessions->open(request(Kernel::newSession(KEY)));
-    $sessions->signIn($context, $customer);
+    $state = $sessions->open(request(Kernel::newSession(KEY)));
+    $sessions->signIn($state, $customer);
 
-    return (string) $context->replacement();
+    return (string) $state->replacement();
 }
 
 /** The user and epoch StartSession logs a request in as. */
@@ -130,16 +134,18 @@ it('logs a signed-out visitor in as no one, at no epoch', function () {
     expect(loggedInAs($sessions, Kernel::newSession(KEY)))->toBe([null, '']);
 });
 
-// A database from before epochs -- and before the shop had migrations --
-// is given the table by migrating it, rather than failing every sign-in.
+// A database from before epochs -- and before the shop had migrations, and
+// so before its sessions were the kit's -- is given the table by migrating
+// it, rather than failing every sign-in.
 it('gets its table from migrating a database seeded before it', function () {
     [, $epochs, $orm, $pdo] = shop();
     $pdo->exec('DROP TABLE auth_epochs');
+    $pdo->exec('DROP TABLE sessions');
     $pdo->exec('DROP TABLE ' . Migrator::TABLE);
     Migrations::migrate($orm->connection());
     $customer = demo($orm, $pdo);
 
     $epochs->bump($customer->id);
 
-    expect(new AuthEpochs($orm)->of($customer->id))->toBe('1');
+    expect(new AuthEpochs($orm->connection())->of($customer->id))->toBe('1');
 });

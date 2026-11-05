@@ -16,7 +16,7 @@ namespace Tinvar\Tests\Integration\ShopAuditLog;
 
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Auth\Admin\StaffPermission;
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;
 use Shop\Database\Models\Orders\OrderStatus;
@@ -68,7 +68,7 @@ function account(Kernel $kernel, string $email): Customer
 
 function signedIn(Kernel $kernel, Customer $customer): \Tinvar\Testing\Client
 {
-    return actingAs($customer, new AuthEpochs($kernel->orm)->of($customer->id));
+    return actingAs($customer, new AuthEpochs($kernel->orm->connection())->of($customer->id));
 }
 
 /** One of $customer's orders, put in $status behind the log's back, as a seed would. */

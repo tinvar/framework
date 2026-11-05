@@ -78,8 +78,8 @@ it('brings nobody\'s address, name or password, and no session, epoch, grant or 
     $production = Shop::testDatabase();
     $staging = Shop::testDatabase();
     // Staging's own leftovers, which name ids the import gives to others.
-    new \PDO('sqlite:' . $staging)->exec("INSERT INTO sessions (id, customer_id, created_at, last_seen_at, expires_at, realm) "
-        . "SELECT 'staging-session', id, 0, 0, 9999999999, 'shop' FROM customers LIMIT 1");
+    new \PDO('sqlite:' . $staging)->exec("INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) "
+        . "SELECT 'staging-session', id, 'shop', 'signed-in', 0, 0, 9999999999 FROM customers LIMIT 1");
 
     [$status, $said] = import(["--from={$production}", "--to={$staging}"]);
     expect($status)->toBe(0, $said);

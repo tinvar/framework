@@ -206,14 +206,14 @@ function signedInAs(Kernel $kernel, Browser $browser): ?string
     if ($id === null) {
         return null;
     }
-    $row = $kernel->orm->connection()->select('SELECT customer_id FROM sessions WHERE id = ?', [hash('sha256', $id)])[0] ?? null;
+    $row = $kernel->orm->connection()->select('SELECT user_id FROM sessions WHERE id = ?', [hash('sha256', $id)])[0] ?? null;
 
-    return $row === null ? null : (string) $row['customer_id'];
+    return $row === null ? null : (string) $row['user_id'];
 }
 
 function epochOf(Kernel $kernel, string $customer): int
 {
-    return (int) ($kernel->orm->connection()->select('SELECT epoch FROM auth_epochs WHERE customer_id = ?', [$customer])[0]['epoch'] ?? 0);
+    return (int) ($kernel->orm->connection()->select('SELECT epoch FROM auth_epochs WHERE user_id = ?', [$customer])[0]['epoch'] ?? 0);
 }
 
 /** Moves the shop's clock, which only the test profile allows. */

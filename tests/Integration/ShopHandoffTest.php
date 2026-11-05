@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopHandoff;
 
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Database\Seeders\Seeder;
 use Shop\Support\DemoAccount;
@@ -188,7 +188,7 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
 
     try {
         expect($browser->signIn(StaffAccount::EMAIL, StaffAccount::PASSWORD)->status)->toBe(303);
-        $epoch = new AuthEpochs($orm)->of(staffId($orm));
+        $epoch = new AuthEpochs($orm->connection())->of(staffId($orm));
         $browser->trail = [];
 
         $page = $browser->follow(ADMIN . '/orders');
@@ -215,7 +215,7 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
         ->toBe([['realm' => 'admin.shop.test']])
         // The same staff member on both: nothing the shop's host holds for
         // them is purged by the move.
-        ->and(new AuthEpochs($orm)->of(staffId($orm)))->toBe($epoch);
+        ->and(new AuthEpochs($orm->connection())->of(staffId($orm)))->toBe($epoch);
 });
 
 it('sends someone signed in nowhere from the admin host to sign in on the shop\'s host, and back after', function () {

@@ -12,7 +12,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopPreviousUrl;
 
 use Shop\Auth\Sessions\PreviousUrls;
-use Shop\Auth\Sessions\SessionContext;
+use Shop\Auth\Sessions\Visit;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
@@ -26,7 +26,7 @@ const KEY = 'shop-previous-url-test-key-32-bytes!';
 
 /**
  * A request carrying a session cookie, a previous-URL cookie if given, and
- * the session context StartSession puts on every request.
+ * the Visit RememberPreviousUrl puts on every request.
  */
 function from(string $session, ?string $previous = null): Request
 {
@@ -36,11 +36,11 @@ function from(string $session, ?string $previous = null): Request
     }
 
     return new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost'])
-        ->withAttribute(SessionContext::ATTRIBUTE, new SessionContext((string) Kernel::sessionFrom($session, KEY)));
+        ->withAttribute(Visit::ATTRIBUTE, new Visit());
 }
 
 /**
- * What put() left for StartSession to set: the cookie's value and Max-Age.
+ * What put() left for RememberPreviousUrl to set: the cookie's value and Max-Age.
  *
  * @return array{string, int}|null
  */
@@ -48,10 +48,10 @@ function recorded(PreviousUrls $urls, string $session, string $url): ?array
 {
     $request = from($session);
     $urls->put($request, $url);
-    $context = $request->attribute(SessionContext::ATTRIBUTE);
-    \assert($context instanceof SessionContext);
+    $visit = $request->attribute(Visit::ATTRIBUTE);
+    \assert($visit instanceof Visit);
 
-    return $context->visit();
+    return $visit->cookie();
 }
 
 describe('the store', function () {
@@ -110,13 +110,13 @@ describe('the store', function () {
     });
 
     // Outside the pipeline there is no response for the cookie to go on.
-    it('keeps nothing for a request without a session context', function () {
+    it('keeps nothing for a request without a visit to keep it on', function () {
         $urls = new PreviousUrls(KEY);
         $request = new Request('GET', '/', cookies: [Kernel::SESSION_COOKIE => Kernel::newSession(KEY)], headers: ['host' => 'localhost']);
 
         $urls->put($request, '/orders');
 
-        expect($request->attribute(SessionContext::ATTRIBUTE))->toBeNull();
+        expect($request->attribute(Visit::ATTRIBUTE))->toBeNull();
     });
 
     it('lasts as long as its session, and is forgotten once the session has expired', function () {

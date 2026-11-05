@@ -21,6 +21,7 @@ namespace Tinvar\Tests\Integration\ExampleComposition;
 use Shop\Config\ServerConfig;
 use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
+use Tinvar\Accounts\SessionCookie;
 use Shop\Database\Models\Catalog\Product;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
@@ -188,7 +189,7 @@ describe('the example session cookie', function () {
     it('is set as the spec cookie rule requires', function () use ($key) {
         $now = time();
         $cookie = Kernel::newSession($key, now: $now);
-        $line = Kernel::withSession(Response::make(), $cookie, now: $now)->cookies()[Kernel::SESSION_COOKIE];
+        $line = new SessionCookie($key, Kernel::SESSION_COOKIE, static fn (): int => $now)->set(Response::make(), $cookie)->cookies()[Kernel::SESSION_COOKIE];
 
         expect(Kernel::SESSION_COOKIE)->toStartWith('__Host-')
             ->and($line)->toBe(Kernel::SESSION_COOKIE . "={$cookie}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=" . Kernel::SESSION_LIFETIME)
@@ -199,7 +200,7 @@ describe('the example session cookie', function () {
     // moment it would become valuable.
     it('rotates to a new id', function () use ($key) {
         $before = Kernel::newSession($key);
-        $line = Kernel::withSession(Response::make(), Kernel::newSession($key))->cookies()[Kernel::SESSION_COOKIE];
+        $line = new SessionCookie($key, Kernel::SESSION_COOKIE)->set(Response::make(), Kernel::newSession($key))->cookies()[Kernel::SESSION_COOKIE];
         $after = explode(';', substr($line, \strlen(Kernel::SESSION_COOKIE) + 1))[0];
 
         expect(Kernel::sessionFrom($after, $key))->not->toBeNull()

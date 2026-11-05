@@ -11,12 +11,12 @@ declare(strict_types=1);
  */
 
 use Shop\Database\Models\Account\Customer;
-use Shop\Jobs\Account\SendAccountLink;
 use Shop\Kernel;
 use Shop\Support\DemoAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
-use Tinvar\Identity\EmailLinks;
+use Tinvar\Accounts\AccountMailKind;
+use Tinvar\Accounts\SendAccountMail;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\Job;
 use Tinvar\Mail\MailTransportException;
@@ -71,13 +71,13 @@ it('fails a job whose mail the provider refuses for good, and runs it once', fun
     expect($queue->failed())->toHaveCount(1)
         ->and($queue->size('mail'))->toBe(0);
 })->with([
-    'a sign-in link' => fn () => new SendAccountLink(DemoAccount::EMAIL, EmailLinks::SIGN_IN),
-    'a password reset' => fn () => new SendAccountLink(DemoAccount::EMAIL, EmailLinks::PASSWORD_RESET),
+    'a sign-in link' => fn () => new SendAccountMail(AccountMailKind::SignInLink, DemoAccount::EMAIL),
+    'a password reset' => fn () => new SendAccountMail(AccountMailKind::PasswordReset, DemoAccount::EMAIL),
 ]);
 
 it('records a reset asked for only once its email is sent', function () {
     [$kernel] = refusingShop();
-    $kernel->jobs->dispatch(new SendAccountLink(DemoAccount::EMAIL, EmailLinks::PASSWORD_RESET));
+    $kernel->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordReset, DemoAccount::EMAIL));
 
     workRefusals($kernel);
 

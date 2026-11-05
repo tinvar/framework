@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopLiveAdmission;
 
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Auth\Admin\StaffPermission;
 use Shop\Database\Seeders\Seeder;
@@ -96,7 +96,7 @@ final class Staff
             build: Kernel::build(),
             sessionId: (string) Kernel::sessionFrom($this->cookies[Kernel::SESSION_COOKIE] ?? null, KEY),
             user: $this->id,
-            authEpoch: new AuthEpochs($this->orm)->of($this->id),
+            authEpoch: new AuthEpochs($this->orm->connection())->of($this->id),
             host: 'admin.localhost',
         )->mint(["\0orders"]);
     }
@@ -188,7 +188,7 @@ it('refuses the panel\'s topics to a former member even where nothing moved the 
 
 it('moves the epoch when it makes an account staff, too', function () {
     $orm = new Orm(PdoConnection::sqlite(database(), 'shop'), new IdentityMap('shop'));
-    $epochs = new AuthEpochs($orm);
+    $epochs = new AuthEpochs($orm->connection());
     $customer = (string) $orm->connection()->select("SELECT id FROM customers WHERE email <> ? LIMIT 1", [StaffAccount::EMAIL])[0]['id'];
     $before = $epochs->of($customer);
 

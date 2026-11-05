@@ -75,7 +75,7 @@ it('replaces a signed-in session whose row was deleted, and takes its live grant
         ->and($kept->header('x-test-hub-revoked'))->toBeNull();
 
     // "Sign out everywhere": every row of the customer's gone.
-    $this->kernel->orm->connection()->execute('DELETE FROM sessions WHERE customer_id = ?', [$this->customer->id]);
+    $this->kernel->orm->connection()->execute('DELETE FROM sessions WHERE user_id = ?', [$this->customer->id]);
 
     $ended = ask($this->kernel, $this->product, $session);
     $replacement = issued($ended);
@@ -93,7 +93,7 @@ it('replaces a signed-in session whose row was deleted, and takes its live grant
 
 it('replaces a signed-in session whose row is another host\'s, as one whose row is gone', function () {
     $session = signedIn($this->kernel, $this->customer);
-    $this->kernel->orm->connection()->execute('UPDATE sessions SET realm = ? WHERE customer_id = ?', ['elsewhere.example', $this->customer->id]);
+    $this->kernel->orm->connection()->execute('UPDATE sessions SET realm = ? WHERE user_id = ?', ['elsewhere.example', $this->customer->id]);
 
     $ended = ask($this->kernel, $this->product, $session);
 
@@ -129,9 +129,9 @@ it('keeps a signed-out session, and its grant', function () {
 // it is not mistaken for one the server ended.
 it('keeps the session a sign-out issues', function () {
     $session = signedIn($this->kernel, $this->customer);
-    $context = new \Shop\Auth\Sessions\SessionContext((string) Kernel::sessionFrom($session, KEY), '127.0.0.1', $this->customer);
-    $this->kernel->sessions->signOut($context);
-    $signedOut = (string) $context->replacement();
+    $state = new \Tinvar\Accounts\SessionState((string) Kernel::sessionFrom($session, KEY), '127.0.0.1', $this->customer);
+    $this->kernel->accounts->sessions->signOut($state);
+    $signedOut = (string) $state->replacement();
 
     $response = ask($this->kernel, $this->product, $signedOut);
 

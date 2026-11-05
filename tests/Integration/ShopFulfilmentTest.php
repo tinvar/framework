@@ -13,7 +13,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopFulfilment;
 
 use Shop\Http\Actions\Fulfilment\FulfilmentActions;
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Auth\Admin\StaffPermission;
 use Shop\Support\DemoAccount;
@@ -65,7 +65,7 @@ function account(Kernel $kernel, string $email): Customer
 
 function epochOf(Kernel $kernel, Customer $customer): string
 {
-    return new AuthEpochs($kernel->orm)->of($customer->id);
+    return new AuthEpochs($kernel->orm->connection())->of($customer->id);
 }
 
 /** A placed order of $customer's, or of anyone's. */
@@ -374,7 +374,7 @@ describe('the order shipments tool', function () {
 
         $result = $auth->actingAs($customer, function () use ($own, $customer): CallResult {
             $grant = $this->kernel->tools->grant(['order_shipments']);
-            new AuthEpochs($this->kernel->orm)->bump($customer->id);
+            new AuthEpochs($this->kernel->orm->connection())->bump($customer->id);
 
             return $this->kernel->tools->call($grant, 'order_shipments', ['order' => $own]);
         }, $epoch);

@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopTransfers;
 
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Auth\Admin\StaffPermission;
 use Shop\Support\DemoAccount;
@@ -278,7 +278,7 @@ it('writes nothing once the staff member\'s epoch has moved before the worker ra
     $account = account($this->kernel, StaffAccount::EMAIL);
     expect(new Staff($this->kernel, $account)->export()->status)->toBe(202);
 
-    new AuthEpochs($this->kernel->orm)->bump($account->id, $this->kernel->orm->connection());
+    new AuthEpochs($this->kernel->orm->connection())->bump($account->id);
     work($this->kernel);
 
     // Failed on its record at once, where the staff member reads it (ADR

@@ -121,7 +121,7 @@ it('lets a customer\'s script read their orders with a token over curl, and noth
         preg_match('/' . preg_quote(Kernel::SESSION_COOKIE, '/') . '=([^;]+)/', $headers['set-cookie'] ?? '', $m);
         $session = $m[1] ?? throw new \LogicException('Signing in set no session cookie.');
 
-        [$status, , $body] = $post('account.createApiToken', ['name' => 'curl', 'scopes' => ['orders:read'], 'password' => DemoAccount::PASSWORD, 'lifetime' => '30'], $session);
+        [$status, , $body] = $post('account.createApiToken', ['name' => 'curl', 'scopes' => ['orders:read'], 'currentPassword' => DemoAccount::PASSWORD, 'lifetime' => '30'], $session);
         $token = json_decode($body, true)['value']['token'] ?? null;
         expect($status)->toBe(200)
             ->and($token)->toMatch('/^tvr_[0-9a-f]{32}_[0-9A-Za-z]{43}\z/');

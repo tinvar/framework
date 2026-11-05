@@ -14,7 +14,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopCancelOrder;
 
 use Shop\Http\Actions\Orders\OrderActions;
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
@@ -61,7 +61,7 @@ function statusOf(Kernel $kernel, string $order): string
 
 function signedIn(Kernel $kernel, Customer $customer): \Tinvar\Testing\Client
 {
-    return actingAs($customer, new AuthEpochs($kernel->orm)->of($customer->id));
+    return actingAs($customer, new AuthEpochs($kernel->orm->connection())->of($customer->id));
 }
 
 it('cancels a placed order of the customer\'s, revalidating its page and the tags its shipping updates read', function () {

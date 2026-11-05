@@ -12,9 +12,9 @@ namespace Tinvar\Tests\Integration\ShopAccount;
 
 use Shop\Http\Actions\Account\AccountActions;
 use Shop\Http\Actions\Orders\OrderActions;
-use Shop\Auth\Account\NextPath;
-use Shop\Auth\Account\Passwords;
-use Shop\Auth\Sessions\Sessions;
+use Shop\Auth\Account\Customers;
+use Tinvar\Accounts\Passwords;
+use Tinvar\Accounts\Sessions;
 use Tinvar\Accounts\SignInThrottle;
 use Shop\Database\Seeders\Seeder;
 use Shop\Support\DemoAccount;
@@ -34,6 +34,9 @@ use function Tinvar\Testing\actingAs;
 use function Tinvar\Testing\get;
 
 const KEY = 'shop-account-test-key-of-32-bytes!!';
+
+/** Where a sign-in goes when it was given nowhere to go, or nowhere it may: the orders page. */
+const HOME = '/orders';
 
 /** A browser of one: a cookie jar, and the Kernel it talks to. */
 final class Visitor
@@ -288,7 +291,7 @@ it('stores a signed-in session server-side, keyed by a hash of its id', function
 
     expect($visitor->sessionId())->not->toBeNull()
         ->and($row)->not->toBeNull()
-        ->and($row['customer_id'])->toBe(demoId($pdo))
+        ->and($row['user_id'])->toBe(demoId($pdo))
         ->and((int) $row['expires_at'] - (int) $row['created_at'])->toBe(Kernel::SESSION_LIFETIME)
         ->and($pdo->query('SELECT COUNT(*) FROM sessions WHERE id = ' . $pdo->quote((string) $visitor->sessionId()))->fetchColumn())
         ->toBe(0, 'the id itself is never a key');
@@ -320,9 +323,9 @@ it('sweeps expired sessions a bounded batch at a time as customers sign in', fun
     [$visitor, $pdo] = shop();
     $visitor->get('/sign-in');
     $expired = Sessions::SWEEP_BATCH * 2 + 10;
-    $insert = $pdo->prepare('INSERT INTO sessions (id, customer_id, created_at, last_seen_at, expires_at) VALUES (?, NULL, 1, 1, 2)');
+    $insert = $pdo->prepare("INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) VALUES (?, ?, 'localhost', 'signed-in', 1, 1, 2)");
     for ($i = 0; $i < $expired; $i++) {
-        $insert->execute([hash('sha256', "expired-{$i}")]);
+        $insert->execute([hash('sha256', "expired-{$i}"), demoId($pdo)]);
     }
     $left = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM sessions WHERE expires_at <= 2')->fetchColumn();
 
@@ -347,7 +350,7 @@ it('signs in under a new session id bound to the customer, and forgets the old o
         ->and($response->header('location'))->toBe('/orders')
         ->and($visitor->sessionId())->not->toBe($before)
         ->and(sessionRow($pdo, $before))->toBeNull()
-        ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'])->toBe(demoId($pdo));
+        ->and(sessionRow($pdo, $visitor->sessionId())['user_id'])->toBe(demoId($pdo));
 });
 
 // Two messages would tell anyone with the form which emails have accounts.
@@ -380,7 +383,7 @@ it('signs in from a form posted before JavaScript loads', function () {
 
     expect($response->status)->toBe(303)
         ->and($response->header('location'))->toBe('/orders')
-        ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'] ?? null)->toBe(demoId($pdo));
+        ->and(sessionRow($pdo, $visitor->sessionId())['user_id'] ?? null)->toBe(demoId($pdo));
 });
 
 /** @return array<string, mixed>|null what the visitor's session was flashed, still waiting */
@@ -446,13 +449,13 @@ function costOf(string $hash): array
 it('checks an unknown email against a hash as costly as the accounts\' own', function () {
     [$visitor, $pdo] = shop();
 
-    expect(costOf((new Passwords($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, Seeder::PASSWORD_COST]);
+    expect(costOf(Passwords::for(new Customers($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, Seeder::PASSWORD_COST]);
 
     // Most accounts at another cost, as a real shop's would be.
     $update = $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email <> ?');
     $update->execute([password_hash('x', PASSWORD_BCRYPT, ['cost' => 6]), DemoAccount::EMAIL]);
 
-    expect(costOf((new Passwords($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, 6]);
+    expect(costOf(Passwords::for(new Customers($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, 6]);
 });
 
 it('rehashes a password on sign-in when the hashing policy has moved on since', function () {
@@ -496,16 +499,16 @@ it('sends a customer on only to a path on this site', function (string $next, st
     expect(signIn($visitor, next: $next)->header('location'))->toBe($expected);
 })->with([
     'a path' => ['/orders?page=2', '/orders?page=2'],
-    'another site' => ['https://evil.example/', NextPath::DEFAULT],
-    'protocol-relative' => ['//evil.example', NextPath::DEFAULT],
-    'a backslash' => ['/\\evil.example', NextPath::DEFAULT],
-    'the sign-in page' => ['/sign-in?next=/orders', NextPath::DEFAULT],
-    'an endpoint' => ['/_action/account.signOut', NextPath::DEFAULT],
+    'another site' => ['https://evil.example/', HOME],
+    'protocol-relative' => ['//evil.example', HOME],
+    'a backslash' => ['/\\evil.example', HOME],
+    'the sign-in page' => ['/sign-in?next=/orders', HOME],
+    'an endpoint' => ['/_action/account.signOut', HOME],
     // A handoff's authorize step carries the whole address it returns to,
     // past 512 characters for a long one: the form refused it, and the
     // sign-in failed with nothing on the page to say why.
     'a long handoff' => [$handoff = '/_handoff/authorize?origin=https%3A%2F%2Fshop.example&state=s&return=' . str_repeat('a', 1200), $handoff],
-    'longer than any link we made' => ['/orders?' . str_repeat('a', 2100), NextPath::DEFAULT],
+    'longer than any link we made' => ['/orders?' . str_repeat('a', 2100), HOME],
 ]);
 
 // A visitor already signed in has nothing to do on the sign-in page.
@@ -727,7 +730,7 @@ it('signs out everywhere: every session ended, the epoch moved, synced in full',
     $here = $visitor->sessionId();
     $there = $phone->sessionId();
     $demo = demoId($pdo);
-    $epoch = static fn (): int => (int) $pdo->query("SELECT epoch FROM auth_epochs WHERE customer_id = '{$demo}'")->fetchColumn();
+    $epoch = static fn (): int => (int) $pdo->query("SELECT epoch FROM auth_epochs WHERE user_id = '{$demo}'")->fetchColumn();
     $before = $epoch();
 
     $sqlite = $visitor->kernel->orm->connection()->pdo();
@@ -750,7 +753,7 @@ it('signs out everywhere: every session ended, the epoch moved, synced in full',
         ->and(sessionRow($pdo, $here))->toBeNull()
         ->and(sessionRow($pdo, $there))->toBeNull()
         ->and(sessionRow($pdo, $visitor->sessionId()))->toBeNull('signed out, so no row')
-        ->and((int) $pdo->query("SELECT COUNT(*) FROM sessions WHERE customer_id = '{$demo}'")->fetchColumn())->toBe(0)
+        ->and((int) $pdo->query("SELECT COUNT(*) FROM sessions WHERE user_id = '{$demo}'")->fetchColumn())->toBe(0)
         ->and($epoch())->toBe($before + 1);
 
     // The other device is no one at its next request, and is moved to a

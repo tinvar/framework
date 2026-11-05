@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopHistoryKey;
 
-use Shop\Auth\Sessions\AuthEpochs;
+use Tinvar\Accounts\AuthEpochs;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
@@ -20,8 +20,6 @@ use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\HistoryKeys;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
-use Tinvar\Orm\IdentityMap;
-use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Support\Signer;
@@ -104,7 +102,7 @@ function demo(): array
 {
     $pdo = new \PDO('sqlite:' . Shop::database());
     $id = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
-    $epoch = $pdo->query('SELECT epoch FROM auth_epochs WHERE customer_id = ' . $pdo->quote($id))?->fetchColumn();
+    $epoch = $pdo->query('SELECT epoch FROM auth_epochs WHERE user_id = ' . $pdo->quote($id))?->fetchColumn();
 
     return [$id, (string) ($epoch === false || $epoch === null ? 0 : $epoch)];
 }
@@ -132,7 +130,7 @@ it('hands a signed-in customer\'s pages their session\'s key, and a signed-out v
 
         // A role changed, the session id kept: the shop moves the customer's
         // epoch, and the key moves with it.
-        new AuthEpochs(new Orm(PdoConnection::sqlite(Shop::database(), 'shop'), new IdentityMap('shop')))->bump(demo()[0]);
+        new AuthEpochs(PdoConnection::sqlite(Shop::database(), 'shop'))->bump(demo()[0]);
         $promoted = $visitor->payload('/orders');
 
         $visitor->action('account.signOut', []);
