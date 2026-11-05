@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Accounts;
 
 use Tinvar\Http\Response;
+use Tinvar\Identity\HandoffEndpoint;
 
 /**
  * Where the application's account pages are: what the kit redirects to, and
@@ -46,6 +47,11 @@ final readonly class AccountPaths
      * `next` arrives in the query string, so anyone can write a link that
      * sets it; a full URL or `//evil.example` would make the sign-in page an
      * open redirect. Response's own same-origin rules decide.
+     *
+     * One framework path is somewhere to go on to: a handoff's authorize
+     * step, which a visitor from another of the app's hosts is sent to sign
+     * in from and comes back to (ADR 0039). It sends them off this host only
+     * to a host the app lists as its own.
      */
     public function next(mixed $next): string
     {
@@ -58,7 +64,7 @@ final readonly class AccountPaths
         // Back to the sign-in pages would only ask again, and nothing under
         // /_ is a page.
         $path = explode('?', $next, 2)[0];
-        if (\in_array($path, [$this->signIn, $this->secondFactor, $this->signUp], true) || str_starts_with($path, '/_')) {
+        if (\in_array($path, [$this->signIn, $this->secondFactor, $this->signUp], true) || ($path !== HandoffEndpoint::AUTHORIZE && str_starts_with($path, '/_'))) {
             return $this->home;
         }
 

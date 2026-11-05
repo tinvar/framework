@@ -18,21 +18,31 @@ namespace Tinvar\Tests\Accounts\Kit;
 
 use Carbon\CarbonImmutable;
 use Tinvar\Accounts\AccountLinks;
+use Tinvar\Accounts\AccountPaths;
 use Tinvar\Accounts\Accounts;
 use Tinvar\Accounts\AccountsKit;
 use Tinvar\Accounts\Passkeys\Base64Url;
+use Tinvar\Accounts\RequireSignIn;
 use Tinvar\Accounts\SessionState;
+use Tinvar\Accounts\Sessions;
 use Tinvar\Accounts\SignInResult;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\ArrayApiTokens;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
+use Tinvar\Http\Response;
+use Tinvar\Identity\Arrival;
 use Tinvar\Identity\EmailLinks;
+use Tinvar\Identity\HandoffEndpoint;
+use Tinvar\Identity\Realm;
+use Tinvar\Identity\Realms;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
 use Tinvar\Tests\Accounts\Fixtures\MemberApp;
 use Tinvar\Tests\Accounts\Fixtures\Members;
 use Tinvar\Tests\Accounts\Fixtures\SoftwareAuthenticator;
@@ -743,3 +753,110 @@ it('ends every other session and token when two-factor is turned off, and tells 
             ->and($app->links('two-factor-disabled', 'ada@example.com'))->toBe(['https://app.example/password/forgot']);
     });
 })->with('drivers');
+
+it('signs a handoff\'s arrival in on the host it came to, leaving the epoch, and ends that session when its code comes back', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $home = member($app);
+        member($app, 'bob@example.com');
+        $ada = $home->state()->user();
+        \assert($ada !== null);
+        $epoch = $app->kit->epochs->of($ada->authIdentifier());
+
+        // Someone else was signed in on the admin host in this browser.
+        $admin = new Visitor($app, 'admin.app.example');
+        $admin->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'bob@example.com', PASSWORD));
+        $bob = $admin->state()->user();
+        \assert($bob !== null);
+        $bobEpoch = $app->kit->epochs->of($bob->authIdentifier());
+        $before = $admin->cookie;
+
+        $arrival = new Arrival($ada, $epoch, Realm::platform('https://admin.app.example'), '/orders', '', 'redemption-1');
+        $id = $admin->do(static fn (Accounts $a, Request $r): string => $app->kit->arrivals->arrive($r, $arrival));
+        expect($admin->cookie)->not->toBe($before)
+            ->and($admin->state()->id)->toBe($id)
+            ->and($admin->who())->toBe('ada@example.com')
+            // The same person as on the shop's host: nothing a tab of theirs holds there stops counting.
+            ->and($app->kit->epochs->of($ada->authIdentifier()))->toBe($epoch)
+            ->and($home->who())->toBe('ada@example.com')
+            // Whoever the session belonged to before moves on.
+            ->and($app->kit->epochs->of($bob->authIdentifier()))->not->toBe($bobEpoch);
+
+        // A session is made for the host the request came to, and no other.
+        $elsewhere = new Visitor($app, 'admin.app.example');
+        $wrong = new Arrival($ada, $epoch, Realm::platform('https://app.example'), '/', '', 'redemption-2');
+        expect(static fn () => $elsewhere->do(static fn (Accounts $a, Request $r) => $app->kit->arrivals->arrive($r, $wrong)))->toThrow(\LogicException::class)
+            ->and($elsewhere->who())->toBeNull();
+
+        // Its code shown again ends the session it started, and no other.
+        $app->kit->arrivals->revoke('');
+        expect($admin->who())->toBe('ada@example.com');
+        $app->kit->arrivals->revoke('redemption-1');
+        expect($admin->who())->toBeNull()
+            ->and($home->who())->toBe('ada@example.com');
+    });
+})->with('drivers');
+
+it('adds the handoff column to a sessions table made before it, and signs in on one that lacks it', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        $schema = new Schema($connection, Dialect::for($connection));
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->dropIndex('sessions_handoff');
+        });
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->dropColumn('handoff_redemption');
+        });
+
+        $visitor = member($app);
+        expect($visitor->who())->toBe('ada@example.com')
+            ->and($schema->hasColumn('sessions', 'handoff_redemption'))->toBeFalse();
+
+        Sessions::addHandoffRedemption($schema);
+        Sessions::addHandoffRedemption($schema);
+        $user = $visitor->state()->user();
+        \assert($user !== null);
+        $admin = new Visitor($app, 'admin.app.example');
+        $arrival = new Arrival($user, $app->kit->epochs->of($user->authIdentifier()), Realm::platform('https://admin.app.example'), '/', '', 'redemption');
+        $admin->do(static fn (Accounts $a, Request $r): string => $app->kit->arrivals->arrive($r, $arrival));
+        expect($admin->who())->toBe('ada@example.com');
+        $app->kit->arrivals->revoke('redemption');
+        expect($admin->who())->toBeNull();
+    });
+});
+
+it('starts a handoff for a visitor on another of the app\'s hosts, and sends one on its own host to sign in', function () {
+    $realms = new Realms(Realm::platform('https://app.example'), [Realm::platform('https://admin.app.example', panel: 'admin')], platformPanels: ['admin']);
+    $auth = new AuthContext();
+    $through = static fn (Request $r): Response => Response::make(200, 'in');
+    $require = new RequireSignIn($auth, new AccountPaths(), $realms);
+
+    $admin = $require->handle(new Request('GET', '/orders', ['host' => 'admin.app.example'], ['page' => '2'], rawQuery: 'page=2'), $through);
+    $home = $require->handle(new Request('GET', '/account', ['host' => 'app.example']), $through);
+    expect($admin->header('location'))->toBe(HandoffEndpoint::START . '?return=' . rawurlencode('/orders?page=2'))
+        ->and($home->header('location'))->toBe('/sign-in?next=' . rawurlencode('/account'))
+        // An app with one host has no realms: its sign-in page, wherever.
+        ->and(new RequireSignIn($auth, new AccountPaths())->handle(new Request('GET', '/orders', ['host' => 'admin.app.example']), $through)->header('location'))
+        ->toBe('/sign-in?next=' . rawurlencode('/orders'));
+
+    // Where it goes back to is held as a sign-in's next is: a page here, and nothing else.
+    $start = $require->handle(new Request('GET', HandoffEndpoint::START, ['host' => 'admin.app.example']), $through);
+    expect($start->header('location'))->toBe(HandoffEndpoint::START . '?return=' . rawurlencode('/account'));
+
+    $auth->login(new class implements \Tinvar\Auth\Authenticatable {
+        public function authIdentifier(): string
+        {
+            return 'u1';
+        }
+    }, '1');
+    expect($require->handle(new Request('GET', '/orders', ['host' => 'admin.app.example']), $through)->body())->toBe('in');
+});
+
+it('goes on after signing in to the handoff\'s authorize step, and to nothing else under /_', function () {
+    $paths = new AccountPaths(home: '/orders');
+    expect($paths->next(HandoffEndpoint::AUTHORIZE . '?code=abc&state=def'))->toBe(HandoffEndpoint::AUTHORIZE . '?code=abc&state=def')
+        ->and($paths->next(HandoffEndpoint::START . '?return=%2F'))->toBe('/orders')
+        ->and($paths->next('/_action/account.signOut'))->toBe('/orders')
+        ->and($paths->next('/_handoff/authorizeX'))->toBe('/orders')
+        ->and($paths->next('//evil.example' . HandoffEndpoint::AUTHORIZE))->toBe('/orders')
+        ->and($paths->next('/orders?page=2'))->toBe('/orders?page=2');
+});

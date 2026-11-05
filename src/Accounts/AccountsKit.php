@@ -19,6 +19,7 @@ use Tinvar\Http\Throttle;
 use Tinvar\Http\ThrottleStore;
 use Tinvar\Identity\DatabaseEmailLinkStore;
 use Tinvar\Identity\EmailLinks;
+use Tinvar\Identity\Realms;
 use Tinvar\Jobs\Dispatcher;
 use Tinvar\Mail\Mailer;
 use Tinvar\Orm\Connection;
@@ -62,7 +63,13 @@ final readonly class AccountsKit
      * ordinary sign-in and ends when every session does.
      */
     public TokenHolderLookup $tokenHolders;
+
+    /** The sessions a handoff arrives into, on another of the app's hosts: the HandoffEndpoint's (ADR 0039). */
+    public HandoffArrivals $arrivals;
     public StartSession $startSession;
+
+    /** The middleware a signed-in page is behind: the sign-in page, or a handoff on another of the app's hosts. */
+    public RequireSignIn $requireSignIn;
     public AccountPaths $paths;
 
     /**
@@ -76,6 +83,9 @@ final readonly class AccountsKit
      *        defaults -- `sign-in`, `sign-in.address`, `sign-in.account`,
      *        `two-factor`, `email-link`, `email-link.recipient`; 0 turns one off
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param Realms|null $realms the app's hosts, where it has more than one (ADR 0039): a
+     *        signed-in page on another of them starts a handoff rather than asking anyone to
+     *        sign in there
      */
     public function __construct(
         Connection $connection,
@@ -95,6 +105,7 @@ final readonly class AccountsKit
         AccountPaths $paths = new AccountPaths(),
         array $limits = [],
         ?\Closure $clock = null,
+        ?Realms $realms = null,
     ) {
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
@@ -103,10 +114,12 @@ final readonly class AccountsKit
         $this->lookup = new AccountUserLookup($users, $this->epochs);
         $this->tokenHolders = new AccountTokenHolders($users, $this->credentials, $this->epochs);
         $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
+        $this->arrivals = new HandoffArrivals($this->sessions);
         $local = str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
         $this->startSession = new StartSession($this->sessions, $auth, $csrf);
+        $this->requireSignIn = new RequireSignIn($auth, $paths, $realms);
 
         $this->accounts = new Accounts(
             connection: $connection,
@@ -181,7 +194,8 @@ final readonly class AccountsKit
             ->instance(SessionCookie::class, $this->cookie)
             ->instance(AccountPaths::class, $this->paths)
             ->instance(AccountLinks::class, $this->accountLinks)
-            ->instance(StartSession::class, $this->startSession);
+            ->instance(StartSession::class, $this->startSession)
+            ->instance(RequireSignIn::class, $this->requireSignIn);
     }
 
     /** The session id a request carries, or '': what every token is bound through. */

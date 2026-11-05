@@ -27,13 +27,15 @@ use Tinvar\Routing\HostMatch;
  * health check writes nothing.
  *
  * Every change of who a session belongs to rotates the id -- a sign-in, a
- * sign-out, a second factor passed -- so an id an attacker planted or saw
- * before the change never carries the privilege after it. And every
- * session belongs to the host it was made on, its realm, and signs nobody
- * in on any other (ADR 0039).
+ * sign-out, a second factor passed, a handoff's arrival -- so an id an
+ * attacker planted or saw before the change never carries the privilege
+ * after it. And every session belongs to the host it was made on, its
+ * realm, and signs nobody in on any other (ADR 0039): a handoff brings its
+ * user to another of the app's hosts under a session of that host's own
+ * (arrive(), HandoffArrivals).
  *
- * Generalized from the example shop's, which keeps its own for its
- * customers and its cross-host handoff.
+ * Generalized from the example shop's, which signs its customers in
+ * through it (ADR 0162).
  */
 final readonly class Sessions
 {
@@ -81,8 +83,13 @@ final readonly class Sessions
             // When the owner last proved it was them on this session; null
             // until they do, and never carried to the next id.
             $sessions->bigInteger('confirmed_at')->nullable();
+            // The handoff that started the session on this host (ADR 0039):
+            // its code's redemption (Arrival::$redemption), so a replay of
+            // the code ends it. Null for every session a sign-in made.
+            $sessions->string('handoff_redemption', 64)->nullable();
             $sessions->index(['user_id'], 'sessions_user');
             $sessions->index(['expires_at'], 'sessions_expiry');
+            $sessions->index(['handoff_redemption'], 'sessions_handoff');
         }, $ifNotExists);
     }
 
@@ -97,6 +104,23 @@ final readonly class Sessions
         }
         $schema->table('sessions', static function (Table $sessions): void {
             $sessions->bigInteger('confirmed_at')->nullable();
+        });
+    }
+
+    /**
+     * Adds `handoff_redemption` to a sessions table define() made before it
+     * had one, for an app that starts handing its sessions to another of its
+     * hosts; a table that has it is left as it is. Signing in needs no such
+     * column: an app with one host never writes it.
+     */
+    public static function addHandoffRedemption(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'handoff_redemption')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->string('handoff_redemption', 64)->nullable();
+            $sessions->index(['handoff_redemption'], 'sessions_handoff');
         });
     }
 
@@ -242,6 +266,48 @@ final readonly class Sessions
     }
 
     /**
+     * Binds the session to $user, brought to this host by a handoff from
+     * another of the app's (ADR 0039), under a new id, and returns it.
+     *
+     * A sign-in like any other -- the id the browser arrived with is never
+     * the one signed in -- except for $user's epoch, which stays where it
+     * is: they signed in on the host they came from and are the same user
+     * here, so nothing any of their tabs holds there has stopped being
+     * theirs. Whoever this host's session belonged to before, if anyone
+     * else, still moves on. The handoff's redemption is kept with the row,
+     * so a replay of its code ends the session (revokeArrival()).
+     *
+     * @param string $realm the host the handoff arrived at (Arrival::$realm): it must be
+     *        the one this request came to, the only one the session will be good on
+     */
+    public function arrive(SessionState $state, AccountUser $user, string $realm, string $redemption = ''): string
+    {
+        if ($realm !== $state->realm) {
+            throw new \LogicException('A handoff arrives into the session of the host it names; this request came to another.');
+        }
+
+        return $this->rotate($state, $user, SessionStage::SignedIn, moveEpoch: false, redemption: $redemption);
+    }
+
+    /**
+     * Ends the session the handoff with this redemption started, on whichever
+     * host it is: its code was shown again, so it was copied, and the session
+     * may be the copier's (HandoffSessions::revoke()). Durable, as a sign-out
+     * is. Nothing for a redemption no session names.
+     */
+    public function revokeArrival(string $redemption): void
+    {
+        if ($redemption === '') {
+            return;
+        }
+
+        $connection = $this->connection;
+        $connection->durableTransaction(static function () use ($connection, $redemption): void {
+            $connection->execute('DELETE FROM sessions WHERE handoff_redemption = ?', [$redemption]);
+        });
+    }
+
+    /**
      * Ends every session the session's user has, on every device and host,
      * this one included, and moves their epoch -- and their credential
      * epoch, which their API tokens are held to -- in one durable
@@ -278,7 +344,12 @@ final readonly class Sessions
         return $state->replacement() ?? throw new \LogicException('Signing in made no session.');
     }
 
-    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, bool $everywhere = false): void
+    /**
+     * @param bool $moveEpoch whether $user moves to a new epoch; a handoff's arrival does not (arrive())
+     * @param string $redemption the handoff code that started the session, hashed (revokeArrival())
+     * @return string the new session id
+     */
+    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, bool $everywhere = false, bool $moveEpoch = true, string $redemption = ''): string
     {
         $now = $this->cookie->now();
         // Minted signed in whenever a row stands behind it, so a cookie
@@ -294,7 +365,7 @@ final readonly class Sessions
         $connection = $this->connection;
         $epochs = $this->epochs;
         $credentials = $this->credentials;
-        $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $everywhere, $id, $now, $expires): void {
+        $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $everywhere, $moveEpoch, $redemption, $id, $now, $expires): void {
             // This host's row alone: an id presented on the wrong host is not
             // that host's to end.
             if ($state->id !== '') {
@@ -302,25 +373,33 @@ final readonly class Sessions
             }
 
             $leaving = $state->user();
+            $same = $leaving !== null && $user !== null && $user->authIdentifier() === $leaving->authIdentifier();
             if ($leaving !== null) {
                 if ($everywhere) {
                     $connection->execute('DELETE FROM sessions WHERE user_id = ?', [$leaving->authIdentifier()]);
                     $credentials->bump($leaving->authIdentifier());
                 }
                 // Whatever any tab holds for whoever is leaving is dropped on
-                // its next request, not only this tab's.
-                $epochs->bump($leaving->authIdentifier());
+                // its next request, not only this tab's -- unless a handoff
+                // brings the same user back, who is not leaving at all.
+                if ($moveEpoch || !$same) {
+                    $epochs->bump($leaving->authIdentifier());
+                }
             }
             if ($user === null) {
                 return;
             }
-            if ($stage === SessionStage::SignedIn && $user->authIdentifier() !== $leaving?->authIdentifier()) {
+            if ($moveEpoch && $stage === SessionStage::SignedIn && !$same) {
                 $epochs->bump($user->authIdentifier());
             }
 
+            // The handoff's column only for a handoff's session, so an app
+            // with one host signs in on a table made before the column was.
             $connection->execute(
-                'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [self::hash($id), $user->authIdentifier(), $state->realm, $stage->value, $now, $now, $expires],
+                $redemption === ''
+                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [self::hash($id), $user->authIdentifier(), $state->realm, $stage->value, $now, $now, $expires, ...($redemption === '' ? [] : [$redemption])],
             );
 
             // In the insert's own transaction, so it costs no second turn at
@@ -333,6 +412,8 @@ final readonly class Sessions
         });
 
         $state->replaceWith($cookie, $stage === SessionStage::SignedIn ? $user : null, $stage === SessionStage::SecondFactor ? $user : null);
+
+        return $id;
     }
 
     private static function hash(#[\SensitiveParameter] string $id): string
