@@ -191,6 +191,6 @@ it('keeps the key and the session id out of the example session helpers', functi
         ->and($marked('newSession', 'key'))->toBeTrue()
         ->and($marked('sessionFrom', 'key'))->toBeTrue()
         ->and($marked('sessionFrom', 'cookie'))->toBeTrue()
-        ->and($marked('withSession', 'cookie'))->toBeTrue()
+        ->and($marked('sessionCookie', 'key'))->toBeTrue()
         ->and($marked('fromEnvironment', 'key'))->toBeTrue();
 });
