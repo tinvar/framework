@@ -50,7 +50,9 @@ final class Passwords
      *        (AccountUsers::passwordHashes())
      * @param (\Closure(string): bool)|null $keep whether a stored hash is kept as it is
      *        though the policy has moved on -- the shop's seeded demo accounts, hashed
-     *        cheaply on purpose; none by default
+     *        cheaply on purpose; none by default. Left out of the decoy's cost, so timing
+     *        tells a kept account from an unknown email: keep only accounts whose existence
+     *        is no secret
      */
     public function __construct(
         private readonly \Closure $sample,

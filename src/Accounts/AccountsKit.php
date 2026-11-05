@@ -94,7 +94,10 @@ final readonly class AccountsKit
      *        sign in there
      * @param (\Closure(string): bool)|null $keepHash whether a stored hash is kept as it is
      *        though the policy has moved on (Passwords): a seeded demo account's, hashed
-     *        cheaply on purpose, say; none by default
+     *        cheaply on purpose, say; none by default. A kept hash is left out of the cost
+     *        the sign-in decoy copies, so its account is refused at its own cost, and timing
+     *        tells it from an address with no account: keep only accounts whose existence is
+     *        no secret
      * @param AuditLog|null $audit where every sign-in, failed and not, every sign-out and
      *        every change to how an account signs in is recorded, about that account
      *        (ADR 0156); nowhere unless given
