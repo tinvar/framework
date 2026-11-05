@@ -14,7 +14,8 @@ namespace Tinvar\Accounts;
  * cost. Pinned at one cost, the shop's was two hundred times faster than an
  * account hashed at the default cost -- 0.87 ms against 193 ms -- and the
  * time taken answered the question the one message hides. So the decoy is
- * hashed at the algorithm and cost most of the accounts are at.
+ * hashed at the algorithm and cost most of the accounts are at, the hashes
+ * the app keeps off the policy left out.
  *
  * Long-lived: one per worker, so the decoy is made once.
  */
@@ -69,10 +70,15 @@ final class Passwords
     /**
      * Whether $password is the one $hash was made from -- or, with no hash,
      * checked against the decoy and refused, in the time a real check takes.
+     *
+     * The decoy is made first, whatever the email: made only for an unknown
+     * one, the sample it reads and the hash it makes would be time a known
+     * one never took, on every check where the kit is made per request.
      */
     public function verify(#[\SensitiveParameter] string $password, ?string $hash): bool
     {
-        $matched = password_verify($password, $hash ?? $this->decoy());
+        $decoy = $this->decoy();
+        $matched = password_verify($password, $hash ?? $decoy);
 
         return $hash !== null && $matched;
     }
@@ -95,6 +101,12 @@ final class Passwords
      * hashed as most of the accounts are -- the algorithm and cost of the
      * most common hash in a sample of them, or the policy's own with none.
      *
+     * A hash the app keeps ($keep) is left out of the count: kept off the
+     * policy on purpose -- seeded demo accounts, hashed cheaply -- it says
+     * nothing of what an account costs to check. Counted, a database of them
+     * set the decoy at their cost, and an account made at the policy's took
+     * two hundred times longer to refuse than an unknown email took.
+     *
      * Made on the first check a worker serves, whatever its email, so no
      * one kind of attempt pays for making it.
      */
@@ -107,7 +119,7 @@ final class Passwords
         $seen = [];
         foreach (($this->sample)(self::SAMPLE) as $hash) {
             $info = password_get_info($hash);
-            if ($info['algo'] === null) {
+            if ($info['algo'] === null || ($this->keep !== null && ($this->keep)($hash) === true)) {
                 continue;
             }
             $key = serialize([$info['algo'], $info['options']]);

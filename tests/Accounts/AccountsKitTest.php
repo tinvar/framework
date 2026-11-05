@@ -969,6 +969,49 @@ it('keeps a stored hash the app says to keep though the policy has moved on, and
     });
 });
 
+// Made only for an unknown email, the decoy cost a sample of the accounts
+// read and a hash made where a known one cost neither: wherever the kit is
+// made per request, every refusal of an unknown email took that much
+// longer, and said there was no account.
+it('makes the sign-in decoy on the first check a worker serves, whatever its email, and once', function () {
+    $sampled = 0;
+    $passwords = new Passwords(static function (int $limit) use (&$sampled): array {
+        $sampled++;
+
+        return [password_hash('another password', PASSWORD_BCRYPT, ['cost' => 4])];
+    });
+    $hash = password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4]);
+
+    expect($passwords->verify(PASSWORD, $hash))->toBeTrue()
+        ->and($sampled)->toBe(1)
+        ->and($passwords->verify('a wrong password', null))->toBeFalse()
+        ->and($passwords->verify('a wrong password', $hash))->toBeFalse()
+        ->and($sampled)->toBe(1);
+});
+
+// A hash the app keeps is kept off the policy on purpose -- its seeded demo
+// accounts, hashed cheaply -- and says nothing of what an account costs to
+// check. Counted, a database of them set the decoy at their cost, and an
+// account made at the policy's took two hundred times longer to refuse a
+// wrong password for than an unknown email took: which said it was there.
+it('hashes the sign-in decoy as the accounts the policy governs are, leaving out the hashes the app keeps', function () {
+    $seeded = static fn (string $hash): bool => (password_get_info($hash)['options']['cost'] ?? null) === 4;
+    $cheap = static fn (): string => password_hash('a seeded password', PASSWORD_BCRYPT, ['cost' => 4]);
+    $made = password_hash('a password chosen since', PASSWORD_BCRYPT, ['cost' => 5]);
+    $cost = static fn (string $hash): mixed => password_get_info($hash)['options']['cost'] ?? null;
+
+    // Mostly seeded, one made since: the decoy costs what the made one does.
+    $mixed = new Passwords(static fn (int $limit): array => [$cheap(), $cheap(), $cheap(), $made], $seeded);
+    // Seeded alone: the policy's own.
+    $seededOnly = new Passwords(static fn (int $limit): array => [$cheap(), $cheap()], $seeded);
+    // None kept: the most common, seeded or not.
+    $keepingNone = new Passwords(static fn (int $limit): array => [$cheap(), $cheap(), $made]);
+
+    expect($cost($mixed->decoy()))->toBe(5)
+        ->and($seededOnly->needsRehash($seededOnly->decoy()))->toBeFalse()
+        ->and($cost($keepingNone->decoy()))->toBe(4);
+});
+
 it('hands the app the passwords it hashes with, for an account it makes itself', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $container = $app->kit->register(new \Tinvar\Container\Container());

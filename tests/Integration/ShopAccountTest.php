@@ -445,17 +445,22 @@ function costOf(string $hash): array
 
 // The decoy was pinned at cost 4, the seeded accounts' cost. Against accounts
 // at the default cost an unknown email was refused two hundred times faster
-// than a known one, and the time taken said which emails had accounts.
-it('checks an unknown email against a hash as costly as the accounts\' own', function () {
+// than a known one, and the time taken said which emails had accounts. Nor
+// are the seeded ones counted (ADR 0162): an account signing up is hashed at
+// the default cost beside them, and a decoy at theirs told it apart from an
+// address with none.
+it('checks an unknown email against a hash as costly as the accounts\' own, the seeded ones left out', function () {
     [$visitor, $pdo] = shop();
 
-    expect(costOf(Passwords::for(new Customers($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, Seeder::PASSWORD_COST]);
+    // Seeded alone: the policy's own cost, an account made now's.
+    expect(costOf($visitor->kernel->accounts->passwords->decoy()))
+        ->toBe(costOf($visitor->kernel->accounts->passwords->hash('a password chosen now')));
 
     // Most accounts at another cost, as a real shop's would be.
     $update = $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email <> ?');
     $update->execute([password_hash('x', PASSWORD_BCRYPT, ['cost' => 6]), DemoAccount::EMAIL]);
 
-    expect(costOf(Passwords::for(new Customers($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, 6]);
+    expect(costOf(new Passwords(new Customers($visitor->kernel->orm)->passwordHashes(...), Seeder::seeded(...))->decoy()))->toBe([PASSWORD_BCRYPT, 6]);
 });
 
 it('rehashes a password on sign-in when the hashing policy has moved on since', function () {
