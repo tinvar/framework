@@ -930,3 +930,18 @@ it('refuses to send sign-in links for an app whose mails cannot say one', functi
             ->toThrow(\LogicException::class, 'SignInLinkMails');
     });
 });
+
+it('fails an account email\'s job at once when the provider refuses the address for good, rather than make a link a try', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        member($app);
+        $refusing = new MemberApp($app->orm->connection(), transport: new class implements \Tinvar\Mail\Transport {
+            public function send(\Tinvar\Mail\Message $message): void
+            {
+                throw new \Tinvar\Mail\MailTransportException('The provider refused the address for good.', retryable: false);
+            }
+        });
+        new Visitor($refusing)->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+
+        expect(static fn () => $refusing->work())->toThrow(\Tinvar\Jobs\JobRefused::class);
+    });
+});

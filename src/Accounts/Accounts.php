@@ -22,6 +22,7 @@ use Tinvar\Http\Request;
 use Tinvar\Identity\EmailLinks;
 use Tinvar\Jobs\Dispatcher;
 use Tinvar\Mail\Mailer;
+use Tinvar\Mail\SendMail;
 use Tinvar\Orm\Connection;
 use Tinvar\Validation\ValidationException;
 
@@ -843,9 +844,13 @@ final class Accounts
             AccountMailKind::ApiTokenCreated => $user === null ? null : $this->mails->apiTokenCreated($user, $job->name, $this->links->page($this->links->paths->apiTokens), $resetPage),
         };
 
-        if ($mailable !== null) {
-            $this->mailer->send($mailable);
+        if ($mailable === null) {
+            return;
         }
+        // A provider's refusal for good fails the job at once: tried again
+        // through its backoff, each try would make another link, for a send
+        // that can never succeed.
+        SendMail::attempt(fn () => $this->mailer->send($mailable));
     }
 
     // --------------------------------------------------------------- helpers

@@ -296,7 +296,7 @@ final class MemberApp
 
     public const string KEY = 'accounts-kit-test-key-of-32-bytes-long!!';
 
-    public function __construct(Connection $connection, public readonly string $origin = 'https://app.example', ?AccountMails $mails = null)
+    public function __construct(Connection $connection, public readonly string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null)
     {
         $this->now = time();
         $this->orm = new Orm($connection, new IdentityMap($connection->name()));
@@ -311,7 +311,7 @@ final class MemberApp
             users: new Members($this->orm),
             mails: $mails ?? new MemberMails(),
             jobs: $jobs,
-            mailer: new Mailer($this->mail, new PropsRenderer(), new Address('app@example.com'), $jobs),
+            mailer: new Mailer($transport ?? $this->mail, new PropsRenderer(), new Address('app@example.com'), $jobs),
             throttles: new ArrayThrottleStore($clock),
             throttle: new Throttle(new ArrayThrottleStore($clock), $this->auth, static fn (\Tinvar\Http\Request $r): string => $r->remoteAddress ?? ''),
             origin: $origin,
