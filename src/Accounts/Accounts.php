@@ -70,7 +70,8 @@ use Tinvar\Validation\ValidationException;
  *   authenticator app -- and every other such change asks for the password
  *   itself. So a stolen session cookie cannot add a way back in that
  *   outlives it, or take away the owner's, and a passkey added or removed,
- *   or an API token made, is told to the owner by email.
+ *   or an API token made, is told to the owner by email -- where the app
+ *   has an https origin; with none, no account email is sent (ADR 0162).
  * - **What happened is in the audit log**, where the app keeps one (ADR
  *   0156, 0162): every sign-in, failed and not, every sign-out, and every
  *   change to how an account signs in, about that account.
@@ -823,7 +824,8 @@ final class Accounts
     /**
      * Issues an API token for the account (ADR 0159) -- while the session's
      * confirmation still counts, as adding a passkey asks -- and tells the
-     * owner by email, naming it. A token outlives the session that made it
+     * owner by email, naming it, where the app has an https origin (ADR
+     * 0162). A token outlives the session that made it
      * and every sign-in, so a session alone would otherwise mint a lasting
      * way in: a thief with a cookie leaving with a credential that "sign out
      * everywhere" is the only thing to end.
