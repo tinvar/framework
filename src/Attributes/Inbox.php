@@ -8,7 +8,7 @@ namespace Tinvar\Attributes;
  * Where a signed-in user reads their notifications (ADR 0155): the entry
  * point of their in-app inbox, by name.
  *
- *     #[Inbox('customer'), Middleware(RequireCustomer::class)]
+ *     #[Inbox('customer'), Middleware(RequireSignIn::class)]
  *     final readonly class CustomerInbox {}
  *
  * The class says nothing but its declarations, which are the inbox's
