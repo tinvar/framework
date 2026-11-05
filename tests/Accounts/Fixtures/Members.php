@@ -10,6 +10,7 @@ use Tinvar\Accounts\AccountUser;
 use Tinvar\Accounts\AccountUsers;
 use Tinvar\Accounts\AccountsKit;
 use Tinvar\Accounts\EmailTaken;
+use Tinvar\Accounts\SignInLinkMails;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Data\Data;
 use Tinvar\Http\ArrayThrottleStore;
@@ -155,8 +156,13 @@ final readonly class MemberMail implements Mailable
     }
 }
 
-final readonly class MemberMails implements AccountMails
+final readonly class MemberMails implements AccountMails, SignInLinkMails
 {
+    public function signInLink(AccountUser $user, string $url, int $minutes): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'sign-in-link', $url);
+    }
+
     public function signUp(string $email, string $name, string $url, int $minutes): Mailable
     {
         return new MemberMail($email, 'sign-up', $url);
@@ -208,6 +214,67 @@ final readonly class MemberMails implements AccountMails
     }
 }
 
+/** An app's mails that say every account email but a sign-in link: it offers none. */
+final readonly class PlainMemberMails implements AccountMails
+{
+    private MemberMails $mails;
+
+    public function __construct()
+    {
+        $this->mails = new MemberMails();
+    }
+
+    public function signUp(string $email, string $name, string $url, int $minutes): Mailable
+    {
+        return $this->mails->signUp($email, $name, $url, $minutes);
+    }
+
+    public function alreadyRegistered(AccountUser $user, string $signInUrl, string $resetUrl): Mailable
+    {
+        return $this->mails->alreadyRegistered($user, $signInUrl, $resetUrl);
+    }
+
+    public function passwordReset(AccountUser $user, string $url, int $minutes): Mailable
+    {
+        return $this->mails->passwordReset($user, $url, $minutes);
+    }
+
+    public function emailChange(AccountUser $user, string $newEmail, string $url, int $minutes): Mailable
+    {
+        return $this->mails->emailChange($user, $newEmail, $url, $minutes);
+    }
+
+    public function emailChanged(AccountUser $user, string $oldEmail, string $resetUrl): Mailable
+    {
+        return $this->mails->emailChanged($user, $oldEmail, $resetUrl);
+    }
+
+    public function passwordChanged(AccountUser $user, string $resetUrl): Mailable
+    {
+        return $this->mails->passwordChanged($user, $resetUrl);
+    }
+
+    public function passkeyAdded(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable
+    {
+        return $this->mails->passkeyAdded($user, $passkeyName, $accountUrl, $resetUrl);
+    }
+
+    public function passkeyRemoved(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable
+    {
+        return $this->mails->passkeyRemoved($user, $passkeyName, $accountUrl, $resetUrl);
+    }
+
+    public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
+    {
+        return $this->mails->twoFactorDisabled($user, $resetUrl);
+    }
+
+    public function apiTokenCreated(AccountUser $user, string $tokenName, string $tokensUrl, string $resetUrl): Mailable
+    {
+        return $this->mails->apiTokenCreated($user, $tokenName, $tokensUrl, $resetUrl);
+    }
+}
+
 /** Draws nothing: the text part is the template's name and its props, for a test to read the link from. */
 final class PropsRenderer implements MailRenderer
 {
@@ -229,7 +296,7 @@ final class MemberApp
 
     public const string KEY = 'accounts-kit-test-key-of-32-bytes-long!!';
 
-    public function __construct(Connection $connection, public readonly string $origin = 'https://app.example')
+    public function __construct(Connection $connection, public readonly string $origin = 'https://app.example', ?AccountMails $mails = null)
     {
         $this->now = time();
         $this->orm = new Orm($connection, new IdentityMap($connection->name()));
@@ -242,7 +309,7 @@ final class MemberApp
             connection: $connection,
             key: self::KEY,
             users: new Members($this->orm),
-            mails: new MemberMails(),
+            mails: $mails ?? new MemberMails(),
             jobs: $jobs,
             mailer: new Mailer($this->mail, new PropsRenderer(), new Address('app@example.com'), $jobs),
             throttles: new ArrayThrottleStore($clock),

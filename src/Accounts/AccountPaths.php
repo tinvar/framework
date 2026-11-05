@@ -20,6 +20,8 @@ final readonly class AccountPaths
         // Where a sign-up's link lands: choose a password, and the account is made.
         public string $completeSignUp = '/sign-up/complete',
         public string $secondFactor = '/sign-in/two-factor',
+        // Where a sign-in link lands, for an app that sends them (SignInLinkMails).
+        public string $signInLink = '/sign-in/link',
         public string $forgotPassword = '/password/forgot',
         public string $resetPassword = '/password/reset',
         // Where a change of address's link lands.

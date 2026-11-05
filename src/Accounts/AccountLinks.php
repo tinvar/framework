@@ -86,6 +86,12 @@ final readonly class AccountLinks
         return $this->links->issue(EmailLinks::SIGN_UP, $this->origin, $this->paths->completeSignUp, '', null, ['email' => $email, 'name' => $name])['url'];
     }
 
+    /** The URL of the link that signs $user in, for an app that sends them (SignInLinkMails). */
+    public function signIn(AccountUser $user): string
+    {
+        return $this->links->issue(EmailLinks::SIGN_IN, $this->origin, $this->paths->signInLink, '', $user)['url'];
+    }
+
     public function passwordReset(AccountUser $user): string
     {
         return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->origin, $this->paths->resetPassword, '', $user)['url'];

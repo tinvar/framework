@@ -8,6 +8,7 @@ namespace Tinvar\Accounts;
 enum AccountMailKind: string
 {
     case SignUp = 'sign-up';
+    case SignInLink = 'sign-in-link';
     case PasswordReset = 'password-reset';
     case EmailChange = 'email-change';
     case EmailChanged = 'email-changed';

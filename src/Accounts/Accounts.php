@@ -27,7 +27,8 @@ use Tinvar\Validation\ValidationException;
 
 /**
  * The accounts kit's flows (ADR 0153): signing up by a link to the address,
- * signing in and out, resetting and changing a password, changing the
+ * signing in and out -- by password, by passkey, or by a link emailed to the
+ * address (ADR 0162) -- resetting and changing a password, changing the
  * address by a link to the new one, passkeys, two-factor codes and "sign
  * out everywhere". An application's actions call these and say what the
  * browser does next; everything that decides who is signed in is here.
@@ -188,6 +189,55 @@ final class Accounts
         $this->sessions->signIn(SessionState::of($http), $user);
 
         return $user;
+    }
+
+    // ----------------------------------------------- signing in by a link
+
+    /**
+     * Asks for a link that signs the account at $email in (ADR 0162), for an
+     * app whose mails say one (SignInLinkMails): counted, and a job queued
+     * that sends it -- or nothing, to an address with no account. The same
+     * whatever the address.
+     */
+    public function requestSignInLink(Request $http, string $email): void
+    {
+        if (!$this->mails instanceof SignInLinkMails) {
+            throw new \LogicException('Signing in by an emailed link needs the app\'s AccountMails to implement SignInLinkMails, which says what the email says.');
+        }
+        $email = Emails::normalize($email);
+        if ($this->linkThrottle->hit($http, $email)) {
+            $this->jobs->dispatch(new SendAccountMail(AccountMailKind::SignInLink, $email));
+        }
+    }
+
+    /** The account a sign-in link is for, for the page it lands on; null for every reason it would not open. */
+    public function signInLinkOffer(string $token): ?AccountUser
+    {
+        $link = $this->links->peek($token, EmailLinks::SIGN_IN);
+
+        return $link === null ? null : $this->users->find($link->user);
+    }
+
+    /**
+     * Signs the browser in as the account a sign-in link is for, using the
+     * link -- or, with two-factor on, moves it to the second-factor stage:
+     * a link proves the inbox, as a reset does, not the second factor. The
+     * link is bound to the account's epoch, which every sign-in moves, so
+     * signing in anywhere, this way or another, ends every link sent before.
+     */
+    public function signInWithLink(Request $http, string $token): SignInResult
+    {
+        $user = $this->connection->durableTransaction(function () use ($token): AccountUser {
+            $link = $this->links->consume($token, EmailLinks::SIGN_IN);
+            $user = $link === null ? null : $this->users->find($link->user);
+            if ($user === null) {
+                throw new ValidationException(['token' => [self::LINK_REFUSED]]);
+            }
+
+            return $user;
+        });
+
+        return $this->enter($http, $user);
     }
 
     // ------------------------------------------------- signing in and out
@@ -774,6 +824,9 @@ final class Accounts
             AccountMailKind::SignUp => ($existing = $this->users->findByEmail($job->email)) === null
                 ? $this->mails->signUp($job->email, $job->name, $this->links->signUp($job->email, $job->name), $minutes(EmailLinks::SIGN_UP))
                 : $this->mails->alreadyRegistered($existing, $this->links->page($this->links->paths->signIn), $resetPage),
+            AccountMailKind::SignInLink => !$this->mails instanceof SignInLinkMails || ($existing = $this->users->findByEmail($job->email)) === null
+                ? null
+                : $this->mails->signInLink($existing, $this->links->signIn($existing), $minutes(EmailLinks::SIGN_IN)),
             AccountMailKind::PasswordReset => ($existing = $this->users->findByEmail($job->email)) === null
                 ? null
                 : $this->mails->passwordReset($existing, $this->links->passwordReset($existing), $minutes(EmailLinks::PASSWORD_RESET)),

@@ -860,3 +860,73 @@ it('goes on after signing in to the handoff\'s authorize step, and to nothing el
         ->and($paths->next('//evil.example' . HandoffEndpoint::AUTHORIZE))->toBe('/orders')
         ->and($paths->next('/orders?page=2'))->toBe('/orders?page=2');
 });
+
+it('signs in by an emailed link, once, from the POST and not the look, sent only to an address with an account', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        member($app);
+        $visitor = new Visitor($app);
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, ' Ada@Example.com '));
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'nobody@example.com'));
+        $app->work();
+        $links = $app->links('sign-in-link', 'ada@example.com');
+        expect($links)->toHaveCount(1)
+            ->and($links[0])->toStartWith('https://app.example/sign-in/link?token=')
+            ->and($app->links('sign-in-link', 'nobody@example.com'))->toBe([]);
+        $token = token($links[0]);
+
+        // Looking spends nothing.
+        expect($app->kit->accounts->signInLinkOffer($token)?->accountEmail())->toBe('ada@example.com')
+            ->and($app->kit->accounts->signInLinkOffer($token)?->accountEmail())->toBe('ada@example.com')
+            ->and($visitor->who())->toBeNull();
+
+        $before = $visitor->cookie;
+        expect($visitor->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, $token)))->toBe(SignInResult::SignedIn)
+            ->and($visitor->who())->toBe('ada@example.com')
+            ->and($visitor->cookie)->not->toBe($before);
+
+        // Good once, and no reset link either way round.
+        $again = new Visitor($app);
+        expect(refused(static fn () => $again->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, $token))))->toBe(['token' => [Accounts::LINK_REFUSED]])
+            ->and($app->kit->accounts->signInLinkOffer($token))->toBeNull()
+            ->and($again->who())->toBeNull();
+        $again->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $reset = token($app->links('password-reset', 'ada@example.com')[0]);
+        expect(refused(static fn () => $again->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, $reset))))->toBe(['token' => [Accounts::LINK_REFUSED]])
+            ->and($app->kit->accounts->resetOffer($reset))->not->toBeNull();
+    });
+})->with('drivers');
+
+it('ends a sign-in link when the account signs in anywhere, and asks it for the second factor where two-factor is on', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $first = token($app->links('sign-in-link', 'ada@example.com')[0]);
+        new Visitor($app)->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($app->kit->accounts->signInLinkOffer($first))->toBeNull();
+
+        // Signed in elsewhere moves the epoch, and signs nobody out.
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $links = $app->links('sign-in-link', 'ada@example.com');
+        expect($phone->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, token($links[array_key_last($links)]))))->toBe(SignInResult::SecondFactor)
+            ->and($phone->who())->toBeNull()
+            ->and($phone->state()->pending()?->accountEmail())->toBe('ada@example.com');
+    });
+});
+
+it('refuses to send sign-in links for an app whose mails cannot say one', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $plain = new MemberApp($app->orm->connection(), mails: new \Tinvar\Tests\Accounts\Fixtures\PlainMemberMails());
+        expect(static fn () => new Visitor($plain)->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com')))
+            ->toThrow(\LogicException::class, 'SignInLinkMails');
+    });
+});
