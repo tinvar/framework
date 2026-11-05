@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopEmailLinks;
 
 use Shop\Http\Actions\Account\EmailLinkActions;
+use Tinvar\Accounts\Accounts;
 use Shop\Auth\Admin\StaffMemberships;
 use Shop\Auth\Admin\StaffPermission;
 use Shop\Auth\Admin\StaffRole;
@@ -477,6 +478,158 @@ describe('a password reset', function () {
         work($this->kernel);
         $this->mail->assertSent('password-changed', static fn (SentMail $m): bool => $m->isTo(DemoAccount::EMAIL)
             && $m->props['resetUrl'] === ORIGIN . '/password/forgot');
+    });
+});
+
+describe('a sign-up', function () {
+    // ADR 0153, 0162: no account exists until its owner has read the
+    // address, and asking says nothing of who already has one.
+    it('makes an account only from a link to its address, signs that browser in, and tells an address with an account instead', function () {
+        $browser = new Browser($this->kernel);
+        expect($browser->get('/sign-up')->status)->toBe(200);
+        $asked = $browser->action('account.requestSignUp', ['email' => 'New.Customer@Example.com', 'name' => 'Nell Newman']);
+        $again = $browser->action('account.requestSignUp', ['email' => DemoAccount::EMAIL, 'name' => 'Someone Else']);
+        expect($asked->status)->toBe(303)
+            ->and($asked->header('location'))->toBe('/sign-up?sent=1')
+            ->and($again->header('location'))->toBe('/sign-up?sent=1')
+            ->and($this->kernel->orm->whereIn(Customer::class, 'email', ['new.customer@example.com']))->toBe([]);
+
+        work($this->kernel);
+        $url = linkIn($this->mail, 'sign-up', 'new.customer@example.com');
+        expect($url)->toStartWith(ORIGIN . '/sign-up/complete?token=')
+            ->and($this->mail->sent('sign-up'))->toHaveCount(1);
+        // The demo's owner is told, with nothing in it that makes an account.
+        $this->mail->assertSent('account-notice', static fn (SentMail $m): bool => $m->isTo(DemoAccount::EMAIL)
+            && $m->message->subject === 'You already have a Pellwick Supply account'
+            && $m->props['actionUrl'] === ORIGIN . '/sign-in');
+
+        // Looking makes nothing.
+        $page = $browser->get(pathOf($url));
+        expect($page->status)->toBe(200)
+            ->and($page->header('referrer-policy'))->toBe('no-referrer')
+            ->and((string) json_encode($browser->props))->toContain('new.customer@example.com')
+            ->and($this->kernel->orm->whereIn(Customer::class, 'email', ['new.customer@example.com']))->toBe([]);
+
+        // Refused by the policy before the link is looked at: still usable.
+        expect(array_keys(errors($browser->action('account.completeSignUp', ['token' => tokenOf($url), 'password' => 'short']))))->toBe(['password']);
+
+        $made = $browser->action('account.completeSignUp', ['token' => tokenOf($url), 'password' => 'a long new password']);
+        $customer = customer($this->kernel, 'new.customer@example.com');
+        expect($made->status)->toBe(303)
+            ->and($made->header('location'))->toBe('/orders')
+            ->and($customer->name)->toBe('Nell Newman')
+            ->and(password_verify('a long new password', $customer->passwordHash))->toBeTrue()
+            ->and(signedInAs($this->kernel, $browser))->toBe($customer->id)
+            ->and(securityEventsOf($this->kernel, $customer))->toBe(['auth.signed_in'])
+            // Good once.
+            ->and(errors(new Browser($this->kernel, '198.51.100.70')->action('account.completeSignUp', ['token' => tokenOf($url), 'password' => 'another long password'])))
+            ->toBe(['token' => [EmailLinkActions::LINK_REFUSED]]);
+    });
+
+    it('sends someone signed in on from the sign-up page', function () {
+        $browser = new Browser($this->kernel);
+        $browser->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+
+        expect($browser->get('/sign-up')->header('location'))->toBe('/orders');
+    });
+});
+
+describe('a change of address', function () {
+    it('moves the address only by a link to the new one, ends every other session, moves the epoch and tells the old address', function () {
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $browser = new Browser($this->kernel);
+        $browser->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+        $other = new Browser($this->kernel, '198.51.100.80');
+        $other->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+
+        // The password first, and an address of its own.
+        expect(errors($browser->action('account.requestAddressChange', ['email' => 'demo.moved@example.com', 'currentPassword' => 'not the password at all'])))
+            ->toBe(['currentPassword' => [Accounts::WRONG_PASSWORD]])
+            ->and(errors($browser->action('account.requestAddressChange', ['email' => DemoAccount::EMAIL, 'currentPassword' => DemoAccount::PASSWORD])))
+            ->toBe(['email' => [Accounts::SAME_ADDRESS]]);
+        $asked = $browser->action('account.requestAddressChange', ['email' => 'Demo.Moved@Example.com', 'currentPassword' => DemoAccount::PASSWORD]);
+        // Another customer's address: answered the same, and nothing goes.
+        $taken = $browser->action('account.requestAddressChange', ['email' => 'customer1@shop.test', 'currentPassword' => DemoAccount::PASSWORD]);
+        expect($asked->header('location'))->toBe('/account?done=address-sent')
+            ->and($taken->header('location'))->toBe('/account?done=address-sent');
+
+        work($this->kernel);
+        $url = linkIn($this->mail, 'email-change', 'demo.moved@example.com');
+        expect($url)->toStartWith(ORIGIN . '/account/address/confirm?token=')
+            ->and($this->mail->sent('email-change'))->toHaveCount(1)
+            ->and(customer($this->kernel, DemoAccount::EMAIL)->id)->toBe($demo->id);
+
+        // Opened on a phone signed in as nobody: looking moves nothing, the POST does.
+        $phone = new Browser($this->kernel, '198.51.100.81');
+        expect($phone->get(pathOf($url))->header('referrer-policy'))->toBe('no-referrer')
+            ->and((string) json_encode($phone->props))->toContain('demo.moved@example.com');
+        $epoch = epochOf($this->kernel, $demo->id);
+        $moved = $phone->action('account.confirmAddressChange', ['token' => tokenOf($url)]);
+        $email = static fn (Kernel $kernel): string => (string) $kernel->orm->connection()->select('SELECT email FROM customers WHERE id = ?', [$demo->id])[0]['email'];
+        // The account page as a document load on the shop's own origin, as
+        // after signing out: the session this browser had was replaced.
+        expect($moved->status)->toBe(303)
+            ->and($moved->header('location'))->toBe(Kernel::domains()->origin(null) . '/account?done=address')
+            ->and($email($this->kernel))->toBe('demo.moved@example.com')
+            ->and(signedInAs($this->kernel, $browser))->toBeNull()
+            ->and(signedInAs($this->kernel, $other))->toBeNull()
+            ->and(signedInAs($this->kernel, $phone))->toBeNull()
+            ->and(epochOf($this->kernel, $demo->id))->toBeGreaterThan($epoch)
+            // Good once.
+            ->and(errors($phone->action('account.confirmAddressChange', ['token' => tokenOf($url)])))->toBe(['token' => [EmailLinkActions::LINK_REFUSED]]);
+
+        // The old address is told, with where to reset from; the new one signs in.
+        work($this->kernel);
+        $this->mail->assertSent('account-notice', static fn (SentMail $m): bool => $m->isTo(DemoAccount::EMAIL)
+            && $m->message->subject === 'Your Pellwick Supply address was changed'
+            && $m->props['resetUrl'] === ORIGIN . '/password/forgot');
+        expect(new Browser($this->kernel, '198.51.100.82')->action('account.signIn', ['email' => 'demo.moved@example.com', 'password' => DemoAccount::PASSWORD])->header('location'))->toBe('/orders')
+            ->and(securityEventsOf($this->kernel, customer($this->kernel, 'demo.moved@example.com')))->toContain('auth.email_changed');
+    });
+
+    it('keeps the browser that confirms it signed in, under a new id', function () {
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $browser = new Browser($this->kernel);
+        $browser->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+        $browser->action('account.requestAddressChange', ['email' => 'demo.moved@example.com', 'currentPassword' => DemoAccount::PASSWORD]);
+        work($this->kernel);
+        $before = $browser->sessionId();
+
+        $browser->action('account.confirmAddressChange', ['token' => tokenOf(linkIn($this->mail, 'email-change', 'demo.moved@example.com'))]);
+
+        expect(signedInAs($this->kernel, $browser))->toBe($demo->id)
+            ->and($browser->sessionId())->not->toBe($before)
+            ->and($browser->get('/account?done=address')->status)->toBe(200)
+            ->and((string) json_encode($browser->props))->toContain('"done":"address"');
+    });
+});
+
+describe('a change of password', function () {
+    it('asks for the current one, ends every other session, keeps this one signed in under a new id and says so by email', function () {
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $browser = new Browser($this->kernel);
+        $browser->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+        $other = new Browser($this->kernel, '198.51.100.90');
+        $other->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD]);
+
+        expect(errors($browser->action('account.changePassword', ['currentPassword' => 'not the password at all', 'password' => 'a brand new password'])))
+            ->toBe(['currentPassword' => [Accounts::WRONG_PASSWORD]])
+            ->and(array_keys(errors($browser->action('account.changePassword', ['currentPassword' => DemoAccount::PASSWORD, 'password' => 'short']))))->toBe(['password']);
+
+        $before = $browser->sessionId();
+        $epoch = epochOf($this->kernel, $demo->id);
+        $changed = $browser->action('account.changePassword', ['currentPassword' => DemoAccount::PASSWORD, 'password' => 'a brand new password']);
+        expect($changed->status)->toBe(303)
+            ->and($changed->header('location'))->toBe(Kernel::domains()->origin(null) . '/account?done=password')
+            ->and(signedInAs($this->kernel, $browser))->toBe($demo->id)
+            ->and($browser->sessionId())->not->toBe($before)
+            ->and(signedInAs($this->kernel, $other))->toBeNull()
+            ->and(epochOf($this->kernel, $demo->id))->toBeGreaterThan($epoch)
+            ->and(password_verify('a brand new password', customer($this->kernel, DemoAccount::EMAIL)->passwordHash))->toBeTrue()
+            ->and(securityEventsOf($this->kernel, $demo))->toContain('auth.password_changed');
+
+        work($this->kernel);
+        $this->mail->assertSent('password-changed', static fn (SentMail $m): bool => $m->isTo(DemoAccount::EMAIL));
     });
 });
 

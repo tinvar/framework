@@ -1141,7 +1141,7 @@ it('seeds, signs in and moves the clock through the test endpoint, and to no pag
 // The emailed links' pages, which only the framework's tests drove: each
 // link asked for on its form, mailed by the shop's queue worker, opened --
 // which signs nobody in -- used by its button, and refused the second time.
-it('signs in by an emailed link, resets a password by one, and joins the staff by an invite', function (string $server) use ($root) {
+it('signs in by an emailed link, resets a password by one, signs up and moves to another address by one, and joins the staff by an invite', function (string $server) use ($root) {
     $mailDirectory = sys_get_temp_dir() . '/tinvar-e2e-mail-' . bin2hex(random_bytes(4));
     mkdir($mailDirectory, 0o700);
     $mailLog = "{$mailDirectory}/mail.log";
@@ -1177,6 +1177,14 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
         ->and($result['reset']['landed'])->toBe('/orders')
         ->and($result['reset']['again'])->toBe("This link won't work")
         ->and($result['reset']['signedInWithIt'])->not->toBe('/sign-in')
+        // Made from the sign-up page, then moved to another address (ADR 0162).
+        ->and([$result['signUp']['built'], $result['signUp']['addressBuilt']])->toBe(['https://pellwick.test', 'https://pellwick.test'])
+        ->and($result['signUp']['heading'])->toBe('Welcome, Newcomer Tester')
+        ->and($result['signUp']['landed'])->toBe('/orders')
+        ->and($result['signUp']['addressHeading'])->toBe('Use this address?')
+        ->and($result['signUp']['moved'])->toBeTrue()
+        ->and($result['signUp']['signedInWithIt'])->not->toBe('/sign-in')
+        ->and($result['signUp']['oldAddressTold'])->toBeTrue()
         ->and($result['invite']['listed'])->toBeTrue()
         ->and($result['invite']['heading'])->toBe("Join Pellwick Supply's staff")
         ->and($result['invite']['landed'])->toBe('admin.localhost/orders')
