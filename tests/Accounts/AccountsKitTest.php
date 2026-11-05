@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * The accounts kit's flows (ADR 0153) over an application's own users table
  * -- `members`, through the AccountUsers contract -- on SQLite and, where
- * one is there, Postgres: sessions with rows and their realms, the second
+ * they are there, Postgres and MySQL: sessions with rows and their realms, the second
  * factor, passkeys end to end with a software authenticator, emailed links
  * and what the queue worker sends.
  *
@@ -127,11 +127,26 @@ function onDriver(string $driver, \Closure $test): void
 
         return;
     }
-    $missing = Databases::postgresMissing();
+    $missing = $driver === 'pgsql' ? Databases::postgresMissing() : Databases::mysqlMissing();
     if ($missing !== null) {
         test()->markTestSkipped($missing);
     }
-    \Tinvar\Tests\Orm\Fixtures\Databases::inScratchSchema('pgsql', static fn (\PDO $pdo): mixed => $run(new PdoConnection($pdo, 'accounts')));
+    \Tinvar\Tests\Orm\Fixtures\Databases::inScratchSchema($driver, static function (\PDO $pdo) use ($driver, $run): void {
+        if ($driver !== 'mysql') {
+            $run(new PdoConnection($pdo, 'accounts'));
+
+            return;
+        }
+        // The ORM quotes names as standard SQL does, which MySQL reads so
+        // with ANSI_QUOTES: on for the test, and put back for the next.
+        $mode = $pdo->query('SELECT @@SESSION.sql_mode')?->fetchColumn();
+        $pdo->exec("SET SESSION sql_mode = CONCAT(@@sql_mode, ',ANSI_QUOTES')");
+        try {
+            $run(new PdoConnection($pdo, 'accounts'));
+        } finally {
+            $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote(\is_string($mode) ? $mode : ''));
+        }
+    });
 }
 
 /** Signs $email up through the link, and returns the browser, signed in. */
@@ -183,7 +198,7 @@ function refused(\Closure $work): array
     throw new \LogicException('It was not refused.');
 }
 
-dataset('drivers', ['sqlite' => ['sqlite'], 'pgsql' => ['pgsql']]);
+dataset('drivers', ['sqlite' => ['sqlite'], 'pgsql' => ['pgsql'], 'mysql' => ['mysql']]);
 
 it('makes an account only from a link to its address, and signs that browser in', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {

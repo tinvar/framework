@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Accounts\Passkeys;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -14,10 +15,11 @@ use Tinvar\Orm\Schema\Table;
  * session -- to the account; good once, for five minutes.
  *
  * One per session and purpose: asking again replaces it, and using it
- * deletes it in the same statement that reads it (DELETE ... RETURNING),
- * so a signed response replayed -- from a log, a second tab, a proxy --
- * finds nothing to match. Kept by a hash of the session id, so the table
- * is no list of cookies.
+ * deletes it in the same statement that reads it (DELETE ... RETURNING) --
+ * on MySQL, which has no such statement, read under a row lock and deleted
+ * in one transaction -- so a signed response replayed -- from a log, a
+ * second tab, a proxy -- finds nothing to match. Kept by a hash of the
+ * session id, so the table is no list of cookies.
  */
 final readonly class PasskeyChallenges
 {
@@ -72,11 +74,17 @@ final readonly class PasskeyChallenges
             );
             // Only the expired rows of those sessions: a session's own live
             // challenge for another ceremony -- the one just issued among
-            // them -- is not swept with its expired one.
-            $connection->execute(
-                'DELETE FROM passkey_challenges WHERE expires_at <= ? AND session_hash IN (SELECT session_hash FROM passkey_challenges WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
-                [$now, $now],
-            );
+            // them -- is not swept with its expired one. MySQL takes LIMIT
+            // on a DELETE, and refuses a subquery naming the table deleted
+            // from.
+            if (self::mysql($connection)) {
+                $connection->execute('DELETE FROM passkey_challenges WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH, [$now]);
+            } else {
+                $connection->execute(
+                    'DELETE FROM passkey_challenges WHERE expires_at <= ? AND session_hash IN (SELECT session_hash FROM passkey_challenges WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
+                    [$now, $now],
+                );
+            }
         });
 
         return $challenge;
@@ -90,15 +98,27 @@ final readonly class PasskeyChallenges
     public function consume(#[\SensitiveParameter] string $session, string $purpose, string $user = ''): ?string
     {
         self::assertBound($session, $purpose);
-        $row = $this->connection->select(
-            'DELETE FROM passkey_challenges WHERE session_hash = ? AND purpose = ? RETURNING challenge, user_id, expires_at',
-            [hash('sha256', $session), $purpose],
-        )[0] ?? null;
+        $connection = $this->connection;
+        $bindings = [hash('sha256', $session), $purpose];
+        $row = self::mysql($connection)
+            // Locked as it is read, so a challenge issued in its place meanwhile
+            // waits for the delete rather than be deleted for this one.
+            ? $connection->transaction(static function () use ($connection, $bindings): ?array {
+                $row = $connection->select('SELECT challenge, user_id, expires_at FROM passkey_challenges WHERE session_hash = ? AND purpose = ? FOR UPDATE', $bindings)[0] ?? null;
+
+                return $row !== null && $connection->execute('DELETE FROM passkey_challenges WHERE session_hash = ? AND purpose = ?', $bindings) === 1 ? $row : null;
+            })
+            : $connection->select('DELETE FROM passkey_challenges WHERE session_hash = ? AND purpose = ? RETURNING challenge, user_id, expires_at', $bindings)[0] ?? null;
         if ($row === null || (int) $row['expires_at'] <= ($this->clock)() || !hash_equals((string) $row['user_id'], $user)) {
             return null;
         }
 
         return Base64Url::decode((string) $row['challenge']);
+    }
+
+    private static function mysql(Connection $connection): bool
+    {
+        return $connection instanceof NamesDriver && $connection->driver() === 'mysql';
     }
 
     private static function assertBound(string $session, string $purpose): void

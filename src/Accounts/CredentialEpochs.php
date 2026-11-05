@@ -64,10 +64,6 @@ final readonly class CredentialEpochs
             throw new \LogicException('A credential epoch moves inside the transaction that makes the change it is moved for.');
         }
 
-        $this->connection->execute(
-            'INSERT INTO ' . self::TABLE . ' (user_id, epoch) VALUES (?, 1) '
-            . 'ON CONFLICT (user_id) DO UPDATE SET epoch = ' . self::TABLE . '.epoch + 1',
-            [$user],
-        );
+        $this->connection->execute(AuthEpochs::bumping($this->connection, self::TABLE), [$user]);
     }
 }

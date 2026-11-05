@@ -8,6 +8,7 @@ use Tinvar\Http\HostName;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 use Tinvar\Routing\HostMatch;
@@ -404,9 +405,12 @@ final readonly class Sessions
 
             // In the insert's own transaction, so it costs no second turn at
             // the write lock. A subquery for the bound: SQLite takes LIMIT on
-            // a DELETE only when compiled to.
+            // a DELETE only when compiled to; MySQL takes it, and refuses a
+            // subquery naming the table deleted from.
             $connection->execute(
-                'DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
+                $connection instanceof NamesDriver && $connection->driver() === 'mysql'
+                    ? 'DELETE FROM sessions WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH
+                    : 'DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
                 [$now],
             );
         });

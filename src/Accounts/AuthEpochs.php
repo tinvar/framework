@@ -6,6 +6,7 @@ namespace Tinvar\Accounts;
 
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -63,8 +64,7 @@ final readonly class AuthEpochs
      */
     public function bump(string $user): void
     {
-        $sql = 'INSERT INTO ' . self::TABLE . ' (user_id, epoch) VALUES (?, 1) '
-            . 'ON CONFLICT (user_id) DO UPDATE SET epoch = ' . self::TABLE . '.epoch + 1';
+        $sql = self::bumping($this->connection, self::TABLE);
         $connection = $this->connection;
         if ($connection->inTransaction()) {
             $connection->execute($sql, [$user]);
@@ -73,5 +73,19 @@ final readonly class AuthEpochs
         }
 
         $connection->durableTransaction(static fn (): int => $connection->execute($sql, [$user]));
+    }
+
+    /**
+     * The statement that moves a user's row of $table -- this one, or the
+     * credential epochs' -- on by one, made at 1 where there is none: an
+     * upsert, which MySQL spells its own way.
+     *
+     * @internal for the kit's epoch tables
+     */
+    public static function bumping(Connection $connection, string $table): string
+    {
+        return $connection instanceof NamesDriver && $connection->driver() === 'mysql'
+            ? "INSERT INTO {$table} (user_id, epoch) VALUES (?, 1) ON DUPLICATE KEY UPDATE epoch = epoch + 1"
+            : "INSERT INTO {$table} (user_id, epoch) VALUES (?, 1) ON CONFLICT (user_id) DO UPDATE SET epoch = {$table}.epoch + 1";
     }
 }
