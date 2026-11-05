@@ -22,6 +22,7 @@ use Tinvar\Accounts\AccountPaths;
 use Tinvar\Accounts\Accounts;
 use Tinvar\Accounts\AccountsKit;
 use Tinvar\Accounts\Passkeys\Base64Url;
+use Tinvar\Accounts\Passwords;
 use Tinvar\Accounts\RequireSignIn;
 use Tinvar\Accounts\SessionState;
 use Tinvar\Accounts\Sessions;
@@ -943,5 +944,34 @@ it('fails an account email\'s job at once when the provider refuses the address 
         new Visitor($refusing)->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
 
         expect(static fn () => $refusing->work())->toThrow(\Tinvar\Jobs\JobRefused::class);
+    });
+});
+
+it('keeps a stored hash the app says to keep though the policy has moved on, and replaces any other at sign-in', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        member($app);
+        $connection = $app->orm->connection();
+        $cheap = password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4]);
+        $connection->execute('UPDATE members SET password_hash = ?', [$cheap]);
+        $stored = static fn (): mixed => $connection->select('SELECT password_hash FROM members')[0]['password_hash'];
+
+        $seeded = static fn (string $hash): bool => (password_get_info($hash)['options']['cost'] ?? null) === 4;
+        $keeping = new MemberApp($connection, keepHash: $seeded);
+        new Visitor($keeping)->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($stored())->toBe($cheap);
+
+        new Visitor(new MemberApp($connection))->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($stored())->not->toBe($cheap)
+            ->and(password_verify(PASSWORD, (string) $stored()))->toBeTrue();
+    });
+});
+
+it('hands the app the passwords it hashes with, for an account it makes itself', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $container = $app->kit->register(new \Tinvar\Container\Container());
+        $hash = $app->kit->passwords->hash(PASSWORD);
+        expect($container->get(Passwords::class))->toBe($app->kit->passwords)
+            ->and($app->kit->passwords->verify(PASSWORD, $hash))->toBeTrue()
+            ->and($app->kit->passwords->needsRehash($hash))->toBeFalse();
     });
 });

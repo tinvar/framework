@@ -66,6 +66,9 @@ final readonly class AccountsKit
 
     /** The sessions a handoff arrives into, on another of the app's hosts: the HandoffEndpoint's (ADR 0039). */
     public HandoffArrivals $arrivals;
+
+    /** How passwords are hashed and checked: for an account the app makes itself, as from an invite. */
+    public Passwords $passwords;
     public StartSession $startSession;
 
     /** The middleware a signed-in page is behind: the sign-in page, or a handoff on another of the app's hosts. */
@@ -86,6 +89,9 @@ final readonly class AccountsKit
      * @param Realms|null $realms the app's hosts, where it has more than one (ADR 0039): a
      *        signed-in page on another of them starts a handoff rather than asking anyone to
      *        sign in there
+     * @param (\Closure(string): bool)|null $keepHash whether a stored hash is kept as it is
+     *        though the policy has moved on (Passwords): a seeded demo account's, hashed
+     *        cheaply on purpose, say; none by default
      */
     public function __construct(
         Connection $connection,
@@ -106,6 +112,7 @@ final readonly class AccountsKit
         array $limits = [],
         ?\Closure $clock = null,
         ?Realms $realms = null,
+        ?\Closure $keepHash = null,
     ) {
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
@@ -115,6 +122,7 @@ final readonly class AccountsKit
         $this->tokenHolders = new AccountTokenHolders($users, $this->credentials, $this->epochs);
         $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
         $this->arrivals = new HandoffArrivals($this->sessions);
+        $this->passwords = new Passwords($users->passwordHashes(...), $keepHash);
         $local = str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
@@ -124,7 +132,7 @@ final readonly class AccountsKit
         $this->accounts = new Accounts(
             connection: $connection,
             users: $users,
-            passwords: Passwords::for($users),
+            passwords: $this->passwords,
             sessions: $this->sessions,
             epochs: $this->epochs,
             credentials: $this->credentials,
@@ -191,6 +199,7 @@ final readonly class AccountsKit
         return $container
             ->instance(Accounts::class, $this->accounts)
             ->instance(Sessions::class, $this->sessions)
+            ->instance(Passwords::class, $this->passwords)
             ->instance(SessionCookie::class, $this->cookie)
             ->instance(AccountPaths::class, $this->paths)
             ->instance(AccountLinks::class, $this->accountLinks)
