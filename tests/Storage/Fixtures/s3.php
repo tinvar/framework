@@ -115,7 +115,10 @@ final class FakeS3
             return $this->listParts($key, $query);
         }
         if ($method === 'POST' && \array_key_exists('uploads', $query)) {
-            $id = bin2hex(random_bytes(8));
+            // Never all digits, as S3's never are: PHP would turn such a
+            // key into an integer, and the tests and the listing's marker
+            // compare them as strings.
+            $id = 'upload-' . bin2hex(random_bytes(8));
             $this->uploads[$id] = [];
             $this->begun[$id] = ['key' => $key, 'initiated' => $this->now];
 
