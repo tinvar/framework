@@ -573,10 +573,9 @@ describe('a change of address', function () {
         $credentials = credentialEpochOf($this->kernel, $demo->id);
         $moved = $phone->action('account.confirmAddressChange', ['token' => tokenOf($url)]);
         $email = static fn (Kernel $kernel): string => (string) $kernel->orm->connection()->select('SELECT email FROM customers WHERE id = ?', [$demo->id])[0]['email'];
-        // The account page as a document load on the shop's own origin, as
-        // after signing out: the session this browser had was replaced.
+        // The account page, saying what changed.
         expect($moved->status)->toBe(303)
-            ->and($moved->header('location'))->toBe(Kernel::domains()->origin(null) . '/account?done=address')
+            ->and($moved->header('location'))->toBe('/account?done=address')
             ->and($email($this->kernel))->toBe('demo.moved@example.com')
             ->and(signedInAs($this->kernel, $browser))->toBeNull()
             ->and(signedInAs($this->kernel, $other))->toBeNull()
@@ -604,9 +603,16 @@ describe('a change of address', function () {
         work($this->kernel);
         $before = $browser->sessionId();
 
-        $browser->action('account.confirmAddressChange', ['token' => tokenOf(linkIn($this->mail, 'email-change', 'demo.moved@example.com'))]);
+        // From the client router: a document load, the signed-in session it
+        // came with replaced -- never a visit, which the page's live client,
+        // refused for that session, interrupted to load the link's page
+        // again (ADR 0164).
+        $confirmed = $browser->action('account.confirmAddressChange', ['token' => tokenOf(linkIn($this->mail, 'email-change', 'demo.moved@example.com'))], ['rsc' => '1']);
 
-        expect(signedInAs($this->kernel, $browser))->toBe($demo->id)
+        expect($confirmed->status)->toBe(409)
+            ->and($confirmed->header('x-location'))->toBe('/account?done=address')
+            ->and($confirmed->header('x-redirect'))->toBeNull()
+            ->and(signedInAs($this->kernel, $browser))->toBe($demo->id)
             ->and($browser->sessionId())->not->toBe($before)
             ->and($browser->get('/account?done=address')->status)->toBe(200)
             ->and((string) json_encode($browser->props))->toContain('"done":"address"');
@@ -630,7 +636,7 @@ describe('a change of password', function () {
         $credentials = credentialEpochOf($this->kernel, $demo->id);
         $changed = $browser->action('account.changePassword', ['currentPassword' => DemoAccount::PASSWORD, 'password' => 'a brand new password']);
         expect($changed->status)->toBe(303)
-            ->and($changed->header('location'))->toBe(Kernel::domains()->origin(null) . '/account?done=password')
+            ->and($changed->header('location'))->toBe('/account?done=password')
             ->and(signedInAs($this->kernel, $browser))->toBe($demo->id)
             ->and($browser->sessionId())->not->toBe($before)
             ->and(signedInAs($this->kernel, $other))->toBeNull()
