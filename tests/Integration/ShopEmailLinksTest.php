@@ -217,6 +217,12 @@ function epochOf(Kernel $kernel, string $customer): int
     return (int) ($kernel->orm->connection()->select('SELECT epoch FROM auth_epochs WHERE user_id = ?', [$customer])[0]['epoch'] ?? 0);
 }
 
+/** The epoch the customer's API tokens are held to (ADR 0159): moved, every one of them ends. */
+function credentialEpochOf(Kernel $kernel, string $customer): int
+{
+    return (int) ($kernel->orm->connection()->select('SELECT epoch FROM credential_epochs WHERE user_id = ?', [$customer])[0]['epoch'] ?? 0);
+}
+
 /** Moves the shop's clock, which only the test profile allows. */
 function moveClock(int $offset): void
 {
@@ -564,6 +570,7 @@ describe('a change of address', function () {
         expect($phone->get(pathOf($url))->header('referrer-policy'))->toBe('no-referrer')
             ->and((string) json_encode($phone->props))->toContain('demo.moved@example.com');
         $epoch = epochOf($this->kernel, $demo->id);
+        $credentials = credentialEpochOf($this->kernel, $demo->id);
         $moved = $phone->action('account.confirmAddressChange', ['token' => tokenOf($url)]);
         $email = static fn (Kernel $kernel): string => (string) $kernel->orm->connection()->select('SELECT email FROM customers WHERE id = ?', [$demo->id])[0]['email'];
         // The account page as a document load on the shop's own origin, as
@@ -575,6 +582,8 @@ describe('a change of address', function () {
             ->and(signedInAs($this->kernel, $other))->toBeNull()
             ->and(signedInAs($this->kernel, $phone))->toBeNull()
             ->and(epochOf($this->kernel, $demo->id))->toBeGreaterThan($epoch)
+            // And every API token the account had.
+            ->and(credentialEpochOf($this->kernel, $demo->id))->toBeGreaterThan($credentials)
             // Good once.
             ->and(errors($phone->action('account.confirmAddressChange', ['token' => tokenOf($url)])))->toBe(['token' => [EmailLinkActions::LINK_REFUSED]]);
 
@@ -618,6 +627,7 @@ describe('a change of password', function () {
 
         $before = $browser->sessionId();
         $epoch = epochOf($this->kernel, $demo->id);
+        $credentials = credentialEpochOf($this->kernel, $demo->id);
         $changed = $browser->action('account.changePassword', ['currentPassword' => DemoAccount::PASSWORD, 'password' => 'a brand new password']);
         expect($changed->status)->toBe(303)
             ->and($changed->header('location'))->toBe(Kernel::domains()->origin(null) . '/account?done=password')
@@ -625,6 +635,7 @@ describe('a change of password', function () {
             ->and($browser->sessionId())->not->toBe($before)
             ->and(signedInAs($this->kernel, $other))->toBeNull()
             ->and(epochOf($this->kernel, $demo->id))->toBeGreaterThan($epoch)
+            ->and(credentialEpochOf($this->kernel, $demo->id))->toBeGreaterThan($credentials)
             ->and(password_verify('a brand new password', customer($this->kernel, DemoAccount::EMAIL)->passwordHash))->toBeTrue()
             ->and(securityEventsOf($this->kernel, $demo))->toContain('auth.password_changed');
 
