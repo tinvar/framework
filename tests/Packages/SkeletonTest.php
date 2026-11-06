@@ -123,33 +123,50 @@ it('runs no install script and nothing it fetched when an app is made', function
 });
 
 // ADR 0138: the skeleton ships its lock, and setup installs from it with
-// npm ci -- but not while it would fetch @tinvar/react or @tinvar/renderer
-// from a registry, where nobody holds the scope and anyone may publish
-// under their names. As shipped, before they are published, the check
-// refuses it for exactly that and nothing else.
-it('ships a lock its own check refuses only for leaving @tinvar/* to a registry', function () {
+// npm ci -- but not while it would fetch @tinvar/mail, @tinvar/react or
+// @tinvar/renderer from a registry before the project has published them
+// there. As shipped before a release publishes them, the check refuses it
+// for exactly that and nothing else. A release publishes them, then takes
+// @tinvar/* out of the skeleton's $unpublished and ships them in the lock
+// from npm's registry (ADR 0174): the check then refuses nothing.
+it('ships a lock its own check refuses only for leaving unpublished @tinvar/* to a registry', function () {
     $kernel = read('packages/skeleton/app/Kernel.php');
-    expect($kernel)->toContain("unpublished: ['@tinvar/*']")
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
+    $unpublished = str_contains($kernel, "unpublished: ['@tinvar/*']");
+    expect(read('packages/skeleton/bin/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
 
     $policy = new \Tinvar\Packages\PackagePolicy(
         installScripts: ['fsevents' => 'As the skeleton allows it.'],
         registries: [\Tinvar\Packages\PackagePolicy::NPM_REGISTRY, 'https://design.chopper.dev/packages/'],
-        unpublished: ['@tinvar/*'],
+        unpublished: $unpublished ? ['@tinvar/*'] : [],
     );
     // composer.lock is written by create-project, before setup runs.
     $violations = array_values(array_diff(new \Tinvar\Packages\SupplyChain(ROOT . '/packages/skeleton', $policy)->check(), ['composer.lock is missing.']));
-
-    // Each of the three it takes from inside the app (ADR 0138): the mail kit
-    // its account emails are drawn with (ADR 0153), the client and the renderer.
-    expect($violations)->toHaveCount(3)
-        ->and($violations[0])->toStartWith('package.json depends on @tinvar/mail, which PackagePolicy::$unpublished says no registry serves yet')
-        ->and($violations[1])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')
-        ->and($violations[2])->toStartWith('package.json depends on @tinvar/renderer, which PackagePolicy::$unpublished says no registry serves yet');
-
     $lock = json_decode(read('packages/skeleton/package-lock.json'), true);
     \assert(\is_array($lock) && \is_array($lock['packages']));
-    expect(array_filter(array_keys($lock['packages']), static fn (string $path): bool => str_contains($path, '@tinvar/')))->toBe([]);
+    $tinvar = array_values(array_filter(array_keys($lock['packages']), static fn (string $path): bool => str_contains($path, '@tinvar/')));
+
+    if ($unpublished) {
+        // Each of the three it takes from inside the app (ADR 0138): the mail kit
+        // its account emails are drawn with (ADR 0153), the client and the renderer.
+        expect($violations)->toHaveCount(3)
+            ->and($violations[0])->toStartWith('package.json depends on @tinvar/mail, which PackagePolicy::$unpublished says no registry serves yet')
+            ->and($violations[1])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')
+            ->and($violations[2])->toStartWith('package.json depends on @tinvar/renderer, which PackagePolicy::$unpublished says no registry serves yet')
+            ->and($tinvar)->toBe([]);
+
+        return;
+    }
+
+    expect($violations)->toBe([])
+        ->and($tinvar)->toEqualCanonicalizing(['node_modules/@tinvar/mail', 'node_modules/@tinvar/react', 'node_modules/@tinvar/renderer']);
+    foreach (['mail', 'react', 'renderer'] as $directory) {
+        $entry = $lock['packages']["node_modules/@tinvar/{$directory}"];
+        $manifest = json_decode(read("packages/{$directory}/package.json"), true);
+        \assert(\is_array($entry) && \is_array($manifest));
+        expect($entry['version'] ?? null)->toBe($manifest['version'])
+            ->and($entry['resolved'] ?? null)->toBe("https://registry.npmjs.org/@tinvar/{$directory}/-/{$directory}-{$manifest['version']}.tgz")
+            ->and($entry['integrity'] ?? '')->toStartWith('sha512-');
+    }
 });
 
 /** The Caddyfile's handler for PHP, comments and blank lines taken out. */
