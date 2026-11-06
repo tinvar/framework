@@ -40,6 +40,15 @@ function exported(App $app, array $body = []): TransferRecord
     return $app->record();
 }
 
+/**
+ * The token with its last character changed to one it is not -- never a
+ * no-op, as a fixed replacement is for a token that already ends in it.
+ */
+function tampered(string $token): string
+{
+    return substr($token, 0, -1) . ($token[-1] === 'A' ? 'B' : 'A');
+}
+
 describe('starting an export', function () {
     it('records it as the user\'s, in their tenant and panel, and queues it as them', function () {
         $app = new App();
@@ -314,8 +323,12 @@ describe('/_download', function () {
             'u' => $claims->authHash, 'e' => $claims->expiresAt, 'i' => $claims->issuedAt,
         ]);
 
+        // A token that already ends in the replacement is still changed.
+        expect(tampered('v1.e30.xyAA'))->not->toBe('v1.e30.xyAA')
+            ->and(tampered($token))->not->toBe($token);
+
         foreach ([
-            '/_download/' . substr($token, 0, -2) . 'AA',
+            '/_download/' . tampered($token),
             '/_download/' . $other->encode($app->transfers->signer),
             '/_download/' . $panel->encode($app->transfers->signer),
             '/_download/' . $fragment,
