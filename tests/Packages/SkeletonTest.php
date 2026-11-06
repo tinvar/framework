@@ -130,8 +130,12 @@ it('runs no install script and nothing it fetched when an app is made', function
 // @tinvar/* out of the skeleton's $unpublished and ships them in the lock
 // from npm's registry (ADR 0174): the check then refuses nothing.
 it('ships a lock its own check refuses only for leaving unpublished @tinvar/* to a registry', function () {
-    $kernel = read('packages/skeleton/app/Kernel.php');
-    $unpublished = str_contains($kernel, "unpublished: ['@tinvar/*']");
+    // The Kernel's code, its comments aside, as bin/skeleton-proof reads it.
+    $kernel = implode('', array_map(
+        static fn (array|string $token): string => \is_array($token) ? (\in_array($token[0], [\T_COMMENT, \T_DOC_COMMENT], true) ? '' : $token[1]) : $token,
+        token_get_all(read('packages/skeleton/app/Kernel.php')),
+    ));
+    $unpublished = preg_match("/unpublished:\\s*\\[[^\\]]*'@tinvar\\/\\*'/", $kernel) === 1;
     expect(read('packages/skeleton/bin/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
 
     $policy = new \Tinvar\Packages\PackagePolicy(
