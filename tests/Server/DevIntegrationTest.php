@@ -138,7 +138,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
             : null;
         // render --dump --dev: the catalog rendered through this run's dev
         // server, found by its record, on a copy of the database (ADR 0132).
-        [$dumpStatus, $dumped, $dumpErr] = devDump($copy);
+        [$dumpStatus, $dumped, $dumpErr, $dumpHanded] = devDump($copy);
         // The workbench, drawing with the shop's client script (ADR 0132).
         $workbench = runWithTimeout(['node', "{$root}/examples/shop/e2e/workbench-script.mjs", $url], $root, 150);
     } finally {
@@ -214,7 +214,10 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($dump['html'])->toContain('Pellwick Supply')
         ->and($dump['html'])->toContain('/_vite/@id/__x00__virtual:vite-rsc/entry-browser')
         ->and($dump['html'])->not->toMatch('/nonce="(?!\[redacted\])/')
-        ->and($dump['payload'])->not->toBe('');
+        ->and($dump['payload'])->not->toBe('')
+        // On a copy, its files kept beside it (ADR 0173).
+        ->and($dumpHanded['database'] ?? null)->toEndWith('/snapshot.sqlite')
+        ->and($dumpHanded['files'] ?? null)->toBe($dumpHanded['database'] ?? null);
 
     // Each file:line a link to the editor TINVAR_EDITOR names, and the
     // catalog's fields with the lines of its loader that made them.
@@ -299,13 +302,15 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
  * `render --dump / --dev --json` for the app at $app, as the shop's
  * bin/tinvar builds it, through the `tinvar dev` serving it.
  *
- * @return array{int, string, string} the status, what it printed and what it said on error
+ * @return array{int, string, string, array{database?: string, files?: ?string}} the status, what it
+ *         printed, what it said on error, and what the application was handed
  */
 function devDump(string $app): array
 {
     $routes = new RouteRegistry();
     $routes->registerAll(ShopKernel::classes()->routes);
     $out = $err = '';
+    $handed = [];
     $before = getenv('TINVAR_ENV');
     putenv('TINVAR_ENV=local');
     try {
@@ -313,7 +318,8 @@ function devDump(string $app): array
             app: $app,
             projectRoot: \dirname(Shop::root(), 2),
             database: Shop::database(),
-            application: static function (string $socket, string $database, string $key, ?string $build, ?string $dev = null) use ($routes): ShopKernel {
+            application: static function (string $socket, string $database, string $key, ?string $build, ?string $dev = null, ?string $files = null) use ($routes, &$handed): ShopKernel {
+                $handed = ['database' => $database, 'files' => $files];
                 $deferred = $dev ?? "{$build}/rsc/deferred.json";
 
                 return ShopKernel::fromEnvironment(
@@ -337,7 +343,7 @@ function devDump(string $app): array
         putenv($before === false ? 'TINVAR_ENV' : "TINVAR_ENV={$before}");
     }
 
-    return [$status, $out, $err];
+    return [$status, $out, $err, $handed];
 }
 
 /** Whether Playwright's own Firefox is installed (`npx playwright install firefox`). */

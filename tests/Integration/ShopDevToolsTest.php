@@ -37,7 +37,8 @@ function tools(string $database, array $env, string &$out, string &$err, ?string
         app: Shop::root(),
         projectRoot: \dirname(Shop::root(), 2),
         database: $database,
-        application: static function (string $socket, string $database, string $key, ?string $build) use ($routes): Kernel {
+        application: static function (string $socket, string $database, string $key, ?string $build, ?string $dev = null, ?string $files = null) use ($routes): Kernel {
+            Handed::$applications[] = ['database' => $database, 'files' => $files];
             $deferred = "{$build}/rsc/deferred.json";
 
             return Kernel::fromEnvironment(
@@ -75,6 +76,7 @@ beforeEach(function () {
     // The process's own, as on a developer's machine: what renders runs as
     // the test profile, which reads it from the process (BuildProfile).
     Saved::$env = getenv('TINVAR_ENV');
+    Handed::$applications = [];
     putenv('TINVAR_ENV=local');
 });
 
@@ -88,6 +90,13 @@ afterEach(function () {
 final class Saved
 {
     public static string|false $env = false;
+}
+
+/** What the tools handed each application they built: its database, and where its files go. */
+final class Handed
+{
+    /** @var list<array{database: string, files: ?string}> */
+    public static array $applications = [];
 }
 
 it('dumps a page as nobody and as a scenario\'s customer, on a copy of the database', function () {
@@ -115,6 +124,15 @@ it('dumps a page as nobody and as a scenario\'s customer, on a copy of the datab
         ->and($dump['html'])->toContain('Browser Customer')
         // Signed in and seeded on the copy alone.
         ->and(customers($database))->toBe($before);
+
+    // Each render's application on a copy of its own, its files kept beside
+    // that copy, in the copy's private directory (ADR 0173).
+    expect(Handed::$applications)->toHaveCount(2);
+    foreach (Handed::$applications as $handed) {
+        expect($handed['database'])->not->toBe($database)
+            ->and($handed['database'])->toEndWith('/snapshot.sqlite')
+            ->and($handed['files'])->toBe($handed['database']);
+    }
 
     $out = '';
     tools($database, LOCAL, $out, $err)->render(['--dump', '/account', '--build=' . Shop::testBuild(), '--json']);
@@ -231,4 +249,11 @@ it('serves MCP: the declarations, the log redacted, a page, and no value or secr
 
     $errors = array_values(array_filter($replies, static fn (array $r): bool => ($r['id'] ?? null) === null));
     expect(array_column(array_column($errors, 'error'), 'code'))->toBe([-32700, -32600, -32600]);
+
+    // The declarations' application and render_dump's, each on a copy of
+    // its own with its files beside it (ADR 0173).
+    expect(Handed::$applications)->toHaveCount(2)
+        ->and(array_column(Handed::$applications, 'files'))->toBe(array_column(Handed::$applications, 'database'))
+        ->and(array_unique(array_column(Handed::$applications, 'database')))->toHaveCount(2)
+        ->and(array_column(Handed::$applications, 'database'))->not->toContain($database);
 });
