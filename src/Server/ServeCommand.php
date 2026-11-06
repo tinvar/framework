@@ -812,6 +812,7 @@ final class ServeCommand
      */
     private function pump(float $seconds): void
     {
+        $this->forgetClosedOutputs();
         if ($this->outputs === []) {
             usleep((int) ($seconds * 1e6));
 
@@ -859,6 +860,21 @@ final class ServeCommand
         }
     }
 
+    /**
+     * Drops what is no longer a stream: proc_close() closes the pipes of
+     * the process it closes, so a renderer stopped -- or one that exited
+     * before it was ready -- leaves its output here closed.
+     */
+    private function forgetClosedOutputs(): void
+    {
+        foreach ($this->outputs as $id => [$stream, $error]) {
+            if (!\is_resource($stream)) {
+                $this->rendererLog?->close((string) $id, $error);
+                unset($this->outputs[$id]);
+            }
+        }
+    }
+
     /** What the renderers wrote as they stopped: read to its end, or for a second at most. */
     private function drainAll(): void
     {
@@ -866,6 +882,7 @@ final class ServeCommand
         while ($this->outputs !== [] && microtime(true) < $deadline) {
             $this->pump(0.05);
         }
+        $this->forgetClosedOutputs();
         foreach ($this->outputs as $id => [$stream, $error]) {
             $this->rendererLog?->close((string) $id, $error);
             fclose($stream);

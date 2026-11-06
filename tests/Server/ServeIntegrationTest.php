@@ -302,3 +302,53 @@ it('restarts its renderers one at a time on SIGUSR2, serving every page meanwhil
         ->and(array_unique($statuses))->toBe(['whole'])
         ->and($code)->toBe(0);
 });
+
+// Renderers that exit before they are ready -- as every one did on Node 26
+// before ADR 0176 -- are reported, and serve stops with status 1. It read
+// their output after closing the processes their pipes belonged to, and
+// died in stream_select() instead.
+it('reports renderers that exit before they are ready, and stops cleanly', function () use ($root) {
+    $bin = sys_get_temp_dir() . '/tinvar-broken-node-' . bin2hex(random_bytes(4));
+    mkdir($bin);
+    file_put_contents("{$bin}/node", "#!/bin/sh\necho 'this renderer cannot start' >&2\nexit 1\n");
+    chmod("{$bin}/node", 0o755);
+    $log = tempnam(sys_get_temp_dir(), 'tinvar-serve-log-');
+    $key = tempnam(sys_get_temp_dir(), 'tinvar-serve-key-');
+    file_put_contents($key, base64_encode(random_bytes(32)));
+    try {
+        $process = proc_open(
+            [PHP_BINARY, "{$root}/bin/tinvar", 'serve', "--app={$root}/examples/shop", '--workers=1', '--renderers=1'],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $log, 'w']],
+            $pipes,
+            $root,
+            [
+                ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
+                'PATH' => $bin . PATH_SEPARATOR . getenv('PATH'),
+                'SHOP_DATABASE' => Shop::database(),
+                'TINVAR_APP_KEY_FILE' => $key,
+            ],
+        );
+        \assert(\is_resource($process));
+        $deadline = microtime(true) + 60;
+        while (($status = proc_get_status($process))['running'] && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+        if ($status['running']) {
+            proc_terminate($process, SIGKILL);
+        }
+        proc_close($process);
+        $err = (string) file_get_contents($log);
+
+        expect($status['running'])->toBeFalse()
+            ->and($status['exitcode'])->toBe(1, $err)
+            ->and($err)->toContain('this renderer cannot start')
+            ->and($err)->toContain('before it was ready')
+            ->and($err)->not->toContain('Fatal error')
+            ->and($err)->not->toContain('stream_select');
+    } finally {
+        unlink("{$bin}/node");
+        rmdir($bin);
+        unlink($log);
+        unlink($key);
+    }
+});
