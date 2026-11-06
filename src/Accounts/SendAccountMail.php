@@ -20,6 +20,12 @@ use Tinvar\Mail\SendMail;
  * link in a queued mailable would be a credential in the jobs table. A
  * retry makes a new one, and the first, if it was sent, still opens until
  * the account's epoch moves or it expires.
+ *
+ * A change of address carries the auth epoch of the session that asked
+ * for it, and its link is held to that, not to the epoch on the worker:
+ * once a reset or a sign-out everywhere has moved it -- before the worker
+ * got to the job, or between its retries -- no link is made, so none goes
+ * to the address that session chose (ADR 0170).
  */
 #[Queue(SendMail::QUEUE, tries: 5, backoff: [10, 60, 300, 900], timeout: 60)]
 final readonly class SendAccountMail implements Job
@@ -30,12 +36,15 @@ final readonly class SendAccountMail implements Job
      *        address -- or the one an account moved away from
      * @param string $name the name a sign-up gave
      * @param string $userId the account, for what is about one already known
+     * @param string $epoch for a change of address, the auth epoch the session asking was
+     *        opened at; '' for every other email -- and a change of address with none sends nothing
      */
     public function __construct(
         public AccountMailKind $kind,
         public string $email = '',
         public string $name = '',
         public string $userId = '',
+        public string $epoch = '',
     ) {}
 
     public function handle(Accounts $accounts): void

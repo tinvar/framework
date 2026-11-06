@@ -159,13 +159,19 @@ final readonly class EmailLinks
      * @param Authenticatable|null $user the account it is about, bound with its auth epoch now;
      *        null only for an invite or an opt-in, which name an address (ADDRESSED)
      * @param array<string, string> $data kept with the record, never put in the token
+     * @param string|null $epoch the auth epoch to bind it to in place of the account's now: the one
+     *        a request asking for it was opened at, for a link made later on the queue worker, so it
+     *        opens nothing once a revocation since has moved the epoch (ADR 0170)
      * @return array{url: string, link: EmailLink}
      */
-    public function issue(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data = []): array
+    public function issue(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data = [], ?string $epoch = null): array
     {
         $lifetime = self::LIFETIMES[$purpose] ?? throw new \InvalidArgumentException("'{$purpose}' is not a kind of emailed link.");
+        if ($epoch !== null && $user === null) {
+            throw new \InvalidArgumentException('Only a link about an account is bound to an epoch.');
+        }
 
-        return $this->make($purpose, $origin, $path, $tenant, $user, $data, $this->now() + $lifetime);
+        return $this->make($purpose, $origin, $path, $tenant, $user, $data, $this->now() + $lifetime, $epoch);
     }
 
     /**
@@ -226,7 +232,7 @@ final readonly class EmailLinks
      * @param array<string, string> $data
      * @return array{url: string, link: EmailLink}
      */
-    private function make(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data, int $expiresAt): array
+    private function make(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data, int $expiresAt, ?string $epoch = null): array
     {
         $origin = CanonicalOrigins::origin($origin, $this->localHttp);
         self::assertPath($path);
@@ -260,7 +266,7 @@ final readonly class EmailLinks
             's' => $secret,
             'y' => $tenant,
             'o' => $origin,
-            'u' => $user === null ? '' : TokenClaims::hashAuth($this->signer, $userId, $this->users->epoch($user)),
+            'u' => $user === null ? '' : TokenClaims::hashAuth($this->signer, $userId, $epoch ?? $this->users->epoch($user)),
             'i' => $now,
             'e' => $link->expiresAt,
         ]);

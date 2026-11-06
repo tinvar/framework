@@ -67,6 +67,9 @@ use Tinvar\Validation\ValidationException;
  *   its row comes. A change a session asks for, and an API token it is
  *   issued, is held to the credential epoch its request opened it at (ADR
  *   0165, 0167): a revocation landing while the request runs refuses it.
+ *   A change-of-address link the worker makes later is held to the auth
+ *   epoch the session asking was opened at, and none is made once a
+ *   revocation has moved it (ADR 0170).
  * - **A passkey ceremony** signs a challenge bound to the session that
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
@@ -457,6 +460,14 @@ final class Accounts
      * the link goes to the new address, which must prove it is read before
      * anything changes. Queued the same whether or not the address is
      * another account's, which the job finds out.
+     *
+     * The job carries the auth epoch this session was opened at, and the
+     * link the worker makes is held to it (ADR 0170): a reset or a sign-out
+     * everywhere committing before the worker runs it -- or between its
+     * retries -- leaves no link to the address this session chose. One that
+     * committed once this request began ended the session, and the request
+     * is refused (SESSION_ENDED on `currentPassword`), as any change a
+     * session asks for is (ADR 0165).
      */
     public function requestEmailChange(Request $http, AccountUser $user, string $email, #[\SensitiveParameter] string $password): void
     {
@@ -465,8 +476,17 @@ final class Accounts
             throw new ValidationException(['email' => [self::SAME_ADDRESS]]);
         }
         $this->confirmPassword($http, $user, $password, 'currentPassword');
+        // The credential epoch is read after the auth epoch was, at open():
+        // where it has not moved since the session was opened, no
+        // revocation had moved the auth epoch either, as both move in one
+        // transaction -- so the epoch the job carries is the session's.
+        $state = SessionState::of($http);
+        $held = $state->user()?->authIdentifier() === $user->authIdentifier() ? $state->credentialEpoch() : null;
+        if ($held === null || $state->epoch() === '' || $this->credentials->of($user->authIdentifier()) !== $held) {
+            throw new ValidationException(['currentPassword' => [self::SESSION_ENDED]]);
+        }
         if ($this->linkThrottle->hit($http, $email)) {
-            $this->jobs->dispatch(new SendAccountMail(AccountMailKind::EmailChange, $email, userId: $user->authIdentifier()));
+            $this->jobs->dispatch(new SendAccountMail(AccountMailKind::EmailChange, $email, userId: $user->authIdentifier(), epoch: $state->epoch()));
         }
     }
 
@@ -942,10 +962,15 @@ final class Accounts
                 ? null
                 : $this->mails->passwordReset($existing, $this->links->passwordReset($existing), $minutes(EmailLinks::PASSWORD_RESET)),
             // To an address another account has, nothing: the account asking
-            // would learn whose it is from whatever came back.
-            AccountMailKind::EmailChange => $user === null || $this->users->findByEmail($job->email) !== null
+            // would learn whose it is from whatever came back. Nor once the
+            // epoch the session asking was opened at has moved -- a reset, a
+            // sign-out everywhere -- and the link is held to that epoch
+            // rather than this one, which a revocation committing as it is
+            // made could have moved (ADR 0170).
+            AccountMailKind::EmailChange => $user === null || $job->epoch === '' || $this->epochs->of($user->authIdentifier()) !== $job->epoch
+                || $this->users->findByEmail($job->email) !== null
                 ? null
-                : $this->mails->emailChange($user, $job->email, $this->links->changeEmail($user, $job->email), $minutes(EmailLinks::CHANGE_EMAIL)),
+                : $this->mails->emailChange($user, $job->email, $this->links->changeEmail($user, $job->email, $job->epoch), $minutes(EmailLinks::CHANGE_EMAIL)),
             AccountMailKind::EmailChanged => $user === null ? null : $this->mails->emailChanged($user, $job->email, $resetPage),
             AccountMailKind::PasswordChanged => $user === null ? null : $this->mails->passwordChanged($user, $resetPage),
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),

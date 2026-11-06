@@ -1436,6 +1436,63 @@ it('refuses to remove a passkey for a session a sign-out everywhere ended once t
     });
 })->with('drivers');
 
+// A change of address a signed-in session asks for is sent by the queue
+// worker, which makes its link there. The link is held to the auth epoch
+// the session was opened at, and none is made once that has moved: a reset
+// or a sign-out everywhere committing before the worker runs the job --
+// queue lag, a retry's backoff -- would otherwise leave a link to the
+// address the session chose that outlives it, and whoever knew the old
+// password moving the address to theirs and resetting it again.
+
+it('sends no change-of-address link once a reset elsewhere landed before the worker made it, and keeps the address', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $thief = member($app);
+        $user = $thief->state()->user();
+        \assert($user !== null);
+        $thief->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'thief@evil.example', PASSWORD));
+
+        // The owner resets the password at another worker before the queue
+        // worker runs the job.
+        $worker = new MemberApp($app->orm->connection());
+        $worker->now = $app->now;
+        $owner = new Visitor($worker);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $worker->work();
+        $token = token($worker->links('password-reset', 'ada@example.com')[0]);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'the owner chose this one'));
+
+        $app->work();
+        // Whatever was sent opens nothing: the address stays the owner's.
+        foreach ($app->links('email-change', 'thief@evil.example') as $url) {
+            try {
+                $thief->do(static fn (Accounts $a, Request $r) => $a->confirmEmailChange($r, token($url)));
+            } catch (ValidationException) {
+            }
+        }
+        expect($app->links('email-change', 'thief@evil.example'))->toBe([])
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
+it('refuses a change of address for a session a sign-out everywhere ended once the request began, and sends no link', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        // A thief with a session, who knows the password.
+        $thief = new Visitor($app);
+        $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        $ran = between($app, 'SET confirmed_at', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'thief@evil.example', PASSWORD))))->toBe(['currentPassword' => [Accounts::SESSION_ENDED]])
+            ->and($ran())->toBeTrue();
+        $app->work();
+        expect($app->links('email-change', 'thief@evil.example'))->toBe([])
+            ->and(nextRequest($thief))->toBeNull();
+    });
+})->with('drivers');
+
 // An API token a signed-in session asks for is held to the credential epoch
 // that session was held to when its request began. A revocation committing
 // while the request runs ended the session, and a token held to the epoch

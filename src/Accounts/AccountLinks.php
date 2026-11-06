@@ -102,9 +102,14 @@ final readonly class AccountLinks
         return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->linkOrigin(), $this->paths->resetPassword, '', $user)['url'];
     }
 
-    public function changeEmail(AccountUser $user, string $email): string
+    /**
+     * The URL of the link that moves $user to $email, held to $epoch: the
+     * auth epoch the session asking for the change was opened at, so a
+     * revocation since leaves it opening nothing (ADR 0170).
+     */
+    public function changeEmail(AccountUser $user, string $email, string $epoch): string
     {
-        return $this->links->issue(EmailLinks::CHANGE_EMAIL, $this->linkOrigin(), $this->paths->confirmEmail, '', $user, ['email' => $email])['url'];
+        return $this->links->issue(EmailLinks::CHANGE_EMAIL, $this->linkOrigin(), $this->paths->confirmEmail, '', $user, ['email' => $email], $epoch)['url'];
     }
 
     /** The link a token is, for $purpose, if it would open now; null otherwise, and always with no origin. */
