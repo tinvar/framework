@@ -3,11 +3,11 @@
 declare(strict_types=1);
 
 /**
- * The database queue on the two databases the ORM supports: what a worker
+ * The database queue on the databases the ORM supports: what a worker
  * takes, when, and that two workers never take the same job.
  *
- * The Postgres half runs in a scratch schema of its own, and is skipped,
- * saying why, with no server to run against.
+ * The Postgres and MySQL halves run in a scratch schema of their own, and
+ * are skipped, saying why, with no server to run against.
  */
 
 namespace Tinvar\Tests\Jobs\DatabaseQueue;
@@ -200,6 +200,79 @@ it('queues, keeps locks, windows and batches on MySQL', function () {
             $coordinating ? coordinatesOn($connection, $connect) : behavesAsAQueue(databaseQueue($connection), new DatabaseQueue($connect()));
         });
     }
+})->group('mysql')->skip(Databases::mysqlMissing() !== null, Databases::mysqlMissing() ?? '');
+
+/**
+ * Runs $test with a connection to an empty database on $driver: SQLite in
+ * memory, or a scratch schema of the server found, skipped without one.
+ *
+ * @param \Closure(PdoConnection): void $test
+ */
+function onDatabase(string $driver, \Closure $test): void
+{
+    if ($driver === 'sqlite') {
+        $test(PdoConnection::sqlite(':memory:', 'queue'));
+
+        return;
+    }
+    $missing = $driver === 'pgsql' ? Databases::postgresMissing() : Databases::mysqlMissing();
+    if ($missing !== null) {
+        test()->markTestSkipped($missing);
+    }
+    Databases::inScratchSchema($driver, static fn (\PDO $pdo): mixed => $test(new PdoConnection($pdo, $driver)));
+}
+
+// ADR 0169: MySQL counts the rows an UPDATE changed, not the rows it
+// matched. A worker extends the reservation of a job it has taken to the
+// moment the job may run until, which for a job with no longer timeout of
+// its own is the moment it was reserved until: taken and started in one
+// second, every job read as taken by another worker, and was not run.
+it('holds a job its worker takes and starts in one second, and runs it, on each database', function (string $driver) {
+    onDatabase($driver, static function (PdoConnection $connection) use ($driver): void {
+        $queue = databaseQueue($connection);
+        $queue->push(new PendingJob('j', 'default', 'payload', 0));
+        $job = $queue->reserve(['default'], 100, 90);
+        \assert($job !== null);
+
+        expect($queue->extend($job, 190))->toBeTrue('extended to the moment it already runs to')
+            ->and($queue->reserve(['default'], 150, 60))->toBeNull('still held')
+            ->and($queue->extend($job, 250))->toBeTrue()
+            ->and($queue->delete($job))->toBeTrue();
+
+        // A worker whose clock stands still: every job taken and started in one second.
+        $h = new Harness($queue);
+        $h->dispatcher->dispatch(new RecordContext(note: $driver));
+        $h->work();
+
+        expect(array_column($h->journal()->entries, 'note'))->toBe([$driver])
+            ->and(implode("\n", $h->log))->not->toContain(' lost ')
+            ->and($queue->size('default'))->toBe(0);
+    });
+})->with(['sqlite', 'pgsql', 'mysql']);
+
+// And asked after as the row stands, not as an open transaction saw it: at
+// MySQL's REPEATABLE READ a plain read inside one sees the rows as they were
+// at its first read, and told a worker whose job another had since taken
+// that it held it still -- two workers running one job.
+it('lets go of a job another worker took since a transaction of its own began, on MySQL', function () {
+    Databases::inScratchSchema('mysql', static function (\PDO $pdo, string $schema): void {
+        $connection = new PdoConnection($pdo, 'mysql');
+        $queue = databaseQueue($connection);
+        $other = Databases::another('mysql');
+        $other->exec("USE {$schema}");
+        $second = new DatabaseQueue(new PdoConnection($other, 'mysql-other'));
+        $queue->push(new PendingJob('j', 'default', 'payload', 0));
+        $mine = $queue->reserve(['default'], 100, 60);
+        \assert($mine !== null);
+
+        $connection->transaction(static function () use ($queue, $second, $mine): void {
+            // The transaction's first read, which every plain read after it sees as of.
+            expect($queue->size('default'))->toBe(1);
+            // Its reservation run out, the job is another worker's, committed.
+            expect($second->reserve(['default'], 200, 60))->not->toBeNull()
+                ->and($queue->extend($mine, 260))->toBeFalse();
+        });
+    });
 })->group('mysql')->skip(Databases::mysqlMissing() !== null, Databases::mysqlMissing() ?? '');
 
 it('runs jobs through a worker on a SQLite queue, retrying and failing them', function () {

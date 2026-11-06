@@ -11,8 +11,8 @@ use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
 /**
- * A queue in two tables of the application's own database, SQLite or
- * Postgres.
+ * A queue in two tables of the application's own database, SQLite,
+ * Postgres or MySQL.
  *
  * On the application's connection, a push is a write like any other: inside
  * a transaction it commits or rolls back with the writes around it, so a job
@@ -252,12 +252,25 @@ final class DatabaseQueue implements Queue, Coordination, Wakes
         return new ReservedJob((string) $row['id'], $queue, (string) $row['payload'], (int) $row['attempts'] + 1, $token);
     }
 
+    /**
+     * Held while the row still carries the job's token. MySQL counts the
+     * rows an UPDATE changed, not the rows it matched, so there a
+     * reservation extended to the moment it already ran to -- a job taken
+     * and started in one second, which a worker asks of every job no longer
+     * than its own timeout -- counts none, and the token is asked after by
+     * a locking read: the row as it stands, never as an open transaction's
+     * first read saw it (ADR 0169). SQLite and Postgres count the rows
+     * matched.
+     */
     public function extend(ReservedJob $job, int $until): bool
     {
         return $this->connection->execute(
             "UPDATE {$this->table} SET reserved_until = ? WHERE id = ? AND token = ?",
             [$until, $job->id, $job->token],
-        ) === 1;
+        ) === 1 || ($this->isMysql() && $this->connection->select(
+            "SELECT 1 FROM {$this->table} WHERE id = ? AND token = ? FOR SHARE",
+            [$job->id, $job->token],
+        ) !== []);
     }
 
     public function delete(ReservedJob $job): bool
@@ -671,5 +684,10 @@ final class DatabaseQueue implements Queue, Coordination, Wakes
     private function isPostgres(): bool
     {
         return $this->connection instanceof NamesDriver && $this->connection->driver() === 'pgsql';
+    }
+
+    private function isMysql(): bool
+    {
+        return $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql';
     }
 }
