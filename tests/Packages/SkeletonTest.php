@@ -222,10 +222,14 @@ it('serves PHP behind the shop\'s intercept block, which its check holds it to',
         ->and(read('packages/skeleton/.env.example'))->toContain('# APP_STORAGE=');
 });
 
-// ADR 0177: `bin/dev` runs the framework's dev Caddyfile, whose live hub
-// refuses to start without its keys, and they reach FrankenPHP only through
-// the console's serverEnvironment -- derived from the app key, never the key.
-it('hands the dev server the live hub\'s keys, as the shop does', function () {
+// ADR 0177, 0178: `bin/dev` runs the framework's dev Caddyfile, whose live
+// hub refuses to start without its keys. The console derives them from the
+// app key where the app gives none, reading the key as the Kernel does --
+// TINVAR_APP_KEY, else the key file the console is handed -- so the
+// skeleton hands it that file, and its Kernel reads the key the same way.
+it('lets the console derive the dev server\'s hub keys from the key the Kernel reads', function () {
     expect(read('packages/framework/resources/Caddyfile.dev'))->toContain('{env.TINVAR_LIVE_SUBSCRIBER_KEY}')
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain('serverEnvironment: static fn (): array => Tinvar\\Live\\HubSettings::resolve(Kernel::appKey())->environment(),');
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain('keyFile: Kernel::keyFile(...),')
+        ->and(read('packages/skeleton/bin/tinvar'))->not->toContain('serverEnvironment:')
+        ->and(read('packages/skeleton/app/Kernel.php'))->toContain("return AppKey::application('TINVAR_APP_KEY', self::keyFile());");
 });
