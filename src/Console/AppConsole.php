@@ -773,12 +773,61 @@ final class AppConsole
             return $this->serverEnvironment;
         }
         $given = getenv(SecretFiles::APP_KEY);
-        $keyFile = $this->secretFile($this->keyFile, 'keyFile');
-        if ($keyFile === null && (!\is_string($given) || $given === '')) {
+        $fromEnvironment = \is_string($given) && trim($given) !== '';
+        $keyFile = $this->keyFileSource();
+        if (!$fromEnvironment && $keyFile === null) {
             return null;
         }
 
-        return static fn (): array => HubSettings::resolve(AppKey::application(SecretFiles::APP_KEY, $keyFile ?? ''))->environment();
+        return static function () use ($fromEnvironment, $keyFile): array {
+            // The variable wins, as the Kernel's AppKey::application() has
+            // it, and the key file is not asked for then: a path nothing
+            // reads stands in, which AppKey::resolve() wants all the same.
+            try {
+                $file = $fromEnvironment ? '/nonexistent/tinvar-app-key' : $keyFile();
+            } catch (\RuntimeException $e) {
+                // The app's own word for why there is no key file, rather
+                // than the hub's for a key it was never given.
+                throw new ServeException($e->getMessage(), 0, $e);
+            }
+
+            return HubSettings::resolve(AppKey::application(SecretFiles::APP_KEY, $file))->environment();
+        };
+    }
+
+    /**
+     * Where the app key is generated when TINVAR_APP_KEY gives none, as a
+     * closure that refuses where the app's does: the closure the console
+     * was given, else its Kernel's static keyFile(); null where neither.
+     *
+     * @return (\Closure(): string)|null
+     */
+    private function keyFileSource(): ?\Closure
+    {
+        $given = $this->keyFile;
+        if ($given !== null) {
+            return static function () use ($given): string {
+                $file = $given();
+                if (!\is_string($file) || $file === '') {
+                    throw new \RuntimeException('The application names no file for its key: set TINVAR_APP_KEY.');
+                }
+
+                return $file;
+            };
+        }
+        $callable = [$this->kernel, 'keyFile'];
+        if ($this->kernel !== null && \is_callable($callable)) {
+            return static function () use ($callable): string {
+                $file = $callable();
+                if (!\is_string($file) || $file === '') {
+                    throw new \RuntimeException('The application names no file for its key: set TINVAR_APP_KEY.');
+                }
+
+                return $file;
+            };
+        }
+
+        return null;
     }
 
     /**

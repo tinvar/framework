@@ -18,6 +18,7 @@ use Tinvar\Discovery\DiscoveredClasses;
 use Tinvar\Http\FileBuildStore;
 use Tinvar\Live\HubSettings;
 use Tinvar\Packages\PackagePolicy;
+use Tinvar\Server\ServeException;
 use Tinvar\Support\AppKey;
 
 /**
@@ -78,6 +79,32 @@ it('takes the key TINVAR_APP_KEY gives over the file', function () {
 
     \assert($environment !== null);
     expect($environment())->toBe(HubSettings::resolve(AppKey::application('TINVAR_APP_KEY', '/nonexistent/app.key'))->environment());
+});
+
+// A console with no key file -- a Kernel that reads its key from somewhere
+// else -- serving with TINVAR_APP_KEY: the key the variable gives, with no
+// file looked for, since AppKey::resolve() refuses an empty path outright.
+it('derives from TINVAR_APP_KEY alone where the console names no key file', function () {
+    $given = SecretFiles::fresh();
+    putenv("TINVAR_APP_KEY={$given}");
+
+    $environment = console()->serverEnvironment();
+
+    expect($environment)->not->toBeNull();
+    \assert($environment !== null);
+    $expected = HubSettings::resolve(AppKey::forProfile($given, \Tinvar\Support\BuildProfile::fromEnvironment()))->environment();
+    expect($environment())->toBe($expected);
+});
+
+// The key file's own refusal -- a relative TINVAR_APP_KEY_FILE, no state
+// directory -- is what serve says, not FrankenPHP's word for a hub
+// without a key.
+it('says why there is no key file, where the console\'s refuses', function () {
+    $environment = console(keyFile: static fn (): string => throw new \RuntimeException('TINVAR_APP_KEY_FILE must be an absolute path; got app.key.'))->serverEnvironment();
+
+    expect($environment)->not->toBeNull();
+    \assert($environment !== null);
+    expect(fn () => $environment())->toThrow(ServeException::class, 'TINVAR_APP_KEY_FILE must be an absolute path; got app.key.');
 });
 
 it('hands on the console\'s own, where it gives one', function () {
