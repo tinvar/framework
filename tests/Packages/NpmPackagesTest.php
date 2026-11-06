@@ -69,3 +69,15 @@ it('packs its code, types and licence, and never its tests', function (string $d
     expect($paths)->toContain('LICENSE', 'package.json')
         ->and(array_filter($paths, static fn (string $path): bool => !preg_match('#^(src/|bin/|LICENSE$|package\.json$|README\.md$)#', $path)))->toBe([]);
 })->with(array_keys(PUBLISHED));
+
+// npm rewrites a bin path that starts with ./ as it publishes, and warns:
+// the manifest says what the registry will serve.
+it('names each bin as npm publishes it', function (string $directory) {
+    $bin = manifest("packages/{$directory}/package.json")['bin'] ?? [];
+    expect($bin)->toBeArray();
+
+    foreach ($bin as $name => $path) {
+        expect($path)->not->toStartWith('./', "{$name} names {$path}")
+            ->and(ROOT . "/packages/{$directory}/{$path}")->toBeFile();
+    }
+})->with(array_keys(PUBLISHED));
