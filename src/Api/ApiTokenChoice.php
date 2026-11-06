@@ -16,7 +16,9 @@ enum ApiTokenChoice: string
 
     /**
      * Not one choice: who is asking may not have one made -- a request a
-     * token signed in, or staff impersonating the user. Refused with a 403.
+     * token signed in, staff impersonating the user, or a request whose
+     * epoch a revocation moved on while it ran (ApiTokens::SIGNED_OUT).
+     * Refused with a 403.
      */
     case Caller = 'caller';
 }

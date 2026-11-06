@@ -15,6 +15,7 @@ use Tinvar\Accounts\Passkeys\WebAuthn;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Accounts\TwoFactor\TwoFactorStore;
+use Tinvar\Api\ApiTokenChoice;
 use Tinvar\Api\ApiTokenRefused;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\IssuedApiToken;
@@ -63,7 +64,9 @@ use Tinvar\Validation\ValidationException;
  *   the account's credential epoch, read before the check, and its password
  *   hash (Credentials, ADR 0165) -- so a revocation that commits while a
  *   sign-in is under way ends the session the sign-in makes, however late
- *   its row comes.
+ *   its row comes. A change a session asks for, and an API token it is
+ *   issued, is held to the credential epoch its request opened it at (ADR
+ *   0165, 0167): a revocation landing while the request runs refuses it.
  * - **A passkey ceremony** signs a challenge bound to the session that
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
@@ -882,18 +885,37 @@ final class Accounts
      * way in: a thief with a cookie leaving with a credential that "sign out
      * everywhere" is the only thing to end.
      *
+     * The token is held to the credential epoch this session was held to
+     * when the request opened it (SessionState::credentialEpoch(), ADR 0167),
+     * as a change the session asks for is (ADR 0165): a sign-out everywhere
+     * or the owner's reset committing while the request ran ended the
+     * session, and the token is refused rather than held to the epoch after
+     * the revocation, which it would outlive.
+     *
      * $tokens is the application's ApiTokens (the Kernel's, from its
      * ApiAccess), which holds the token to its user, epoch, tenant, panel and
-     * host, and to the lifetime the application allows.
+     * host, and to the lifetime the application allows. Its lookup is the
+     * kit's $tokenHolders, whose epoch is the credential epoch: one that
+     * counts another epoch refuses every token asked for here.
      *
      * @param list<string|\BackedEnum> $scopes
      * @throws ValidationException on `confirm` (CONFIRM_FIRST) while the session is not confirmed
-     * @throws ApiTokenRefused for a choice that will not do, or a caller who may not have one
+     * @throws ApiTokenRefused for a choice that will not do, or a caller who may not have one --
+     *         a session a revocation ended once the request began among them (ApiTokens::SIGNED_OUT,
+     *         a 403 for ApiTokenChoice::Caller)
      */
     public function issueApiToken(Request $http, AccountUser $user, ApiTokens $tokens, string $name, array $scopes, ?CarbonImmutable $expiresAt): IssuedApiToken
     {
         $this->assertRecentlyConfirmed($http);
-        $issued = $tokens->issue($name, $scopes, $expiresAt);
+        // As a caller who may not have one, shown above the form, rather than
+        // SESSION_ENDED on `confirm`, which an app's form takes as asking for
+        // a confirmation: no field of its form is at fault.
+        $state = SessionState::of($http);
+        $epoch = $state->user()?->authIdentifier() === $user->authIdentifier() ? $state->credentialEpoch() : null;
+        if ($epoch === null) {
+            throw new ApiTokenRefused(ApiTokenChoice::Caller, ApiTokens::SIGNED_OUT, 403);
+        }
+        $issued = $tokens->issue($name, $scopes, $expiresAt, epoch: $epoch);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::ApiTokenCreated, name: $issued->token->name, userId: $user->authIdentifier()));
 
         return $issued;

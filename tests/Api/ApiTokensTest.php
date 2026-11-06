@@ -112,6 +112,32 @@ it('refuses a token\'s caller and an impersonation as a 403 a settings page can 
         ->and(new ApiTokenRefused(ApiTokenChoice::Name, 'x')->status)->toBe(422);
 });
 
+// A token a request asks for may be held to the epoch that request was
+// checked at -- a session's, as it was opened. A revocation landing while
+// the request ran moved the epoch, and a token held to the one after would
+// outlive it.
+it('holds a token to the epoch the request asking for it was checked at, and refuses one once the epoch has moved on', function () {
+    $h = new Harness();
+    $h->users->epochs['ada'] = 'e1';
+    $kept = $h->as('ada', fn () => $h->apiTokens->issue('Nightly export', ['racks:read'], epoch: 'e1'))->token;
+    expect($kept->epoch)->toBe('e1');
+
+    // Signed out everywhere while the next request ran: checked at e1, and
+    // the lookup says e2 now.
+    $h->users->epochs['ada'] = 'e2';
+    $refused = null;
+    try {
+        $h->as('ada', fn () => $h->apiTokens->issue('Nightly export', ['racks:read'], epoch: 'e1'), 'e2');
+    } catch (ApiTokenRefused $e) {
+        $refused = $e;
+    }
+    expect($refused?->choice)->toBe(ApiTokenChoice::Caller)
+        ->and($refused?->status)->toBe(403)
+        ->and($refused?->getMessage())->toBe(ApiTokens::SIGNED_OUT)
+        ->and($h->tokenStore->tokens)->toHaveCount(1)
+        ->and($h->as('ada', fn () => $h->apiTokens->issue('Nightly export', ['racks:read'], epoch: 'e2'), 'e2')->token->epoch)->toBe('e2');
+});
+
 it('issues none while the user is being impersonated, and says who is signed in as whom', function () {
     $h = new Harness();
     $h->users->epochs['ada'] = 'e1';

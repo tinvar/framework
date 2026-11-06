@@ -27,7 +27,10 @@ use Tinvar\Support\Uuid;
  * application's TokenHolderLookup says it is held to -- a credential epoch
  * that moves on fewer things than the auth epoch, or the auth epoch itself
  * where the application says so -- the tenant and the panel in force, and the request's host
- * where the application routes by host (CallHosts, ADR 0149). Its scopes
+ * where the application routes by host (CallHosts, ADR 0149). Code that knows the epoch the
+ * request asking was checked at -- a session's, as the request opened it -- hands it to
+ * issue(), and the token is held to that one or not made: a revocation landing while the
+ * request ran would otherwise leave a token held to the epoch after it (ADR 0167). Its scopes
  * are some of those the application declares with #[RequiresScope] in that
  * panel, found by discovery; a scope nothing declares is refused, as a
  * typo. Its expiry is in the future, and within the lifetime the
@@ -66,6 +69,13 @@ final readonly class ApiTokens
     /** A token's last use is written at most this often, in seconds. */
     public const int USE_RECORDED_EVERY = 60;
 
+    /**
+     * Why a token was refused to a request whose epoch moved on while it ran
+     * (issue()'s $epoch): a revocation ended what signed the request in. An
+     * ApiTokenRefused for ApiTokenChoice::Caller, with a 403.
+     */
+    public const string SIGNED_OUT = 'You were signed out while this token was being made, so none was. Sign in again, then make it once more.';
+
     /** A digest no secret has, compared against when no token has the id presented, so a miss takes as long as a mismatch. */
     private const string NO_DIGEST = '0000000000000000000000000000000000000000000000000000000000000000';
 
@@ -98,14 +108,19 @@ final readonly class ApiTokens
      * @param CarbonImmutable|null $expiresAt when it stops working; never, unless given
      * @param string|null $host the host it is for, named by code issuing it outside a request
      *        (a console command); in a request, the request's host, and none other
+     * @param string|null $epoch the epoch the request asking was checked at, as the lookup counts
+     *        it -- a session's, as the request opened it: the token is held to it, and refused
+     *        unless the lookup reports it still, since a revocation committed while the request
+     *        ran moved it, and a token held to the epoch after would outlive the revocation
+     *        (ADR 0167). Null, and the token is held to the epoch the lookup reports now
      * @throws ApiTokenRefused for a name, scopes or an expiry the user chose that will not do, or a
      *         user holding as many tokens as they may, naming which (ApiTokenChoice): say so to them;
-     *         and, with a 403 (ApiTokenChoice::Caller), for a request a token signed in or one where
-     *         staff are impersonating the user
+     *         and, with a 403 (ApiTokenChoice::Caller), for a request a token signed in, one where
+     *         staff are impersonating the user, or one whose $epoch has moved on (SIGNED_OUT)
      * @throws \LogicException for a call the application should not have made: nobody signed in,
      *         acrossTenants()
      */
-    public function issue(string $name, array $scopes, ?CarbonImmutable $expiresAt = null, ?string $host = null): IssuedApiToken
+    public function issue(string $name, array $scopes, ?CarbonImmutable $expiresAt = null, ?string $host = null, ?string $epoch = null): IssuedApiToken
     {
         $user = $this->auth->user();
         if ($user === null) {
@@ -122,6 +137,17 @@ final readonly class ApiTokens
         }
         if ($this->orm->isUnscoped()) {
             throw new \LogicException('An API token cannot be issued inside acrossTenants(): it is held to one tenant.');
+        }
+        // The epoch the lookup says the user is on now: what the token is
+        // held to, and every use of it checked against (authenticate()).
+        // Where the request asking was checked at an epoch, it must be that
+        // one still: a revocation committed since -- a sign-out everywhere, a
+        // reset -- ended what signed the request in, and a token held to the
+        // epoch after it would outlive it. One that commits after this read
+        // moves the epoch on from the one the token is held to, and ends it.
+        $current = $this->users->epoch($user);
+        if ($epoch !== null && !hash_equals($current, $epoch)) {
+            throw new ApiTokenRefused(ApiTokenChoice::Caller, self::SIGNED_OUT, 403);
         }
 
         $name = trim($name);
@@ -154,12 +180,9 @@ final readonly class ApiTokens
 
         $tenant = $this->orm->tenant();
         $panel = $this->panels?->currentOrNull() ?? '';
-        // The epoch the lookup says the user is on now: what every use of
-        // the token is checked against (authenticate()).
-        $epoch = $this->users->epoch($user);
         $held = array_filter(
             $this->store->forUser($tenant, $panel, $user->authIdentifier()),
-            static fn (ApiToken $t): bool => $t->statusAt($now, $epoch) === ApiTokenStatus::Active,
+            static fn (ApiToken $t): bool => $t->statusAt($now, $current) === ApiTokenStatus::Active,
         );
         if (\count($held) >= $this->maxPerUser) {
             throw new ApiTokenRefused(ApiTokenChoice::Count, "You hold {$this->maxPerUser} tokens, the most you may: revoke one you no longer use first.");
@@ -171,7 +194,7 @@ final readonly class ApiTokens
             id: $id,
             name: $name,
             user: $user->authIdentifier(),
-            epoch: $epoch,
+            epoch: $current,
             tenant: $tenant,
             panel: $panel,
             host: ($this->hosts ?? new CallHosts())->issuing([], $host),

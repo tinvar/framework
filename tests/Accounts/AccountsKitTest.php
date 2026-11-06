@@ -29,6 +29,8 @@ use Tinvar\Accounts\Sessions;
 use Tinvar\Accounts\SignInResult;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
+use Tinvar\Api\ApiTokenChoice;
+use Tinvar\Api\ApiTokenRefused;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\ArrayApiTokens;
 use Tinvar\Auth\Authenticatable;
@@ -1432,6 +1434,154 @@ it('refuses to remove a passkey for a session a sign-out everywhere ended once t
             ->and(nextRequest($thief))->toBeNull();
     });
 })->with('drivers');
+
+// An API token a signed-in session asks for is held to the credential epoch
+// that session was held to when its request began. A revocation committing
+// while the request runs ended the session, and a token held to the epoch
+// after it would outlive it: a thief with a stolen cookie its owner had just
+// confirmed keeping a way in through the owner's sign-out everywhere.
+
+/** The ApiTokenRefused $work throws. */
+function tokenRefused(\Closure $work): ApiTokenRefused
+{
+    try {
+        $work();
+    } catch (ApiTokenRefused $e) {
+        return $e;
+    }
+
+    throw new \LogicException('No token was refused.');
+}
+
+it('refuses an API token to a session a sign-out everywhere ended once the request began, and makes none', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        // The owner confirms on the laptop, and a thief has a copy of its cookie.
+        $owner->confirm();
+        $thief = new Visitor($app);
+        $thief->cookie = $owner->cookie;
+        // The owner's phone and tablet, at other workers.
+        $elsewhere = static function () use ($app): Visitor {
+            $device = new Visitor(new MemberApp($app->orm->connection()));
+            $device->app->now = $app->now;
+
+            return $device;
+        };
+        $phone = $elsewhere();
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $tablet = $elsewhere();
+
+        $store = new ArrayApiTokens();
+        $tokens = new ApiTokens($store, $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+        $issue = static fn () => $thief->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+            $user,
+            static fn () => $a->issueApiToken($r, $user, $tokens, 'Backup', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)),
+        ));
+
+        // A sign-in elsewhere, once the request has opened its session, moves
+        // the auth epoch alone: the session stands, and so does its token.
+        $ran = between($app, 'FROM auth_epochs WHERE user_id', static fn () => $tablet->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)));
+        $kept = $issue();
+        expect($ran())->toBeTrue()
+            ->and($tokens->authenticate($kept->plaintext))->not->toBeNull();
+
+        // A sign-out everywhere, landing at the same moment, ended it: none.
+        $ran = between($app, 'FROM auth_epochs WHERE user_id', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        $refused = tokenRefused($issue);
+        expect($ran())->toBeTrue()
+            ->and($refused->choice)->toBe(ApiTokenChoice::Caller)
+            ->and($refused->status)->toBe(403)
+            ->and($refused->getMessage())->toBe(ApiTokens::SIGNED_OUT)
+            ->and($store->tokens)->toHaveCount(1)
+            ->and($tokens->authenticate($kept->plaintext))->toBeNull()
+            ->and(nextRequest($thief))->toBeNull();
+        $app->work();
+        expect($app->links('api-token-created', 'ada@example.com'))->toHaveCount(1);
+    });
+})->with('drivers');
+
+it('refuses an API token asked for with the password a reset elsewhere replaced once the request began, as the shop asks, and makes none', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $thief = member($app);
+        $user = $thief->state()->user();
+        \assert($user !== null);
+        // The owner resets the password at another worker, its own account loaded.
+        $worker = new MemberApp($app->orm->connection());
+        $worker->now = $app->now;
+        $owner = new Visitor($worker);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $worker->work();
+        $token = token($worker->links('password-reset', 'ada@example.com')[0]);
+
+        // The thief asks as the shop's form does, typing the password it
+        // knows, which confirms the session in the request that issues.
+        $store = new ArrayApiTokens();
+        $tokens = new ApiTokens($store, $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+        $ran = between($app, 'SET confirmed_at', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'the owner chose this one')));
+        $refused = tokenRefused(static fn () => $thief->do(static function (Accounts $a, Request $r) use ($app, $user, $tokens): mixed {
+            $a->confirmWithPassword($r, $user, PASSWORD);
+
+            return $app->auth->actingAs($user, static fn () => $a->issueApiToken($r, $user, $tokens, 'Backup', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)));
+        }));
+        expect($ran())->toBeTrue()
+            ->and($refused->choice)->toBe(ApiTokenChoice::Caller)
+            ->and($refused->getMessage())->toBe(ApiTokens::SIGNED_OUT)
+            ->and($store->tokens)->toBe([])
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBe('ada@example.com');
+        $app->work();
+        expect($app->links('api-token-created', 'ada@example.com'))->toBe([]);
+    });
+})->with('drivers');
+
+it('ends at once the API token a request made when a sign-out everywhere lands just after it read the epoch', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $phone = new Visitor(new MemberApp($app->orm->connection()));
+        $phone->app->now = $app->now;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $tokens = new ApiTokens(new ArrayApiTokens(), $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+
+        // Too late for the issue to see: the token is made, held to the epoch
+        // the session was opened at, and the sign-out everywhere ends it.
+        $ran = between($app, 'FROM credential_epochs WHERE user_id', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        $issued = $owner->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+            $user,
+            static fn () => $a->issueApiToken($r, $user, $tokens, 'Backup', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)),
+        ));
+        expect($ran())->toBeTrue()
+            ->and($issued->token->epoch)->toBe('0')
+            ->and($app->kit->credentials->of($user->authIdentifier()))->toBe('1')
+            ->and($tokens->authenticate($issued->plaintext))->toBeNull()
+            ->and(nextRequest($owner))->toBeNull();
+    });
+})->with('drivers');
+
+it('refuses an API token for an account other than the one its session signs in', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $ada = member($app)->state()->user();
+        \assert($ada !== null);
+        $bob = member($app, 'bob@example.com');
+        $bob->confirm();
+        $store = new ArrayApiTokens();
+        $tokens = new ApiTokens($store, $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+
+        // Bob's session, confirmed, asking for one of Ada's: it was held to
+        // no epoch of hers.
+        $refused = tokenRefused(static fn () => $bob->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+            $ada,
+            static fn () => $a->issueApiToken($r, $ada, $tokens, 'Backup', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)),
+        )));
+        expect($refused->choice)->toBe(ApiTokenChoice::Caller)
+            ->and($refused->status)->toBe(403)
+            ->and($store->tokens)->toBe([]);
+    });
+});
 
 it('holds a session to the credential epoch and password its sign-in was checked against, whoever moved either and when', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
