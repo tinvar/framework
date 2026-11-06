@@ -28,13 +28,13 @@ interface AccountUsers
      *
      * @throws EmailTaken
      */
-    public function create(string $email, string $name, string $passwordHash): AccountUser;
+    public function create(string $email, string $name, #[\SensitiveParameter] string $passwordHash): AccountUser;
 
     /**
      * Sets the account's password hash, whatever it was: a reset's or a
      * change's new password, in the transaction that ends its sessions.
      */
-    public function changePassword(AccountUser $user, string $passwordHash): void;
+    public function changePassword(AccountUser $user, #[\SensitiveParameter] string $passwordHash): void;
 
     /**
      * Replaces the account's password hash with $passwordHash only where the
@@ -57,7 +57,7 @@ interface AccountUsers
      * sign-in's rehash of the same password, which the account's sessions
      * have just been held to.
      */
-    public function changePasswordFrom(AccountUser $user, string $current, string $passwordHash): bool;
+    public function changePasswordFrom(AccountUser $user, #[\SensitiveParameter] string $current, #[\SensitiveParameter] string $passwordHash): bool;
 
     /**
      * The account's password hash as its table holds it now; null for an

@@ -194,3 +194,42 @@ it('keeps the key and the session id out of the example session helpers', functi
         ->and($marked('sessionCookie', 'key'))->toBeTrue()
         ->and($marked('fromEnvironment', 'key'))->toBeTrue();
 });
+
+// The accounts kit hands an app's users the password hashes it stores, and
+// a hash in a trace is one an offline guesser can work on (ADR 0168).
+it('keeps the password hashes out of the trace of a change the shop\'s customers refused', function () {
+    $customers = new \Shop\Auth\Account\Customers(new \Tinvar\Orm\Orm(PdoConnection::sqlite(':memory:', 'traces'), new \Tinvar\Orm\IdentityMap('traces')));
+    // Not one of the shop's customers: refused before anything is written.
+    $stranger = new class implements \Tinvar\Accounts\AccountUser {
+        public function authIdentifier(): string
+        {
+            return '0190f5d2-5c0a-7c3e-8f00-000000000001';
+        }
+
+        public function accountEmail(): string
+        {
+            return 'stranger@example.com';
+        }
+
+        public function accountName(): string
+        {
+            return 'Stranger';
+        }
+
+        public function accountPasswordHash(): string
+        {
+            return '';
+        }
+    };
+    $current = secret();
+    $new = secret();
+
+    $changed = thrown(static fn () => $customers->changePassword($stranger, $new));
+    $replaced = thrown(static fn () => $customers->changePasswordFrom($stranger, $current, $new));
+
+    expect($changed)->toBeInstanceOf(\InvalidArgumentException::class)
+        ->and(leaks($changed, $new))->toBeFalse()
+        ->and($replaced)->toBeInstanceOf(\InvalidArgumentException::class)
+        ->and(leaks($replaced, $current))->toBeFalse()
+        ->and(leaks($replaced, $new))->toBeFalse();
+});

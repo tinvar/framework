@@ -100,7 +100,7 @@ final readonly class Members implements AccountUsers
         return $this->orm->whereIn(Member::class, 'email', [$email])[0] ?? null;
     }
 
-    public function create(string $email, string $name, string $passwordHash): AccountUser
+    public function create(string $email, string $name, #[\SensitiveParameter] string $passwordHash): AccountUser
     {
         if ($this->findByEmail($email) !== null) {
             throw new EmailTaken();
@@ -114,14 +114,14 @@ final readonly class Members implements AccountUsers
         return $member;
     }
 
-    public function changePassword(AccountUser $user, string $passwordHash): void
+    public function changePassword(AccountUser $user, #[\SensitiveParameter] string $passwordHash): void
     {
         \assert($user instanceof Member);
         $user->passwordHash = $passwordHash;
         $this->orm->save($user);
     }
 
-    public function changePasswordFrom(AccountUser $user, string $current, string $passwordHash): bool
+    public function changePasswordFrom(AccountUser $user, #[\SensitiveParameter] string $current, #[\SensitiveParameter] string $passwordHash): bool
     {
         \assert($user instanceof Member);
 
