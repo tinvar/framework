@@ -27,6 +27,7 @@ use Tinvar\Accounts\RequireSignIn;
 use Tinvar\Accounts\SessionState;
 use Tinvar\Accounts\Sessions;
 use Tinvar\Accounts\SignInResult;
+use Tinvar\Accounts\SignInThrottle;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Api\ApiTokenChoice;
@@ -1664,9 +1665,9 @@ it('keeps a reset that lands while a sign-in rehashes the password it replaced, 
         $worker->work();
         $token = token($worker->links('password-reset', 'ada@example.com')[0]);
 
-        // The thief signs in with the old password; the owner's reset lands
-        // once the thief's worker has read the account.
-        $thief = new Visitor(new MemberApp($connection));
+        // The thief signs in with the old password, at a worker that keeps an
+        // audit log; the owner's reset lands once it has read the account.
+        $thief = new Visitor(new MemberApp($connection, audit: true));
         $thief->app->now = $app->now;
         $ran = between($thief->app, 'FROM "members" WHERE "email"', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'the owner chose this one')));
         try {
@@ -1680,12 +1681,42 @@ it('keeps a reset that lands while a sign-in rehashes the password it replaced, 
             ->and(password_verify('the owner chose this one', $stored()))->toBeTrue()
             ->and(nextRequest($thief))->toBeNull()
             ->and(nextRequest($owner))->toBe('ada@example.com')
-            ->and($refusal)->toBe(['password' => [Accounts::NO_MATCH]]);
+            ->and($refusal)->toBe(['password' => [Accounts::NO_MATCH]])
+            // Recorded as the failed sign-in it is, by the address tried.
+            ->and(array_map(
+                static fn (array $row): array => [$row['event'], $row['data']],
+                $connection->select('SELECT event, data FROM audit_entries'),
+            ))->toBe([['auth.sign_in_failed', '{"email":"ada@example.com"}']]);
+
+        // And counted as a failed guess: nine more from that address, and the
+        // account is paused there.
+        for ($guess = 1; $guess < SignInThrottle::PER_ACCOUNT; $guess++) {
+            refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', "guess {$guess}")));
+        }
+        expect(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', 'one more guess')))
+            ->toThrow(HttpException::class, 'Too many sign-in attempts.');
 
         // The old password signs in nowhere since.
         $later = new Visitor(new MemberApp($connection));
         $later->app->now = $app->now;
         expect(refused(static fn () => $later->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD))))->toBe(['password' => [Accounts::NO_MATCH]]);
+    });
+})->with('drivers');
+
+it('refuses a sign-in whose account is deleted while it rehashes the password, and makes no session', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        member($app);
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4])]);
+
+        $visitor = new Visitor(new MemberApp($connection));
+        $visitor->app->now = $app->now;
+        $ran = between($visitor->app, 'FROM "members" WHERE "email"', static fn () => $connection->execute('DELETE FROM members'));
+
+        expect(refused(static fn () => $visitor->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD))))->toBe(['password' => [Accounts::NO_MATCH]])
+            ->and($ran())->toBeTrue()
+            ->and($connection->select('SELECT id FROM sessions'))->toBe([])
+            ->and(nextRequest($visitor))->toBeNull();
     });
 })->with('drivers');
 
