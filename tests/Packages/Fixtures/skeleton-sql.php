@@ -74,6 +74,16 @@ $users->changeEmail($ada, 'ada@example.org');
 $moved = new Users(new Orm($connection, new IdentityMap($connection->name())))->findByEmail('ada@example.org');
 $seen['users']['changed'] = $moved?->authIdentifier() === $ada->authIdentifier() && password_get_info($moved->accountPasswordHash())['options']['cost'] === 5;
 
+// A rehash's compare-and-set (ADR 0168): stored only in place of the hash it read.
+$stored = $users->storedPasswordHash($ada);
+$replacement = $hash(6);
+$seen['users']['compare and set'] = [
+    $users->changePasswordFrom($ada, $hash(4), $hash(6)),
+    $users->storedPasswordHash($ada) === $stored,
+    $users->changePasswordFrom($ada, (string) $stored, $replacement),
+    $users->storedPasswordHash($ada) === $replacement,
+];
+
 // ----------------------------------------------------------------- Flashes
 
 $cookie = new SessionCookie(str_repeat('k', 32), Kernel::SESSION_COOKIE);

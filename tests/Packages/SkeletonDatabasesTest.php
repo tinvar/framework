@@ -126,6 +126,9 @@ it('runs the skeleton\'s migrations, users and flashes on each database tinvar n
             // Two of the three hashed at cost 4: the decoy is hashed as most are.
             'decoy cost' => 4,
             'changed' => true,
+            // Refused from a hash that is not the one stored, and stored in
+            // place of the one that is.
+            'compare and set' => [false, true, true, true],
         ])
         ->and($seen['flashes'])->toBe([
             'pulled' => ['errors' => ['body' => ['Too long.']], 'old' => ['body' => 'a note']],
