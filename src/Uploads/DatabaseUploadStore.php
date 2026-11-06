@@ -246,9 +246,20 @@ final readonly class DatabaseUploadStore implements UploadStore
             : $this->connection->execute("UPDATE {$this->table} SET claimed_at = NULL WHERE id = ? AND claimed_at = ?", [$id, $claimedAt]);
     }
 
+    /**
+     * MySQL counts the rows an UPDATE changed, not the rows it matched, and
+     * a claim renewed in the second it was made -- a small upload claimed
+     * and fetched whole in one second -- changes nothing. There the claim
+     * is asked after when it stays put and no row was counted: still the
+     * one made then (ADR 0172). The read locks (FOR SHARE), so it sees the
+     * row as it stands, not as a transaction already open first read it.
+     */
     public function renew(string $id, int $claimedAt, int $now): bool
     {
-        return $this->connection->execute("UPDATE {$this->table} SET claimed_at = ? WHERE id = ? AND claimed_at = ?", [$now, $id, $claimedAt]) === 1;
+        return $this->connection->execute("UPDATE {$this->table} SET claimed_at = ? WHERE id = ? AND claimed_at = ?", [$now, $id, $claimedAt]) === 1
+            || ($now === $claimedAt
+                && $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql'
+                && $this->connection->select("SELECT 1 FROM {$this->table} WHERE id = ? AND claimed_at = ? FOR SHARE", [$id, $claimedAt]) !== []);
     }
 
     public function expired(int $now, int $limit): array
