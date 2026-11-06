@@ -430,6 +430,11 @@ final readonly class Sessions
      * new one, inside the transaction that stores it, so a rehash at a
      * sign-in signs none of their other devices out. Those held to an epoch
      * moved since were ended, and stay so.
+     *
+     * Only where the rehash stored its hash in place of $from
+     * (AccountUsers::changePasswordFrom(), ADR 0168): a sign-in that found
+     * another hash stored first follows nothing, so the sessions stay held
+     * to the hash that stays stored.
      */
     public function rehashed(AccountUser $user, #[\SensitiveParameter] string $from, #[\SensitiveParameter] string $to): void
     {

@@ -1639,6 +1639,89 @@ it('keeps every session of an account signed in when its password is rehashed at
     });
 })->with('drivers');
 
+// A sign-in replaces a hash the policy has moved on from with its password
+// hashed again, and used to write it whatever was stored by then. A reset
+// committing between the sign-in's read and that write was overwritten by
+// the old password, and the session the sign-in made was held to it: a
+// thief with the old password undid the owner's reset. And of two sign-ins
+// rehashing at once -- a double click on the form -- the second wrote over
+// the first, whose sessions it had re-sealed were then held to a hash no
+// longer stored: every other device was signed out. Each sign-in reads the
+// account at a worker of its own, which loaded nothing before.
+
+it('keeps a reset that lands while a sign-in rehashes the password it replaced, and refuses that sign-in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        member($app);
+        // Hashed below the policy, so a sign-in with the password replaces it.
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4])]);
+        $stored = static fn (): string => (string) $connection->select('SELECT password_hash FROM members')[0]['password_hash'];
+
+        $worker = new MemberApp($connection);
+        $worker->now = $app->now;
+        $owner = new Visitor($worker);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $worker->work();
+        $token = token($worker->links('password-reset', 'ada@example.com')[0]);
+
+        // The thief signs in with the old password; the owner's reset lands
+        // once the thief's worker has read the account.
+        $thief = new Visitor(new MemberApp($connection));
+        $thief->app->now = $app->now;
+        $ran = between($thief->app, 'FROM "members" WHERE "email"', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'the owner chose this one')));
+        try {
+            $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+            $refusal = null;
+        } catch (ValidationException $e) {
+            $refusal = $e->errors;
+        }
+
+        expect($ran())->toBeTrue()
+            ->and(password_verify('the owner chose this one', $stored()))->toBeTrue()
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBe('ada@example.com')
+            ->and($refusal)->toBe(['password' => [Accounts::NO_MATCH]]);
+
+        // The old password signs in nowhere since.
+        $later = new Visitor(new MemberApp($connection));
+        $later->app->now = $app->now;
+        expect(refused(static fn () => $later->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD))))->toBe(['password' => [Accounts::NO_MATCH]]);
+    });
+})->with('drivers');
+
+it('keeps every other session of an account signed in when two sign-ins rehash its password at once', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        member($app);
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4])]);
+        // Another device, signed in where the app keeps such a hash as it
+        // is, so its session is held to it.
+        $seeded = static fn (string $hash): bool => (password_get_info($hash)['options']['cost'] ?? null) === 4;
+        $laptop = new Visitor(new MemberApp($connection, keepHash: $seeded));
+        $laptop->app->now = $app->now;
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        // The form sent twice from one browser, to two workers: the second
+        // rehashes and re-seals while the first has read the account and
+        // not yet written.
+        $first = new Visitor(new MemberApp($connection));
+        $first->app->now = $app->now;
+        $second = new Visitor(new MemberApp($connection));
+        $second->app->now = $app->now;
+        $second->cookie = $first->cookie;
+        $ran = between($first->app, 'FROM "members" WHERE "email"', static fn () => $second->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)));
+        $first->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        $stored = (string) $connection->select('SELECT password_hash FROM members')[0]['password_hash'];
+        expect($ran())->toBeTrue()
+            ->and(password_get_info($stored)['options']['cost'] ?? null)->not->toBe(4)
+            ->and(password_verify(PASSWORD, $stored))->toBeTrue()
+            ->and(nextRequest($laptop))->toBe('ada@example.com')
+            ->and(nextRequest($second))->toBe('ada@example.com')
+            ->and(nextRequest($first))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
 it('adds the credentials column to a sessions table made before it, and signs nobody in on a row without them', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $connection = $app->orm->connection();

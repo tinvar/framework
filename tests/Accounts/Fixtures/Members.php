@@ -121,6 +121,20 @@ final readonly class Members implements AccountUsers
         $this->orm->save($user);
     }
 
+    public function changePasswordFrom(AccountUser $user, string $current, string $passwordHash): bool
+    {
+        \assert($user instanceof Member);
+
+        return $this->orm->query(Member::class)->where('id', $user->id)->where('passwordHash', $current)->update(['passwordHash' => $passwordHash]) === 1;
+    }
+
+    public function storedPasswordHash(AccountUser $user): ?string
+    {
+        $hash = $this->orm->query(Member::class)->where('id', $user->authIdentifier())->pluck('passwordHash')[0] ?? null;
+
+        return \is_string($hash) ? $hash : null;
+    }
+
     public function changeEmail(AccountUser $user, string $email): void
     {
         \assert($user instanceof Member);

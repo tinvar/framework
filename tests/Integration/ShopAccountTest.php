@@ -477,6 +477,32 @@ it('rehashes a password on sign-in when the hashing policy has moved on since', 
         ->and(password_verify(DemoAccount::PASSWORD, $stored))->toBeTrue();
 });
 
+// The kit stores a rehash through Customers, over the hash its sign-in
+// checked and no other (ADR 0168): a password stored since, a reset's,
+// stays -- and what is stored is read past the customer the request loaded.
+it('stores a rehash only over the hash its sign-in checked, and records it as a save is', function () {
+    [$visitor, $pdo] = shop();
+    $customers = new Customers($visitor->kernel->orm);
+    $customer = demo($visitor);
+    $checked = $customer->accountPasswordHash();
+    $reset = password_hash('a brand new passphrase', PASSWORD_DEFAULT);
+    $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email = ?')->execute([$reset, DemoAccount::EMAIL]);
+
+    expect($customers->changePasswordFrom($customer, $checked, password_hash(DemoAccount::PASSWORD, PASSWORD_DEFAULT)))->toBeFalse()
+        ->and($customers->storedPasswordHash($customer))->toBe($reset);
+
+    $rehashed = password_hash('a brand new passphrase', PASSWORD_DEFAULT);
+    $changes = static fn (): array => array_values(array_filter(
+        $visitor->kernel->audit->trail()->forSubjectKey(Customer::class, $customer->id),
+        static fn (\Tinvar\Audit\AuditEntry $entry): bool => $entry->event === 'updated',
+    ));
+    expect($changes())->toBe([])
+        ->and($customers->changePasswordFrom($customer, $reset, $rehashed))->toBeTrue()
+        ->and($customers->storedPasswordHash($customer))->toBe($rehashed)
+        ->and(array_map(static fn (\Tinvar\Audit\AuditEntry $entry): ?array => $entry->changes, $changes()))
+        ->toBe([['passwordHash' => [\Tinvar\Orm\ModelChange::REDACTED, \Tinvar\Orm\ModelChange::REDACTED]]]);
+});
+
 // Rehashed, the load test's twenty thousand sign-ins would each pay for a
 // hash at the default cost, and then measure bcrypt rather than the shop.
 it('leaves a seeded credential at the seeded cost', function () {

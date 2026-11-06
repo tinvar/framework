@@ -289,7 +289,8 @@ final class Accounts
     /**
      * Checks an email and password and signs the browser in -- or, for an
      * account with two-factor sign-in on, moves it to the second-factor
-     * stage, signed in as nobody until a code is typed.
+     * stage, signed in as nobody until a code is typed. A hash the policy
+     * has moved on from is replaced on the way (rehash()).
      */
     public function signIn(Request $http, string $email, #[\SensitiveParameter] string $password): SignInResult
     {
@@ -298,8 +299,12 @@ final class Accounts
 
         $user = $this->users->findByEmail($email);
         // Checked either way, against a decoy as costly as the accounts, so
-        // an unknown email takes what a known one does.
-        if (!$this->passwords->verify($password, $user?->accountPasswordHash()) || $user === null) {
+        // an unknown email takes what a known one does -- and, once right,
+        // against a hash stored since, where a rehash finds one (rehash()).
+        $hash = $this->passwords->verify($password, $user?->accountPasswordHash()) && $user !== null
+            ? $this->rehash($user, $password)
+            : null;
+        if ($user === null || $hash === null) {
             // In the account's log, where there is one, by the address that
             // was tried: written though the sign-in fails, since it runs in
             // no transaction -- and written for an unknown address too, so
@@ -309,19 +314,6 @@ final class Accounts
             throw new ValidationException(['password' => [self::NO_MATCH]]);
         }
         $this->signInThrottle->succeeded($http, $email);
-
-        // The one moment the password is known: a hash the policy has moved
-        // on from is replaced while it can be, and the account's sessions
-        // held to the hash replaced are held to the new one.
-        $hash = $user->accountPasswordHash();
-        if ($this->passwords->needsRehash($hash)) {
-            $rehashed = $this->passwords->hash($password);
-            $this->connection->transaction(function () use ($user, $hash, $rehashed): void {
-                $this->users->changePassword($user, $rehashed);
-                $this->sessions->rehashed($user, $hash, $rehashed);
-            });
-            $hash = $rehashed;
-        }
 
         // Held to the hash the password was checked against, the session
         // ends at a new password, however the two requests met. The epoch is
@@ -1071,6 +1063,50 @@ final class Accounts
         if ($from === null || $this->credentials->of($user->authIdentifier()) !== (string) ((int) $from + 1)) {
             throw new ValidationException([$field => [self::SESSION_ENDED]]);
         }
+    }
+
+    /**
+     * The hash a password just checked against $user's signs in against:
+     * that one -- or, where the policy has moved on from it, the password
+     * hashed again and stored in its place while the password is known, the
+     * account's sessions held to the hash replaced held to the new one in
+     * the same transaction (Sessions::rehashed()).
+     *
+     * Stored only in place of the hash checked, by a compare-and-set
+     * (AccountUsers::changePasswordFrom(), ADR 0168). Where another request
+     * stored one since -- a reset or a change, whose new password must stay,
+     * or another sign-in's rehash of this one, a double click on the form,
+     * which the sessions are held to now -- nothing is written or re-sealed,
+     * and the password is checked against the hash stored: the one to sign
+     * in against while the password is still the account's, and null once
+     * it is not.
+     */
+    private function rehash(AccountUser $user, #[\SensitiveParameter] string $password): ?string
+    {
+        $hash = $user->accountPasswordHash();
+        if (!$this->passwords->needsRehash($hash)) {
+            return $hash;
+        }
+
+        $rehashed = $this->passwords->hash($password);
+        $replaced = $this->connection->transaction(function () use ($user, $hash, $rehashed): bool {
+            if (!$this->users->changePasswordFrom($user, $hash, $rehashed)) {
+                return false;
+            }
+            $this->sessions->rehashed($user, $hash, $rehashed);
+
+            return true;
+        });
+        if ($replaced) {
+            return $rehashed;
+        }
+
+        // Read once that transaction is over, a statement of its own: inside
+        // it, MySQL's REPEATABLE READ may answer a plain read from a snapshot
+        // older than the write that got there first.
+        $stored = $this->users->storedPasswordHash($user);
+
+        return $stored !== null && $this->passwords->verify($password, $stored) ? $stored : null;
     }
 
     /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */
