@@ -486,6 +486,38 @@ it('keeps a session\'s new challenge when an old one of its own for another cere
     });
 })->with('drivers');
 
+// ADR 0172: a passkey whose authenticator keeps no count -- iCloud
+// Keychain's, Google Password Manager's -- reports 0 every time. Used again
+// in the second it was last used, its use changed nothing, which MySQL
+// counts as no row: the sign-in or the confirmation was refused there.
+it('signs in and confirms with a passkey that keeps no count, again and again in one second', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $authenticator = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $handle = (string) Base64Url::decode($options['user']['id']);
+        $made = $authenticator->register((string) Base64Url::decode($options['challenge']));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $made), 'Phone'));
+
+        // The app's clock stands still: every use below is in one second.
+        foreach (['laptop', 'tablet', 'desktop'] as $device) {
+            $visitor = new Visitor($app);
+            $challenge = (string) Base64Url::decode($visitor->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))['challenge']);
+            $answer = $authenticator->assert($challenge, ['signCount' => 0]);
+            $visitor->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $answer, $handle)));
+            expect($visitor->who())->toBe('ada@example.com', "signed in on the {$device}");
+        }
+
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyConfirmationOptions($r, $user));
+        $answer = $authenticator->assert((string) Base64Url::decode($options['challenge']), ['signCount' => 0]);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmWithPasskey($r, $user, credential($authenticator, $answer)));
+        expect($app->kit->accounts->passkeys($user)[0]->signCount)->toBe(0);
+    });
+})->with('drivers');
+
 it('removes a passkey for its own account alone', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $ada = member($app, 'ada@example.com');

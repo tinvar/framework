@@ -7,6 +7,7 @@ namespace Tinvar\Accounts\Passkeys;
 use Carbon\CarbonImmutable;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 use Tinvar\Orm\TimestampStorage;
@@ -117,13 +118,26 @@ final readonly class PasskeyStore
      * Records a sign-in with the passkey: its new sign count, and when. Only
      * from the count it was read at, so of two sign-ins racing with one
      * response, one wins.
+     *
+     * MySQL counts the rows an UPDATE changed, not the rows it matched, and
+     * a passkey that keeps no count -- 0 every time, as synced passkeys
+     * report -- used again in the second it was last used changes nothing.
+     * There the passkey is asked after when the count stays put and no row
+     * was counted: still kept at the count it was read at (ADR 0172). The
+     * read locks (FOR SHARE), so it sees the row as it stands, not as a
+     * transaction already open first read it. A count never goes back, and
+     * an id is never kept again, so a row it finds is the one the UPDATE
+     * matched.
      */
     public function used(Passkey $passkey, VerifiedAssertion $assertion): bool
     {
         return $this->connection->execute(
             'UPDATE passkeys SET sign_count = ?, backed_up = ?, last_used_at = ? WHERE id = ? AND sign_count = ?',
             [$assertion->signCount, $assertion->backedUp, $this->moment(), $passkey->id, $passkey->signCount],
-        ) === 1;
+        ) === 1 || ($assertion->signCount === $passkey->signCount && $this->onMysql() && $this->connection->select(
+            'SELECT 1 FROM passkeys WHERE id = ? AND sign_count = ? FOR SHARE',
+            [$passkey->id, $passkey->signCount],
+        ) !== []);
     }
 
     /** Removes the passkey $id if it is $userId's; false when it is not, or is gone. */
@@ -155,6 +169,11 @@ final readonly class PasskeyStore
     private static function read(mixed $moment): ?CarbonImmutable
     {
         return \is_string($moment) && $moment !== '' ? new CarbonImmutable($moment, 'UTC')->utc() : null;
+    }
+
+    private function onMysql(): bool
+    {
+        return $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql';
     }
 
     private function moment(): string
