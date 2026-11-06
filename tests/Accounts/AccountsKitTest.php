@@ -1722,6 +1722,38 @@ it('keeps every other session of an account signed in when two sign-ins rehash i
     });
 })->with('drivers');
 
+// A session is opened by reading its row, then its account. A rehash
+// stores its hash and re-seals the row in one transaction, and one that
+// commits between the two reads left the row, as read, held to the hash
+// the account no longer had: the device was signed out.
+it('keeps a device signed in whose request opens its session while a sign-in elsewhere rehashes the password', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        member($app);
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4])]);
+        $seeded = static fn (string $hash): bool => (password_get_info($hash)['options']['cost'] ?? null) === 4;
+        $laptop = new Visitor(new MemberApp($connection, keepHash: $seeded));
+        $laptop->app->now = $app->now;
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        // The laptop's next request, at a worker that has loaded nothing:
+        // the phone's sign-in rehashes once that request has read its row.
+        $next = new Visitor(new MemberApp($connection));
+        $next->app->now = $app->now;
+        $next->cookie = $laptop->cookie;
+        $phone = new Visitor(new MemberApp($connection));
+        $phone->app->now = $app->now;
+        $ran = between($next->app, 'FROM sessions s LEFT JOIN', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)));
+        $opened = $next->state();
+
+        expect($opened->user()?->accountEmail())->toBe('ada@example.com')
+            ->and($opened->replacement())->toBeNull()
+            ->and($ran())->toBeTrue()
+            ->and(nextRequest($laptop))->toBe('ada@example.com')
+            ->and(nextRequest($phone))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
 it('adds the credentials column to a sessions table made before it, and signs nobody in on a row without them', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $connection = $app->orm->connection();

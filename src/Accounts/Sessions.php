@@ -215,9 +215,24 @@ final readonly class Sessions
         // moved the credential epoch, or a new password replaced the hash,
         // and ended it whether or not its row was there to delete.
         $user = \is_scalar($row['user_id']) ? $this->users->find((string) $row['user_id']) : null;
-        $credentialEpoch = self::epoch($row['credential_epoch'] ?? null);
-        if ($user === null || !$this->holds($row['credentials'] ?? null, new Credentials($user->authIdentifier(), $credentialEpoch, $user->accountPasswordHash()))) {
+        if ($user === null) {
             return $this->ended($cookie, $id, $realm);
+        }
+        $credentialEpoch = self::epoch($row['credential_epoch'] ?? null);
+        if (!$this->holds($row['credentials'] ?? null, new Credentials($user->authIdentifier(), $credentialEpoch, $user->accountPasswordHash()))) {
+            // A rehash stores its hash and holds the account's sessions to it
+            // in one transaction (rehashed()): one that committed between the
+            // row's read and the account's left the row, as read, held to the
+            // hash replaced. Read again, it is held to the one loaded; a row a
+            // revocation deleted, or held to another password, is not.
+            $again = $this->connection->select(
+                'SELECT s.credentials, c.epoch AS credential_epoch FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id WHERE s.id = ?',
+                [self::hash($id)],
+            )[0] ?? null;
+            $credentialEpoch = self::epoch($again['credential_epoch'] ?? null);
+            if ($again === null || !$this->holds($again['credentials'] ?? null, new Credentials($user->authIdentifier(), $credentialEpoch, $user->accountPasswordHash()))) {
+                return $this->ended($cookie, $id, $realm);
+            }
         }
 
         if ($row['stage'] === SessionStage::SecondFactor->value) {
