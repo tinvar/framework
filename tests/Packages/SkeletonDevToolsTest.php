@@ -154,9 +154,12 @@ function onServer(string $driver, \Closure $test, bool $tools = true): void
     $suffix = bin2hex(random_bytes(5));
     $name = "tinvar_skeleton_dt_{$suffix}";
     $copies = "tinvar_copies_{$suffix}";
-    $app = skeleton();
-    $server->exec("CREATE DATABASE {$name}");
+    $app = null;
+    $created = false;
     try {
+        $app = skeleton();
+        $server->exec("CREATE DATABASE {$name}");
+        $created = true;
         $settings = [
             'TINVAR_ENV' => 'local',
             'APP_DATABASE_DRIVER' => $driver === 'pgsql' ? 'postgres' : 'mysql',
@@ -185,11 +188,15 @@ function onServer(string $driver, \Closure $test, bool $tools = true): void
 
         $test($app, $env, $server, $name);
     } finally {
-        $server->exec($driver === 'pgsql' ? "DROP DATABASE IF EXISTS {$name} WITH (FORCE)" : "DROP DATABASE IF EXISTS {$name}");
+        if ($created) {
+            $server->exec($driver === 'pgsql' ? "DROP DATABASE IF EXISTS {$name} WITH (FORCE)" : "DROP DATABASE IF EXISTS {$name}");
+        }
         if ($driver === 'mysql') {
             $server->exec("DROP USER IF EXISTS '{$copies}'@'%'");
         }
-        remove($app);
+        if ($app !== null) {
+            remove($app);
+        }
     }
 }
 
@@ -417,7 +424,7 @@ it('builds the app a render is made on on the copy alone, keeping its files in t
             ->and(notesIn($driver, $name))->toBe([WELCOME])
             // Its files in the copy's private directory: none beside
             // APP_DATABASE, none named from a DSN.
-            ->and($seen['files'])->toBe(['private' => true, 'mode' => '0700', 'inside' => true])
+            ->and($seen['files'])->toBe(['private' => true, 'mode' => '0700', 'written' => true])
             ->and($seen['beside APP_DATABASE'])->toBe([])
             ->and(namedFromADsn($app))->toBe([])
             // A database handed by name on a server is a copy, or nothing:
@@ -464,6 +471,41 @@ it('refuses a database user or password the DSN the tools copy by cannot carry, 
     'a space at the end of a password, which a DSN trims' => ['pgsql', 'APP_DATABASE_PASSWORD', 'secret '],
     'a semicolon in a user' => ['mysql', 'APP_DATABASE_USER', 'root;dbname=mysql'],
 ]);
+
+it('refuses a copies\' user MySQL it could copy as but the app could not open, before copying anything', function (string $dsn) {
+    onServer('mysql', function (string $app, array $env, \PDO $server, string $name) use ($dsn): void {
+        preg_match('/;user=([^;]+);password=([^;]+)$/', $env['TINVAR_DUMP_MYSQL_DSN'], $user);
+        [$status, $initialized, $err, $pid] = mcp($app, [...$env, 'TINVAR_DUMP_MYSQL_DSN' => "{$dsn};user={$user[1]};password={$user[2]}"]);
+
+        expect($status)->toBe(1, $err)
+            ->and($initialized)->toBeNull()
+            ->and($err)->toContain('TINVAR_DUMP_MYSQL_DSN')
+            ->and($err)->toContain('nothing was copied')
+            ->and($err)->not->toContain($user[2])
+            ->and(copiesOf($server, 'mysql', $pid))->toBe([]);
+    }, tools: false);
+})->with([
+    'no host' => ['mysql:port=3307'],
+    'a socket' => ['mysql:unix_socket=/tmp/tinvar-no-such-mysql.sock'],
+]);
+
+it('refuses an APP_DATABASE that reads as a server\'s DSN on an app that says SQLite', function () {
+    $app = skeleton();
+    try {
+        [$status, $initialized, $err] = mcp($app, environment([
+            'TINVAR_ENV' => 'local',
+            'APP_DATABASE_DRIVER' => 'sqlite',
+            'APP_DATABASE' => 'pgsql:host=127.0.0.1;dbname=app;user=app;password=secret',
+        ]));
+
+        expect($status)->toBe(1, $err)
+            ->and($initialized)->toBeNull()
+            ->and($err)->toContain('APP_DATABASE')
+            ->and($err)->not->toContain('secret');
+    } finally {
+        remove($app);
+    }
+});
 
 it('holds the tools to where they may run before it reads how to reach the database', function () {
     $app = skeleton();

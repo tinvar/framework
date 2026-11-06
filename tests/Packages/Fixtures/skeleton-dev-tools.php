@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 use App\Database\Models\Note;
 use App\Kernel;
+use Tinvar\Http\Request;
 use Tinvar\Config\FrameworkConfig;
 use Tinvar\Config\Secret;
 use Tinvar\Orm\Connection;
@@ -62,12 +63,16 @@ if ($driver === 'mysql') {
     $seen['ansi quotes'] = str_contains((string) $connection->select('SELECT @@SESSION.sql_mode AS mode')[0]['mode'], 'ANSI_QUOTES');
 }
 
+// A request through the app, which has no renderer to reach here: it logs
+// its failure and counts it, into the files kept beside its database.
+$kernel->handle(Request::get('/'));
+$kernel->terminate();
 $directory = dirname($snapshot->files);
 clearstatcache();
 $seen['files'] = [
     'private' => is_dir($directory) && fileowner($directory) === posix_geteuid(),
     'mode' => sprintf('%04o', fileperms($directory) & 0o777),
-    'inside' => str_starts_with($snapshot->files, $directory . '/') && $snapshot->files !== $snapshot->database,
+    'written' => (glob($snapshot->files . '-*') ?: []) !== [],
 ];
 $seen['beside APP_DATABASE'] = glob(Kernel::databasePath() . '-*') ?: [];
 
