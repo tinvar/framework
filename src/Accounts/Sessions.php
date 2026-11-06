@@ -72,6 +72,10 @@ final readonly class Sessions
     /** What a row's credentials are sealed under, with the app key. */
     private const string CREDENTIALS_PURPOSE = 'session-credentials';
 
+    /** Where open() reads a session's row with its account's credential and auth epochs, by the row's hashed id. */
+    private const string WITH_EPOCHS = 'FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id '
+        . 'LEFT JOIN ' . AuthEpochs::TABLE . ' a ON a.user_id = s.user_id WHERE s.id = ?';
+
     private Signer $seals;
 
     public function __construct(
@@ -199,9 +203,14 @@ final readonly class Sessions
         }
 
         $now = $this->cookie->now();
+        // The row, and both of the account's epochs, in one statement: one
+        // snapshot. The request runs on the auth epoch read here, so a
+        // revocation -- which moves both in one transaction -- either came
+        // before it, and the seal below fails, or after it, and moves on
+        // from the epoch the request binds what it mints to (ADR 0171).
         $row = $this->connection->select(
-            'SELECT s.user_id, s.realm, s.stage, s.last_seen_at, s.expires_at, s.confirmed_at, s.credentials, c.epoch AS credential_epoch '
-            . 'FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id WHERE s.id = ?',
+            'SELECT s.user_id, s.realm, s.stage, s.last_seen_at, s.expires_at, s.confirmed_at, s.credentials, c.epoch AS credential_epoch, a.epoch AS auth_epoch '
+            . self::WITH_EPOCHS,
             [self::hash($id)],
         )[0] ?? null;
 
@@ -225,11 +234,13 @@ final readonly class Sessions
             // row's read and the account's left the row, as read, held to the
             // hash replaced. Read again, it is held to the one loaded; a row a
             // revocation deleted, or held to another password, is not.
+            // Both epochs again too, from the same snapshot as the seal.
             $again = $this->connection->select(
-                'SELECT s.credentials, c.epoch AS credential_epoch FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id WHERE s.id = ?',
+                'SELECT s.credentials, c.epoch AS credential_epoch, a.epoch AS auth_epoch ' . self::WITH_EPOCHS,
                 [self::hash($id)],
             )[0] ?? null;
             $credentialEpoch = self::epoch($again['credential_epoch'] ?? null);
+            $row['auth_epoch'] = $again['auth_epoch'] ?? null;
             if ($again === null || !$this->holds($again['credentials'] ?? null, new Credentials($user->authIdentifier(), $credentialEpoch, $user->accountPasswordHash()))) {
                 return $this->ended($cookie, $id, $realm);
             }
@@ -247,7 +258,7 @@ final readonly class Sessions
 
         $confirmed = \is_numeric($row['confirmed_at'] ?? null) ? (int) $row['confirmed_at'] : null;
 
-        return new SessionState($id, $realm, $user, $this->epochs->of($user->authIdentifier()), confirmedAt: $confirmed, credentialEpoch: $credentialEpoch);
+        return new SessionState($id, $realm, $user, self::epoch($row['auth_epoch'] ?? null), confirmedAt: $confirmed, credentialEpoch: $credentialEpoch);
     }
 
     /**
@@ -603,7 +614,7 @@ final readonly class Sessions
         return \is_string($sealed) && hash_equals($this->seal($now), $sealed);
     }
 
-    /** A credential epoch as the database answered it -- an integer, a numeric string, or null for none -- as CredentialEpochs::of() spells it. */
+    /** An epoch as the database answered it -- an integer, a numeric string, or null for none -- as CredentialEpochs::of() and AuthEpochs::of() spell it. */
     private static function epoch(mixed $value): string
     {
         return (string) (\is_int($value) || \is_string($value) ? $value : 0);

@@ -227,6 +227,47 @@ final class EpochReadFirst implements UserLookup
     }
 }
 
+/**
+ * The handoff endpoint between app.example and admin.app.example, over
+ * $app's kit, as a step a browser asks of it: the session opened as the
+ * middleware opens it, and the query the step's redirect carries to the next.
+ *
+ * @return \Closure(Visitor, string, array<string, mixed>): array<string, mixed>
+ */
+function handoffs(MemberApp $app, UserLookup $users): \Closure
+{
+    $connection = $app->orm->connection();
+    DatabaseNonceStore::define(new Schema($connection, Dialect::for($connection)), 'handoff_nonces');
+    $kit = $app->kit;
+    $endpoint = new HandoffEndpoint(
+        realms: new Realms(Realm::platform('https://app.example'), [Realm::platform('https://admin.app.example')]),
+        signer: new Signer(MemberApp::KEY, HandoffCode::PURPOSE),
+        nonces: new DatabaseNonceStore($connection, 'handoff_nonces', durable: true),
+        sessionId: static fn (Request $r): string => $kit->cookie->of($r),
+        auth: $app->auth,
+        orm: $app->orm,
+        users: $users,
+        sessions: $kit->arrivals,
+        signIn: static fn (string $next): Response => Response::redirect('/sign-in'),
+        clock: static fn (): int => $app->now,
+    );
+
+    return static function (Visitor $visitor, string $path, array $query) use ($app, $endpoint): array {
+        $request = new Request('GET', $path, ['host' => $visitor->host], query: $query, cookies: [$app->kit->cookie->name => $visitor->cookie], rawQuery: http_build_query($query, '', '&', PHP_QUERY_RFC3986), remoteAddress: $visitor->address);
+        $state = $app->kit->sessions->open($request);
+        $app->auth->login($state->user(), $state->epoch());
+        try {
+            $location = (string) $endpoint->handle($request->withAttribute(SessionState::ATTRIBUTE, $state))->header('location');
+        } finally {
+            $visitor->cookie = $state->replacement() ?? $visitor->cookie;
+            $app->auth->login(null);
+        }
+        parse_str((string) parse_url($location, PHP_URL_QUERY), $next);
+
+        return $next;
+    };
+}
+
 /** Signs $email up through the link, and returns the browser, signed in. */
 function member(MemberApp $app, string $email = 'ada@example.com'): Visitor
 {
@@ -1287,39 +1328,8 @@ it('ends a sign-in by passkey when that passkey is removed once it was checked',
 
 it('refuses a handoff whose user signed out everywhere after the endpoint read their epoch, and makes no session for it', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
-        $connection = $app->orm->connection();
-        DatabaseNonceStore::define(new Schema($connection, Dialect::for($connection)), 'handoff_nonces');
-        $kit = $app->kit;
-        $lookup = new EpochReadFirst($kit->lookup);
-        $endpoint = new HandoffEndpoint(
-            realms: new Realms(Realm::platform('https://app.example'), [Realm::platform('https://admin.app.example')]),
-            signer: new Signer(MemberApp::KEY, HandoffCode::PURPOSE),
-            nonces: new DatabaseNonceStore($connection, 'handoff_nonces', durable: true),
-            sessionId: static fn (Request $r): string => $kit->cookie->of($r),
-            auth: $app->auth,
-            orm: $app->orm,
-            users: $lookup,
-            sessions: $kit->arrivals,
-            signIn: static fn (string $next): Response => Response::redirect('/sign-in'),
-            clock: static fn (): int => $app->now,
-        );
-        // One step of the handoff, as the browser $visitor asks it, with
-        // the session opened as the middleware opens it; the query the
-        // step's redirect carries to the next.
-        $step = static function (Visitor $visitor, string $path, array $query) use ($app, $endpoint): array {
-            $request = new Request('GET', $path, ['host' => $visitor->host], query: $query, cookies: [$app->kit->cookie->name => $visitor->cookie], rawQuery: http_build_query($query, '', '&', PHP_QUERY_RFC3986), remoteAddress: $visitor->address);
-            $state = $app->kit->sessions->open($request);
-            $app->auth->login($state->user(), $state->epoch());
-            try {
-                $location = (string) $endpoint->handle($request->withAttribute(SessionState::ATTRIBUTE, $state))->header('location');
-            } finally {
-                $visitor->cookie = $state->replacement() ?? $visitor->cookie;
-                $app->auth->login(null);
-            }
-            parse_str((string) parse_url($location, PHP_URL_QUERY), $next);
-
-            return $next;
-        };
+        $lookup = new EpochReadFirst($app->kit->lookup);
+        $step = handoffs($app, $lookup);
 
         $home = member($app);
         $admin = new Visitor($app, 'admin.app.example');
@@ -1330,6 +1340,58 @@ it('refuses a handoff whose user signed out everywhere after the endpoint read t
             ->and($lookup->then)->toBeNull()
             ->and(nextRequest($admin))->toBeNull()
             ->and(nextRequest($home))->toBeNull();
+    });
+})->with('drivers');
+
+it('runs a request on the auth epoch read with its session, so what it binds to that epoch ends with a sign-out everywhere landing once the session was read', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $phone = new Visitor(new MemberApp($app->orm->connection()));
+        $phone->app->now = $app->now;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $before = $app->kit->epochs->of($user->authIdentifier());
+
+        // The sign-out everywhere lands just after the request read its
+        // session's row: the request began before it, and runs on the epoch
+        // that was current then -- which the sign-out everywhere has moved on.
+        $ran = between($app, 'credential_epochs c ON', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        [$who, $opened, $bound] = $owner->do(static fn (Accounts $a, Request $r): array => [SessionState::of($r)->user()?->accountEmail(), SessionState::of($r)->epoch(), $app->auth->epoch()]);
+        expect($ran())->toBeTrue()
+            ->and($who)->toBe('ada@example.com')
+            ->and($opened)->toBe($before)
+            ->and($bound)->toBe($before)
+            ->and($app->kit->epochs->of($user->authIdentifier()))->not->toBe($before)
+            ->and(nextRequest($owner))->toBeNull()
+            ->and(nextRequest($phone))->toBeNull();
+    });
+})->with('drivers');
+
+it('refuses the handoff a request minted when a sign-out everywhere lands once it read its session, and makes no session for it', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $step = handoffs($app, $app->kit->lookup);
+        $owner = member($app);
+        // A thief has a copy of the owner's cookie; the owner's phone is at another worker.
+        $thief = new Visitor($app);
+        $thief->cookie = $owner->cookie;
+        $phone = new Visitor(new MemberApp($app->orm->connection()));
+        $phone->app->now = $app->now;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $admin = new Visitor($app, 'admin.app.example');
+        $authorize = $step($admin, HandoffEndpoint::START, ['return' => '/orders']);
+
+        // The owner signs out everywhere just as the thief's request for a
+        // code has read its session: the code is minted, on the epoch the
+        // sign-out everywhere moved on from, and the admin host refuses it.
+        $ran = between($app, 'credential_epochs c ON', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        $code = $step($thief, HandoffEndpoint::AUTHORIZE, $authorize);
+        expect($ran())->toBeTrue()
+            ->and($code)->toHaveKey('code')
+            ->and(static fn () => $step($admin, HandoffEndpoint::CALLBACK, $code))->toThrow(HttpException::class, "its user's auth epoch has moved since it was minted")
+            ->and(nextRequest($admin))->toBeNull()
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($phone))->toBeNull();
     });
 })->with('drivers');
 
@@ -1540,13 +1602,13 @@ it('refuses an API token to a session a sign-out everywhere ended once the reque
 
         // A sign-in elsewhere, once the request has opened its session, moves
         // the auth epoch alone: the session stands, and so does its token.
-        $ran = between($app, 'FROM auth_epochs WHERE user_id', static fn () => $tablet->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)));
+        $ran = between($app, 'credential_epochs c ON', static fn () => $tablet->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)));
         $kept = $issue();
         expect($ran())->toBeTrue()
             ->and($tokens->authenticate($kept->plaintext))->not->toBeNull();
 
         // A sign-out everywhere, landing at the same moment, ended it: none.
-        $ran = between($app, 'FROM auth_epochs WHERE user_id', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        $ran = between($app, 'credential_epochs c ON', static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
         $refused = tokenRefused($issue);
         expect($ran())->toBeTrue()
             ->and($refused->choice)->toBe(ApiTokenChoice::Caller)
