@@ -221,3 +221,11 @@ it('serves PHP behind the shop\'s intercept block, which its check holds it to',
         ->and(read('bin/tinvar'))->toContain('new AppConsole(')
         ->and(read('packages/skeleton/.env.example'))->toContain('# APP_STORAGE=');
 });
+
+// ADR 0177: `bin/dev` runs the framework's dev Caddyfile, whose live hub
+// refuses to start without its keys, and they reach FrankenPHP only through
+// the console's serverEnvironment -- derived from the app key, never the key.
+it('hands the dev server the live hub\'s keys, as the shop does', function () {
+    expect(read('packages/framework/resources/Caddyfile.dev'))->toContain('{env.TINVAR_LIVE_SUBSCRIBER_KEY}')
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain('serverEnvironment: static fn (): array => Tinvar\\Live\\HubSettings::resolve(Kernel::appKey())->environment(),');
+});
