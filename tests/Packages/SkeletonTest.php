@@ -113,6 +113,19 @@ it('ships no secret, and keeps secrets and state out of git and the image', func
         ->and(file_exists(ROOT . '/packages/skeleton/.env'))->toBeFalse();
 });
 
+// ADR 0175: setup downloads FrankenPHP where serve finds none, after npm,
+// and a failure there leaves the step in the next steps, not a failed setup.
+it('downloads FrankenPHP in setup, after npm, and leaves it to the next steps when that fails', function () {
+    $setup = read('packages/skeleton/bin/tinvar');
+    $npm = strpos($setup, '[$npm, \'ci\', \'--ignore-scripts\'');
+    $install = strpos($setup, "\$console->run([__FILE__, 'frankenphp:install'])");
+
+    expect($install)->toBeInt()
+        ->and($install)->toBeGreaterThan($npm)
+        ->and($setup)->toContain("getenv('TINVAR_SETUP_SKIP_FRANKENPHP') === '1'")
+        ->and($setup)->toContain('bin/tinvar frankenphp:install       # FrankenPHP, which bin/serve and bin/dev run');
+});
+
 it('runs no install script and nothing it fetched when an app is made', function () {
     $composer = json_decode(read('packages/skeleton/composer.json'), true);
     \assert(\is_array($composer));
