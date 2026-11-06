@@ -11,14 +11,12 @@ use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\Violation;
 use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
-use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Console\Deploy\DeployInitCommand;
 use Tinvar\Console\Doctor\Doctor;
 use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Console\Kits\KitInstaller;
 use Tinvar\Console\Kits\KitTarget;
 use Tinvar\Console\NewApp\NewAppCommand;
-use Tinvar\Http\EntryContext;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
 use Tinvar\Console\Prompts\Progress;
@@ -26,12 +24,15 @@ use Tinvar\Console\Secrets\SecretFiles;
 use Tinvar\Discovery\DiscoveredClasses;
 use Tinvar\Discovery\Discovery;
 use Tinvar\Discovery\DiscoveryFailed;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Gateway\GatewayKeys;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
 use Tinvar\Generators\MakeCommand;
 use Tinvar\Generators\Registrations;
 use Tinvar\Http\BuildStore;
+use Tinvar\Http\EntryContext;
+use Tinvar\Live\HubSettings;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Migrations\DatabaseSeeder;
 use Tinvar\Orm\Migrations\MigrateCommand;
@@ -58,6 +59,7 @@ use Tinvar\Server\ProfileBuildCommand;
 use Tinvar\Server\RendererCommand;
 use Tinvar\Server\ServeCommand;
 use Tinvar\Server\ServeException;
+use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Transfers\TransferRegistry;
 
@@ -749,10 +751,34 @@ final class AppConsole
 
         return new ServeCommand(
             $this->projectRoot,
-            serverEnvironment: $this->serverEnvironment,
+            serverEnvironment: $this->serverEnvironment(),
             console: $this->workers ? $this->console : null,
             rendererLog: $this->rendererLog === null ? null : ($this->rendererLog)(),
         )->run($arguments);
+    }
+
+    /**
+     * What `serve` and `dev` hand FrankenPHP alone: the application's own,
+     * where its console gives one; otherwise the live hub's keys, derived
+     * from its app key -- TINVAR_APP_KEY, or the key in its key file, as its
+     * Kernel reads it -- since the dev Caddyfile's hub refuses to start
+     * without them. Never the app key itself. Null where there is no app
+     * key to derive from (ADR 0178).
+     *
+     * @return (\Closure(): array<string, string>)|null
+     */
+    public function serverEnvironment(): ?\Closure
+    {
+        if ($this->serverEnvironment !== null) {
+            return $this->serverEnvironment;
+        }
+        $given = getenv(SecretFiles::APP_KEY);
+        $keyFile = $this->secretFile($this->keyFile, 'keyFile');
+        if ($keyFile === null && (!\is_string($given) || $given === '')) {
+            return null;
+        }
+
+        return static fn (): array => HubSettings::resolve(AppKey::application(SecretFiles::APP_KEY, $keyFile ?? ''))->environment();
     }
 
     /**
