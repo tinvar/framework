@@ -51,10 +51,13 @@ use Tinvar\Server\CaddyfileRules;
 use Tinvar\Server\ComposerSources;
 use Tinvar\Server\ConfigCommand;
 use Tinvar\Server\DevCommand;
+use Tinvar\Server\FrankenPhp;
+use Tinvar\Server\FrankenPhpDownload;
 use Tinvar\Server\PhpCommand;
 use Tinvar\Server\ProfileBuildCommand;
 use Tinvar\Server\RendererCommand;
 use Tinvar\Server\ServeCommand;
+use Tinvar\Server\ServeException;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Transfers\TransferRegistry;
 
@@ -867,6 +870,7 @@ final class AppConsole
                 return 1;
             })
             ->command('serve', 'serve [--host=HOST] [--port=PORT] [--workers=N] [--renderers=N] [--frankenphp=PATH]', 'Serve the build with FrankenPHP workers and a pool of renderers', $this->serve(...))
+            ->command('frankenphp:install', 'frankenphp:install', "Download FrankenPHP's official binary for this machine to tools/frankenphp, held to its pinned sha256 before it is made executable; nothing where serve already finds one (network)", $this->frankenphpInstall(...))
             ->command('dev', 'dev [--host=HOST] [--port=PORT] [--frankenphp=PATH]', "Vite's dev server as the renderer, codegen on every PHP change, and the dev toolbar, on loopback; never in production", fn (array $a): int => new DevCommand(
                 console: $this->console,
                 // Where composer.json autoloads the application from; app/
@@ -1027,6 +1031,39 @@ final class AppConsole
         return new Doctor()->run($this->doctorContext(), $fix, static function (string $text): void {
             echo $text;
         });
+    }
+
+    /**
+     * FrankenPHP for serve and dev, where they find none: the release's
+     * binary for this machine, held to its pin (ADR 0175).
+     *
+     * @param list<string> $arguments
+     */
+    private function frankenphpInstall(array $arguments): int
+    {
+        if ($arguments !== []) {
+            return $this->usage('frankenphp:install');
+        }
+        try {
+            $found = FrankenPhp::find($this->projectRoot);
+            if ($found !== null) {
+                echo "FrankenPHP is at {$found}: nothing to download.\n";
+
+                return 0;
+            }
+            $download = new FrankenPhpDownload();
+            $target = "{$this->projectRoot}/tools/frankenphp";
+            echo 'Downloading FrankenPHP v' . FrankenPhpDownload::VERSION . " to tools/frankenphp...\n";
+            $download->install($target);
+        } catch (ServeException $e) {
+            fwrite(STDERR, $e->getMessage() . "\n");
+
+            return 1;
+        }
+        [$asset, $sha256] = $download->asset() ?? ['', ''];
+        echo "FrankenPHP v" . FrankenPhpDownload::VERSION . " at tools/frankenphp: {$asset}, sha256 {$sha256}, as pinned.\n";
+
+        return 0;
     }
 
     /**
