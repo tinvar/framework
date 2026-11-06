@@ -131,6 +131,54 @@ it('says where to get FrankenPHP on a machine it has no binary for', function ()
     expect($fetched)->toBe([]);
 });
 
+it('takes an Apple silicon Mac under Rosetta for the arm64 Mac it is', function () {
+    $arm = static fn (string $key): ?string => $key === 'hw.optional.arm64' ? '1' : null;
+    $intel = static fn (string $key): ?string => null;
+
+    expect(FrankenPhpDownload::machine('Darwin', 'x86_64', $arm))->toBe('arm64')
+        ->and(FrankenPhpDownload::machine('Darwin', 'x86_64', $intel))->toBe('x86_64')
+        ->and(FrankenPhpDownload::machine('Darwin', 'arm64', $intel))->toBe('arm64')
+        ->and(FrankenPhpDownload::machine('Linux', 'x86_64', $arm))->toBe('x86_64');
+});
+
+it('downloads no glibc build onto a musl Linux, where it could not run', function () {
+    $download = downloader("\x7fELF a binary", fetched: $fetched);
+
+    expect(fn () => $download->install("{$this->project}/tools/frankenphp", 'Linux', 'x86_64', musl: true))
+        ->toThrow(ServeException::class, "needs glibc, and this Linux's C library is musl");
+    expect($fetched)->toBe([])
+        ->and("{$this->project}/tools/frankenphp")->not->toBeFile();
+});
+
+it('never replaces a binary put there while it downloaded', function () {
+    $project = $this->project;
+    $download = new FrankenPhpDownload(
+        version: '9.9.9',
+        assets: ['Linux x86_64' => ['frankenphp-linux-x86_64-gnu', hash('sha256', 'pinned')]],
+        fetch: static function () use ($project) {
+            file_put_contents("{$project}/tools/frankenphp", 'mine, meanwhile');
+
+            return stream('pinned');
+        },
+    );
+
+    expect(fn () => $download->install("{$project}/tools/frankenphp", 'Linux', 'x86_64'))
+        ->toThrow(ServeException::class, 'is there already');
+    expect(file_get_contents("{$project}/tools/frankenphp"))->toBe('mine, meanwhile')
+        ->and(glob("{$project}/tools/.*.part") ?: [])->toBe([]);
+});
+
+it('clears what an interrupted download left, and nothing else', function () {
+    mkdir("{$this->project}/tools");
+    file_put_contents("{$this->project}/tools/.frankenphp-0123456789abcdef.part", 'half');
+    file_put_contents("{$this->project}/tools/.mine.part", 'kept');
+
+    downloader("\x7fELF a binary")->install("{$this->project}/tools/frankenphp", 'Linux', 'x86_64');
+
+    expect("{$this->project}/tools/.frankenphp-0123456789abcdef.part")->not->toBeFile()
+        ->and("{$this->project}/tools/.mine.part")->toBeFile();
+});
+
 it('finds a binary that is there, and nothing where none is', function () {
     $path = getenv('PATH');
     $env = getenv('TINVAR_FRANKENPHP');

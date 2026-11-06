@@ -57,13 +57,50 @@ final readonly class FrankenPhpDownload
      */
     public function asset(string $os = \PHP_OS_FAMILY, ?string $machine = null): ?array
     {
-        $machine = match (strtolower($machine ?? php_uname('m'))) {
-            'arm64', 'aarch64' => $os === 'Darwin' ? 'arm64' : 'aarch64',
-            'x86_64', 'amd64' => 'x86_64',
-            default => $machine ?? php_uname('m'),
-        };
+        $machine = $machine === null ? self::machine($os, php_uname('m')) : self::normalized($os, $machine);
 
         return $this->assets["{$os} {$machine}"] ?? null;
+    }
+
+    /**
+     * The machine a binary is for, as `uname -m` names it, normalized: an
+     * Apple silicon Mac whose PHP runs under Rosetta says `x86_64`, and is
+     * taken for the arm64 Mac it is, whose binary runs there natively.
+     *
+     * @param (\Closure(string): ?string)|null $sysctl reads a sysctl by name; `sysctl -n` by default
+     */
+    public static function machine(string $os, string $uname, ?\Closure $sysctl = null): string
+    {
+        $machine = self::normalized($os, $uname);
+        if ($os === 'Darwin' && $machine === 'x86_64') {
+            $sysctl ??= static function (string $name): ?string {
+                $output = [];
+                exec('/usr/sbin/sysctl -n ' . escapeshellarg($name) . ' 2>/dev/null', $output, $status);
+
+                return $status === 0 ? trim(implode("\n", $output)) : null;
+            };
+            if ($sysctl('hw.optional.arm64') === '1') {
+                return 'arm64';
+            }
+        }
+
+        return $machine;
+    }
+
+    private static function normalized(string $os, string $machine): string
+    {
+        return match (strtolower($machine)) {
+            'arm64', 'aarch64' => $os === 'Darwin' ? 'arm64' : 'aarch64',
+            'x86_64', 'amd64' => 'x86_64',
+            default => $machine,
+        };
+    }
+
+    /** Whether this Linux's C library is musl's, with no glibc loader beside it. */
+    public static function musl(): bool
+    {
+        return (glob('/lib/ld-musl-*.so.1') ?: []) !== []
+            && (glob('/lib{,64,/*-linux-gnu}/ld-linux*.so.*', \GLOB_BRACE) ?: []) === [];
     }
 
     public function url(string $asset): string
@@ -75,16 +112,24 @@ final readonly class FrankenPhpDownload
      * Download this machine's binary to $target, hold it to its pin and
      * make it executable.
      *
+     * @param bool|null $musl whether this Linux's C library is musl's; read from the system by default
      * @return string $target
-     * @throws ServeException where there is a file at $target already, no
-     *         binary for the machine, or a download that fails or does not
-     *         hash to its pin; nothing is left at $target then
+     * @throws ServeException where there is a file at $target already, or
+     *         one appears there before the download is in place; no binary
+     *         for the machine; or a download that fails or does not hash to
+     *         its pin. Nothing is left at $target then
      */
-    public function install(string $target, string $os = \PHP_OS_FAMILY, ?string $machine = null): string
+    public function install(string $target, string $os = \PHP_OS_FAMILY, ?string $machine = null, ?bool $musl = null): string
     {
-        $machine ??= php_uname('m');
+        $machine = $machine === null ? self::machine($os, php_uname('m')) : self::normalized($os, $machine);
         if (file_exists($target) || is_link($target)) {
             throw new ServeException("{$target} is there already: remove it first to download FrankenPHP v{$this->version} in its place.");
+        }
+        if ($os === 'Linux' && ($musl ?? self::musl())) {
+            throw new ServeException(
+                "FrankenPHP's official Linux binary needs glibc, and this Linux's C library is musl's. Install FrankenPHP's static build "
+                . '(https://frankenphp.dev), then put it at tools/frankenphp, set TINVAR_FRANKENPHP, or have it on your PATH.',
+            );
         }
         [$asset, $sha256] = $this->asset($os, $machine) ?? throw new ServeException(
             "FrankenPHP v{$this->version} has no official binary for {$os} {$machine}. Install FrankenPHP (https://frankenphp.dev), "
@@ -94,6 +139,12 @@ final readonly class FrankenPhpDownload
         $directory = \dirname($target);
         if (!is_dir($directory) && !@mkdir($directory, 0o755, true) && !is_dir($directory)) {
             throw new ServeException("Cannot make {$directory} for FrankenPHP.");
+        }
+        // What an interrupted download left -- a kill skips the cleanup below.
+        foreach (glob("{$directory}/." . basename($target) . '-*.part') ?: [] as $stale) {
+            if (preg_match('/-[0-9a-f]{16}\.part\z/', $stale) === 1 && is_file($stale) && !is_link($stale)) {
+                @unlink($stale);
+            }
         }
         $part = "{$directory}/." . basename($target) . '-' . bin2hex(random_bytes(8)) . '.part';
         $out = @fopen($part, 'xb') ?: throw new ServeException("Cannot write {$part}.");
@@ -128,8 +179,21 @@ final readonly class FrankenPhpDownload
             if (!hash_equals($sha256, $got)) {
                 throw new ServeException("{$asset} v{$this->version} hashes to {$got}, not the pinned {$sha256}: nothing was installed.");
             }
-            if (!chmod($part, 0o755) || !rename($part, $target)) {
+            if (!chmod($part, 0o755)) {
                 throw new ServeException("Cannot put FrankenPHP at {$target}.");
+            }
+            // A link, not a rename: it fails where something has appeared
+            // at the target meanwhile, rather than replacing it.
+            set_error_handler(static fn (): bool => true);
+            try {
+                $linked = link($part, $target);
+            } finally {
+                restore_error_handler();
+            }
+            if (!$linked) {
+                throw new ServeException(file_exists($target) || is_link($target)
+                    ? "{$target} is there already: something put it there during the download, and it was left as it is."
+                    : "Cannot put FrankenPHP at {$target}.");
             }
         } finally {
             if (\is_resource($in)) {
