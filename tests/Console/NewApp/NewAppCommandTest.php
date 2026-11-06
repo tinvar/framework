@@ -486,3 +486,26 @@ it('asks Packagist for each kit a package of the framework declares, by the name
     expect($declared)->not->toBe([])
         ->and(array_map(static fn (KitDeclaration $kit): string => $kit->package, new PackagistSkeleton()->kits($processes)))->toBe($declared);
 });
+
+// ADR 0175: setup downloads FrankenPHP, but `new` runs it without next
+// steps of its own, so `new` says to run frankenphp:install where setup
+// left no binary for serve to find.
+it('says to install FrankenPHP where the app has none to serve with', function () {
+    $app = scratch() . '/app';
+    mkdir($app);
+    $path = getenv('PATH');
+    $env = getenv('TINVAR_FRANKENPHP');
+    putenv('PATH=/nonexistent');
+    putenv('TINVAR_FRANKENPHP');
+    try {
+        expect(NewAppCommand::frankenPhpStep($app))->toContain('bin/tinvar frankenphp:install');
+
+        mkdir("{$app}/tools");
+        file_put_contents("{$app}/tools/frankenphp", '#!/bin/sh');
+        chmod("{$app}/tools/frankenphp", 0o755);
+        expect(NewAppCommand::frankenPhpStep($app))->toBeNull();
+    } finally {
+        putenv("PATH={$path}");
+        putenv($env === false ? 'TINVAR_FRANKENPHP' : "TINVAR_FRANKENPHP={$env}");
+    }
+});

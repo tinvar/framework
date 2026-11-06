@@ -124,6 +124,13 @@ it('downloads FrankenPHP in setup, after npm, and leaves it to the next steps wh
         ->and($install)->toBeGreaterThan($npm)
         ->and($setup)->toContain("getenv('TINVAR_SETUP_SKIP_FRANKENPHP') === '1'")
         ->and($setup)->toContain('bin/tinvar frankenphp:install       # FrankenPHP, which bin/serve and bin/dev run');
+
+    // Setup runs as composer create-project's script, which Composer stops
+    // after 300 seconds unless the project says otherwise: a slow
+    // connection's download of a 200 MB binary would be cut off.
+    $composer = json_decode(read('packages/skeleton/composer.json'), true);
+    \assert(\is_array($composer));
+    expect($composer['config']['process-timeout'] ?? null)->toBe(0);
 });
 
 it('runs no install script and nothing it fetched when an app is made', function () {

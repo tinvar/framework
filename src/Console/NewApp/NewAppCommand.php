@@ -11,6 +11,8 @@ use Tinvar\Console\Prompts;
 use Tinvar\Console\Secrets\SecretFiles;
 use Tinvar\Mail\MailProvider;
 use Tinvar\Orm\DatabaseDriver;
+use Tinvar\Server\FrankenPhp;
+use Tinvar\Server\ServeException;
 use Tinvar\Support\StateFile;
 
 /**
@@ -299,6 +301,22 @@ final class NewAppCommand
         }
     }
 
+    /**
+     * The step that installs FrankenPHP, where the app has none for serve to
+     * find: setup downloads it (ADR 0175), but runs here without next steps
+     * of its own, so a download that failed is said here.
+     */
+    public static function frankenPhpStep(string $directory): ?string
+    {
+        try {
+            $found = FrankenPhp::find($directory);
+        } catch (ServeException) {
+            $found = null;
+        }
+
+        return $found === null ? '  bin/tinvar frankenphp:install       # FrankenPHP, which bin/dev and bin/serve run: setup said above why it did not' : null;
+    }
+
     /** What to do next, as the setup's own last lines say it, and what this run left to do. */
     private function nextSteps(NewAppAnswers $answers, string $directory, bool $ready, ?string $passwordFile): string
     {
@@ -323,6 +341,9 @@ final class NewAppCommand
         }
         if ($answers->install && !is_dir("{$directory}/node_modules")) {
             $lines[] = '  npm ci --ignore-scripts             # setup said above why it did not; Node 22.13 or later';
+        }
+        if ($answers->install && ($step = self::frankenPhpStep($directory)) !== null) {
+            $lines[] = $step;
         }
         $lines[] = '  bin/tinvar doctor                   # every check the app needs, each problem with its fix';
         $lines[] = '  bin/dev                             # dev mode: renders from source, reloads as you edit';
