@@ -332,8 +332,29 @@ final readonly class EmailLinks
         return $this->store->open($purpose, $tenant, $this->now(), $limit, $data);
     }
 
-    /** @return array{EmailLink, string}|null the link and its secret's hash */
-    private function verify(string $token, string $purpose, string $origin, string $tenant): ?array
+    /**
+     * The tenant a token of $purpose was made in, read from under its MAC:
+     * for a page on a host that serves every tenant, where nothing else
+     * says whose link it is (ADR 0182). Null for a token that is not one of
+     * this purpose, signed here and unexpired.
+     *
+     * A claim, not a grant: it says only which tenant to peek() or consume()
+     * the link in, and those hold it to the record kept in that tenant --
+     * the token proves the server named the tenant, and the record is what
+     * makes the link open, once.
+     */
+    public function tenantOf(string $token, string $purpose): ?string
+    {
+        return $this->claims($token, $purpose)['y'] ?? null;
+    }
+
+    /**
+     * A token's claims, when it is one of $purpose, signed here, well formed
+     * and unexpired; null otherwise.
+     *
+     * @return array{s: string, y: string, o: string, u: string, i: int, e: int}|null
+     */
+    private function claims(string $token, string $purpose): ?array
     {
         $lifetime = self::LIFETIMES[$purpose] ?? null;
         if ($lifetime === null || preg_match(self::TOKEN_SHAPE, $token) !== 1) {
@@ -347,12 +368,12 @@ final readonly class EmailLinks
         }
 
         $secret = $claims['s'] ?? null;
-        $claimedTenant = $claims['y'] ?? null;
-        $claimedOrigin = $claims['o'] ?? null;
+        $tenant = $claims['y'] ?? null;
+        $origin = $claims['o'] ?? null;
         $auth = $claims['u'] ?? null;
         $issued = $claims['i'] ?? null;
         $expires = $claims['e'] ?? null;
-        if (!\is_string($secret) || \strlen($secret) !== 43 || !\is_string($claimedTenant) || !\is_string($claimedOrigin)
+        if (!\is_string($secret) || \strlen($secret) !== 43 || !\is_string($tenant) || !\is_string($origin)
             || !\is_string($auth) || !\is_int($issued) || !\is_int($expires)) {
             return null;
         }
@@ -361,9 +382,20 @@ final readonly class EmailLinks
         if ($expires <= $now || $expires - $issued > $lifetime || $issued > $now + 60) {
             return null;
         }
-        if (!hash_equals($claimedOrigin, $origin) || !hash_equals($claimedTenant, $tenant)) {
+
+        return ['s' => $secret, 'y' => $tenant, 'o' => $origin, 'u' => $auth, 'i' => $issued, 'e' => $expires];
+    }
+
+    /** @return array{EmailLink, string}|null the link and its secret's hash */
+    private function verify(string $token, string $purpose, string $origin, string $tenant): ?array
+    {
+        $claims = $this->claims($token, $purpose);
+        if ($claims === null || !hash_equals($claims['o'], $origin) || !hash_equals($claims['y'], $tenant)) {
             return null;
         }
+        $secret = $claims['s'];
+        $auth = $claims['u'];
+        $now = $this->now();
 
         $secretHash = self::hash($secret);
         $link = $this->store->find($secretHash);

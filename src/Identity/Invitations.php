@@ -138,6 +138,18 @@ final readonly class Invitations
         return $this->links->revoke($id, EmailLinks::INVITE, $tenant);
     }
 
+    /**
+     * The tenant an invite's token was made in, as its MAC vouches for it,
+     * or null for one that is no invite, or has expired: which tenant to
+     * open() it in on a host that serves every tenant (ADR 0182). Nothing
+     * about the invite beyond that -- open() still holds the token to its
+     * record there, unused, unrevoked, and its inviter still allowed.
+     */
+    public function tenantOf(string $token): ?string
+    {
+        return $this->links->tenantOf($token, EmailLinks::INVITE);
+    }
+
     /** The invite a token is, if it could be accepted now on $origin in $tenant; null otherwise. */
     public function open(string $token, string $origin, string $tenant): ?Invitation
     {

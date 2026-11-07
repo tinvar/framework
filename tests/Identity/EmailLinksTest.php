@@ -350,6 +350,35 @@ describe('an invite', function () {
             ->and($invitations->accept($second, ORIGIN, 'acme')?->role)->toBe('manager');
     })->with('stores');
 
+    // On a host that serves every tenant, nothing but the link says whose
+    // invite it is (ADR 0182): the tenant the token was signed with, and no
+    // other, which a peek in that tenant then holds to its record.
+    it('names the tenant it was made in, under its MAC, and no tenant once altered, expired or of another purpose', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $token = tokenOf($invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'clerk', ORIGIN)['url']);
+        [$version, $payload, $mac] = explode('.', $token);
+        $claims = json_decode((string) Signer::decode($payload), true);
+        $swapped = $version . '.' . Signer::encode((string) json_encode([...$claims, 'y' => 'globex'])) . '.' . $mac;
+        $signIn = tokenOf($links->issue(EmailLinks::SIGN_IN, ORIGIN, '/l', 'acme', new User('u-1'))['url']);
+        $otherKey = tokenOf(links(new ArrayEmailLinkStore(), $this->users, KEY . '-other')->issue(EmailLinks::INVITE, ORIGIN, '/l', 'acme', null, ['email' => 'x@example.com', 'panel' => 'staff', 'role' => 'clerk', 'inviter' => 'boss'])['url']);
+
+        expect($invitations->tenantOf($token))->toBe('acme')
+            ->and($links->tenantOf($token, EmailLinks::INVITE))->toBe('acme')
+            ->and($invitations->tenantOf($swapped))->toBeNull()
+            ->and($invitations->tenantOf($signIn))->toBeNull()
+            ->and($links->tenantOf($token, EmailLinks::SIGN_IN))->toBeNull()
+            ->and($invitations->tenantOf($otherKey))->toBeNull()
+            ->and($invitations->tenantOf(''))->toBeNull()
+            ->and($invitations->tenantOf('v1.not.a-token'))->toBeNull()
+            // The token's tenant is the only one it opens in.
+            ->and($invitations->open($token, ORIGIN, 'globex'))->toBeNull()
+            ->and($invitations->open($token, ORIGIN, 'acme')?->tenant)->toBe('acme');
+
+        Clock::$now = NOW + EmailLinks::LIFETIMES[EmailLinks::INVITE];
+        expect($invitations->tenantOf($token))->toBeNull();
+    })->with('stores');
+
     it('expires after a week, and is no sign-in link', function () {
         $token = tokenOf($this->invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'clerk', ORIGIN)['url']);
 
