@@ -313,11 +313,13 @@ final class MemberApp
     /**
      * @param (\Closure(string): bool)|null $keepHash
      * @param bool $audit whether the kit is given an audit log, its tables made here
+     * @param \Tinvar\Orm\TenantSubtrees|null $tenancy registered with the Orm, so a session's
+     *        tenant scopes what its request reads
      */
-    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null, bool $audit = false)
+    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null, bool $audit = false, ?\Tinvar\Orm\TenantSubtrees $tenancy = null)
     {
         $this->now = time();
-        $this->orm = new Orm($connection, new IdentityMap($connection->name()));
+        $this->orm = new Orm($connection, new IdentityMap($connection->name()), $tenancy);
         $this->auth = new AuthContext();
         $this->queue = new ArrayQueue();
         $this->mail = new ArrayTransport();
@@ -341,6 +343,7 @@ final class MemberApp
             clock: $clock,
             keepHash: $keepHash,
             audit: $audit ? new \Tinvar\Audit\AuditLog($this->orm, $this->auth, self::KEY) : null,
+            orm: $this->orm,
         );
     }
 

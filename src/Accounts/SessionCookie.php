@@ -66,11 +66,17 @@ final readonly class SessionCookie
         return ($this->clock)();
     }
 
-    /** A new cookie value; $signedIn when a session row stands behind it. */
-    public function issue(bool $signedIn = false): string
+    /**
+     * A new cookie value; $signedIn when a session row stands behind it.
+     *
+     * @param int|null $until when it expires at the latest, as a unix time: a session switched
+     *        to another tenant ends when the one it replaced would have, never later
+     */
+    public function issue(bool $signedIn = false, ?int $until = null): string
     {
         $now = $this->now();
-        $claims = bin2hex(random_bytes(16)) . '.' . $now . '.' . ($now + self::LIFETIME);
+        $expires = $until === null ? $now + self::LIFETIME : min($now + self::LIFETIME, $until);
+        $claims = bin2hex(random_bytes(16)) . '.' . $now . '.' . $expires;
 
         return $claims . '.' . Signer::encode(new Signer($this->key, $signedIn ? self::SIGNED_IN_PURPOSE : self::PURPOSE)->sign($claims));
     }

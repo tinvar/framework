@@ -11,6 +11,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
+use Tinvar\Orm\TenantBounds;
 use Tinvar\Routing\HostMatch;
 use Tinvar\Support\Signer;
 
@@ -35,6 +36,13 @@ use Tinvar\Support\Signer;
  * realm, and signs nobody in on any other (ADR 0039): a handoff brings its
  * user to another of the app's hosts under a session of that host's own
  * (arrive(), HandoffArrivals).
+ *
+ * On a host that serves many tenants, a session runs as the one its user
+ * chose (switchTenant()), and StartSession runs each request as it. A
+ * switch rotates the id too, as every change of what a session runs as
+ * does, but is no new sign-in: it moves no epoch and carries over what the
+ * session is held to, its handoff and its expiry. Every other rotation
+ * makes a session with no tenant chosen (ADR 0181).
  *
  * And every session is held to what its sign-in was checked against
  * (Credentials): the account's credential epoch, which every revocation
@@ -115,6 +123,9 @@ final readonly class Sessions
             // then. Null on a row made before sessions were held to them,
             // which signs nobody in.
             $sessions->string('credentials', 64)->nullable();
+            // The tenant the session runs as (switchTenant()), as long as the
+            // ORM's tenant columns are; null until its user chooses one.
+            $sessions->string('tenant', 255)->nullable();
             $sessions->index(['user_id'], 'sessions_user');
             $sessions->index(['expires_at'], 'sessions_expiry');
             $sessions->index(['handoff_redemption'], 'sessions_handoff');
@@ -168,6 +179,23 @@ final readonly class Sessions
         });
     }
 
+    /**
+     * Adds `tenant` to a sessions table define() made before it had one,
+     * for an app that serves many tenants on one host; a table that has it
+     * is left as it is. Every session there runs as no tenant until its user
+     * switches, and one never switched needs no such column: open() reads
+     * the row whole.
+     */
+    public static function addTenant(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'tenant')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->string('tenant', 255)->nullable();
+        });
+    }
+
     public function cookie(): SessionCookie
     {
         return $this->cookie;
@@ -208,9 +236,10 @@ final readonly class Sessions
         // revocation -- which moves both in one transaction -- either came
         // before it, and the seal below fails, or after it, and moves on
         // from the epoch the request binds what it mints to (ADR 0171).
+        // The row whole, so a table made before it had a tenant column --
+        // in an app that never switches one -- is read as it was (ADR 0181).
         $row = $this->connection->select(
-            'SELECT s.user_id, s.realm, s.stage, s.last_seen_at, s.expires_at, s.confirmed_at, s.credentials, c.epoch AS credential_epoch, a.epoch AS auth_epoch '
-            . self::WITH_EPOCHS,
+            'SELECT s.*, c.epoch AS credential_epoch, a.epoch AS auth_epoch ' . self::WITH_EPOCHS,
             [self::hash($id)],
         )[0] ?? null;
 
@@ -257,8 +286,17 @@ final readonly class Sessions
         }
 
         $confirmed = \is_numeric($row['confirmed_at'] ?? null) ? (int) $row['confirmed_at'] : null;
+        $tenant = $row['tenant'] ?? null;
 
-        return new SessionState($id, $realm, $user, self::epoch($row['auth_epoch'] ?? null), confirmedAt: $confirmed, credentialEpoch: $credentialEpoch);
+        return new SessionState(
+            $id,
+            $realm,
+            $user,
+            self::epoch($row['auth_epoch'] ?? null),
+            confirmedAt: $confirmed,
+            credentialEpoch: $credentialEpoch,
+            tenant: \is_string($tenant) && $tenant !== '' ? $tenant : null,
+        );
     }
 
     /**
@@ -423,6 +461,82 @@ final readonly class Sessions
         $connection->durableTransaction(static function () use ($connection, $redemption): void {
             $connection->execute('DELETE FROM sessions WHERE handoff_redemption = ?', [$redemption]);
         });
+    }
+
+    /**
+     * Runs the session, signed in as $user, as $tenant from its next request
+     * on, under a new id, and returns it: a switch between the tenants of an
+     * app that serves many on one host (TenantSessions, ADR 0181).
+     *
+     * A new id like every other change of what a session runs as: every
+     * token the old tenant's pages hold is bound to the old id, and ends
+     * with it, so a tab left open there posts nothing into this one. But no
+     * new sign-in: the user and their epochs stay where they are -- a switch
+     * in one browser purges nothing another holds -- and the new row is
+     * held to what the old one was, read from it, so a revocation since, or
+     * a replay of the handoff that started it, still ends it. It ends when
+     * the old one would have, and its owner's proof that it was them is not
+     * carried over.
+     *
+     * Whether $user may run as $tenant is the caller's to have decided
+     * (TenantSwitcher), and each panel's membership check decides again on
+     * every request.
+     *
+     * Null when the session has ended since the request opened it -- a
+     * sign-out everywhere, its expiry -- and nothing was made.
+     *
+     * @throws \LogicException where the session is not signed in as $user
+     * @throws \InvalidArgumentException for a tenant no tenant can be named
+     */
+    public function switchTenant(SessionState $state, AccountUser $user, string $tenant): ?string
+    {
+        if ($state->id === '' || $state->user()?->authIdentifier() !== $user->authIdentifier()) {
+            throw new \LogicException('A session is switched to another tenant only by the user it is signed in as.');
+        }
+        if (!TenantBounds::isName($tenant) || \strlen($tenant) > 255) {
+            throw new \InvalidArgumentException('A session runs as a tenant with a name: printable, and as long as a tenant column holds.');
+        }
+
+        $now = $this->cookie->now();
+        $cookies = $this->cookie;
+        $connection = $this->connection;
+        // Durable, as every rotation is: what a session runs as decides
+        // every request, and an old id a power cut brought back would too.
+        $made = $connection->durableTransaction(static function () use ($connection, $cookies, $state, $user, $tenant, $now): ?array {
+            // The row whole, as open() reads it: a table made before the
+            // handoff's column was has none to carry.
+            $row = $connection->select(
+                'SELECT * FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
+                [self::hash($state->id), $state->realm, $user->authIdentifier(), SessionStage::SignedIn->value, $now],
+            )[0] ?? null;
+            if ($row === null || !\is_string($row['credentials'] ?? null)) {
+                return null;
+            }
+
+            $expires = (int) $row['expires_at'];
+            $cookie = $cookies->issue(signedIn: true, until: $expires);
+            $id = (string) $cookies->id($cookie);
+            $redemption = $row['handoff_redemption'] ?? null;
+            $redemption = \is_string($redemption) && $redemption !== '' ? $redemption : null;
+
+            $connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]);
+            $connection->execute(
+                $redemption === null
+                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, tenant, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [self::hash($id), $user->authIdentifier(), $state->realm, SessionStage::SignedIn->value, $now, $now, $expires, $row['credentials'], $tenant, ...($redemption === null ? [] : [$redemption])],
+            );
+
+            return [$cookie, $id];
+        });
+        if ($made === null) {
+            return null;
+        }
+        [$cookie, $id] = $made;
+
+        $state->replaceWith($cookie, $user, tenant: $tenant);
+
+        return $id;
     }
 
     /**

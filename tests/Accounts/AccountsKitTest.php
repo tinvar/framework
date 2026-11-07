@@ -28,6 +28,7 @@ use Tinvar\Accounts\SessionState;
 use Tinvar\Accounts\Sessions;
 use Tinvar\Accounts\SignInResult;
 use Tinvar\Accounts\SignInThrottle;
+use Tinvar\Accounts\StartSession;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Api\ApiTokenChoice;
@@ -51,16 +52,20 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
+use Tinvar\Orm\TenantSubtrees;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Accounts\Fixtures\MemberApp;
 use Tinvar\Tests\Accounts\Fixtures\Members;
 use Tinvar\Tests\Accounts\Fixtures\SoftwareAuthenticator;
+use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Support\Fixtures\Databases;
 use Tinvar\Validation\ValidationException;
 
 require_once __DIR__ . '/Fixtures/SoftwareAuthenticator.php';
 require_once __DIR__ . '/Fixtures/Members.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 
 const PASSWORD = 'correct horse battery staple';
 
@@ -121,14 +126,17 @@ final class Visitor
     }
 }
 
-/** @param \Closure(MemberApp): void $test */
-function onDriver(string $driver, \Closure $test): void
+/**
+ * @param \Closure(MemberApp): void $test
+ * @param TenantSubtrees|null $tenancy registered with the app's Orm
+ */
+function onDriver(string $driver, \Closure $test, ?TenantSubtrees $tenancy = null): void
 {
-    $run = static function (PdoConnection $connection) use ($test): void {
+    $run = static function (PdoConnection $connection) use ($test, $tenancy): void {
         $schema = new Schema($connection, Dialect::for($connection));
         Members::define($schema);
         AccountsKit::migrate($schema, \Tinvar\Tests\Accounts\Fixtures\Member::class);
-        $test(new MemberApp($connection));
+        $test(new MemberApp($connection, tenancy: $tenancy));
     };
     if ($driver === 'sqlite') {
         $run(PdoConnection::sqlite(':memory:', 'accounts'));
@@ -1954,5 +1962,310 @@ it('adds the credentials column to a sessions table made before it, and signs no
             ->and(nextRequest($visitor))->toBeNull();
         $visitor->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
         expect(nextRequest($visitor))->toBe('ada@example.com');
+    });
+});
+
+/** Switches the visitor's session to $tenant, as its own signed-in user, and returns the new id. */
+function switchTo(Visitor $visitor, string $tenant): ?string
+{
+    return $visitor->do(static function (Accounts $a, Request $r) use ($visitor, $tenant): ?string {
+        $state = SessionState::of($r);
+        $user = $state->user() ?? throw new \LogicException('Nobody is signed in to switch.');
+
+        return $visitor->app->kit->sessions->switchTenant($state, $user, $tenant);
+    });
+}
+
+/** The row behind the visitor's session, by its hashed id. */
+function sessionRow(Visitor $visitor): ?array
+{
+    $id = $visitor->app->kit->cookie->id($visitor->cookie);
+
+    return $id === null ? null : $visitor->app->orm->connection()->select('SELECT * FROM sessions WHERE id = ?', [hash('sha256', $id)])[0] ?? null;
+}
+
+// One host, many tenants (ADR 0181): a session holds the tenant its user
+// chose, and a switch is a change of what it runs as -- a new id, like any
+// other -- that is no new sign-in.
+it('switches a session\'s tenant under a new id, leaving its user, their epochs and their other sessions as they were', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $laptop = member($app);
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $user = $laptop->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        [$epoch, $credential] = [$app->kit->epochs->of($id), $app->kit->credentials->of($id)];
+        $before = clone $laptop;
+        expect($laptop->state()->tenant())->toBeNull();
+
+        $fresh = switchTo($laptop, 'acme');
+        expect($fresh)->toBeString()->not->toBe('')
+            ->and($laptop->cookie)->not->toBe($before->cookie)
+            ->and($laptop->state()->id)->toBe($fresh)
+            ->and($laptop->state()->tenant())->toBe('acme')
+            ->and(nextRequest($laptop))->toBe('ada@example.com')
+            // The cookie it carried before signs nobody in.
+            ->and(nextRequest($before))->toBeNull()
+            // No epoch moves: a switch here purges nothing elsewhere.
+            ->and($app->kit->epochs->of($id))->toBe($epoch)
+            ->and($app->kit->credentials->of($id))->toBe($credential)
+            ->and($phone->who())->toBe('ada@example.com')
+            ->and($phone->state()->tenant())->toBeNull()
+            ->and($laptop->state()->epoch())->toBe($epoch);
+
+        // And again, to another: one row, the latest.
+        switchTo($laptop, 'globex');
+        expect($laptop->state()->tenant())->toBe('globex')
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND tenant IS NOT NULL', [$id])[0]['n'])->toBe(1);
+    });
+})->with('drivers');
+
+it('ends a switched session when its sign-in\'s credentials are revoked, and when its handoff\'s code comes back', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $laptop = member($app);
+        $user = $laptop->state()->user();
+        \assert($user !== null);
+
+        // A session a handoff started keeps its redemption across a switch.
+        $admin = new Visitor($app, 'admin.app.example');
+        $arrival = new Arrival($user, $app->kit->epochs->of($user->authIdentifier()), Realm::platform('https://admin.app.example'), '/', '', 'redemption-switch');
+        $admin->do(static fn (Accounts $a, Request $r): string => $app->kit->arrivals->arrive($r, $arrival));
+        switchTo($admin, 'globex');
+        expect(nextRequest($admin))->toBe('ada@example.com');
+        $app->kit->arrivals->revoke('redemption-switch');
+        expect(nextRequest($admin))->toBeNull();
+
+        switchTo($laptop, 'acme');
+        expect(nextRequest($laptop))->toBe('ada@example.com');
+
+        // Held to what its sign-in was checked against, carried over: a
+        // moved credential epoch, with no row deleted, ends it.
+        $connection = $app->orm->connection();
+        $connection->transaction(static fn () => $app->kit->credentials->bump($user->authIdentifier()));
+        expect(nextRequest($laptop))->toBeNull();
+
+        // So does a new password, by the app's own hand.
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        switchTo($laptop, 'acme');
+        expect(nextRequest($laptop))->toBe('ada@example.com');
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash('another passphrase', PASSWORD_BCRYPT, ['cost' => 4])]);
+        expect(nextRequest($laptop))->toBeNull();
+    });
+})->with('drivers');
+
+it('carries no confirmation across a switch, and never lets a switch extend the session', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $laptop = member($app);
+        $laptop->confirm();
+        expect($laptop->state()->confirmedAt())->not->toBeNull();
+        $expires = (int) sessionRow($laptop)['expires_at'];
+        $cookieExpires = \Tinvar\Accounts\SessionCookie::expiry($laptop->cookie);
+
+        $app->now += 3600;
+        switchTo($laptop, 'acme');
+        $row = sessionRow($laptop);
+        expect($row['confirmed_at'])->toBeNull()
+            ->and($laptop->state()->confirmedAt())->toBeNull()
+            ->and($laptop->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse()
+            ->and((int) $row['expires_at'])->toBe($expires)
+            ->and(\Tinvar\Accounts\SessionCookie::expiry($laptop->cookie))->toBe($cookieExpires);
+
+        // It ends when the session it was switched from would have.
+        $app->now = $expires;
+        expect(nextRequest($laptop))->toBeNull();
+    });
+})->with('drivers');
+
+it('refuses to switch a session not signed in as the user switching, and makes nothing for one ended since its request began', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $ada = member($app);
+        $bob = member($app, 'bob@example.com');
+        $adaUser = $ada->state()->user();
+        \assert($adaUser !== null);
+        $sessions = $app->kit->sessions;
+
+        // Signed out, or signed in as someone else: a caller's mistake.
+        $nobody = new Visitor($app);
+        expect(static fn () => $nobody->do(static fn (Accounts $a, Request $r) => $sessions->switchTenant(SessionState::of($r), $adaUser, 'acme')))->toThrow(\LogicException::class)
+            ->and(static fn () => $bob->do(static fn (Accounts $a, Request $r) => $sessions->switchTenant(SessionState::of($r), $adaUser, 'acme')))->toThrow(\LogicException::class)
+            ->and(static fn () => $ada->do(static fn (Accounts $a, Request $r) => $sessions->switchTenant(SessionState::of($r), $adaUser, '')))->toThrow(\InvalidArgumentException::class)
+            ->and($bob->state()->tenant())->toBeNull();
+
+        // Half-way through signing in: nobody's yet.
+        $owner = member($app, 'cy@example.com');
+        $cy = $owner->state()->user();
+        \assert($cy !== null);
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $cy))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $cy, Totp::at($secret, $app->now)));
+        $waiting = new Visitor($app);
+        $waiting->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'cy@example.com', PASSWORD));
+        expect(static fn () => $waiting->do(static fn (Accounts $a, Request $r) => $sessions->switchTenant(SessionState::of($r), $cy, 'acme')))->toThrow(\LogicException::class);
+
+        // Ended once the request opened it -- a sign-out everywhere landed
+        // elsewhere -- and there is nothing to switch: no session made.
+        $before = $ada->cookie;
+        $made = $ada->do(static function (Accounts $a, Request $r) use ($app, $sessions, $adaUser): ?string {
+            $app->orm->connection()->execute('DELETE FROM sessions WHERE user_id = ?', [$adaUser->authIdentifier()]);
+
+            return $sessions->switchTenant(SessionState::of($r), $adaUser, 'acme');
+        });
+        expect($made)->toBeNull()
+            ->and($ada->cookie)->toBe($before)
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [$adaUser->authIdentifier()])[0]['n'])->toBe(0);
+    });
+})->with('drivers');
+
+it('starts every sign-in, second factor, sign-out and handoff arrival with no tenant chosen', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $laptop = member($app);
+        $user = $laptop->state()->user();
+        \assert($user !== null);
+
+        // A sign-in again, from a switched session.
+        switchTo($laptop, 'acme');
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($laptop->who())->toBe('ada@example.com')
+            ->and($laptop->state()->tenant())->toBeNull();
+
+        // A sign-out.
+        switchTo($laptop, 'acme');
+        $signedOut = $laptop->do(static function (Accounts $a, Request $r): SessionState {
+            $a->signOut($r);
+
+            return SessionState::of($r);
+        });
+        expect($signedOut->tenant())->toBeNull()
+            ->and($laptop->state()->tenant())->toBeNull();
+
+        // A handoff's arrival on another host, into a switched session there.
+        $admin = new Visitor($app, 'admin.app.example');
+        $epoch = $app->kit->epochs->of($user->authIdentifier());
+        $admin->do(static fn (Accounts $a, Request $r): string => $app->kit->arrivals->arrive($r, new Arrival($user, $epoch, Realm::platform('https://admin.app.example'), '/', '', 'r-1')));
+        switchTo($admin, 'globex');
+        $admin->do(static fn (Accounts $a, Request $r): string => $app->kit->arrivals->arrive($r, new Arrival($user, $epoch, Realm::platform('https://admin.app.example'), '/', '', 'r-2')));
+        expect($admin->who())->toBe('ada@example.com')
+            ->and($admin->state()->tenant())->toBeNull();
+
+        // A second factor passed.
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $laptop->confirm();
+        $secret = (string) Base32::decode($laptop->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+        $phone = new Visitor($app);
+        expect($phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)))->toBe(SignInResult::SecondFactor);
+        $app->now += Totp::PERIOD;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($phone->who())->toBe('ada@example.com')
+            ->and($phone->state()->tenant())->toBeNull()
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE tenant IS NOT NULL')[0]['n'])->toBe(0);
+    });
+})->with('drivers');
+
+it('adds the tenant column to a sessions table made before it, and signs in as before on one that lacks it', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        $schema = new Schema($connection, Dialect::for($connection));
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->dropColumn('tenant');
+        });
+
+        $visitor = member($app);
+        expect($visitor->who())->toBe('ada@example.com')
+            ->and($visitor->state()->tenant())->toBeNull()
+            ->and($schema->hasColumn('sessions', 'tenant'))->toBeFalse();
+
+        Sessions::addTenant($schema);
+        Sessions::addTenant($schema);
+        expect($schema->hasColumn('sessions', 'tenant'))->toBeTrue();
+        switchTo($visitor, 'acme');
+        expect($visitor->state()->tenant())->toBe('acme');
+    });
+});
+
+/**
+ * A request through the kit's StartSession, its cookie the visitor's: what
+ * the rest of it ran as, and the names of the #[TenantScoped] scripts it
+ * read there -- none read where it ran as no tenant.
+ *
+ * @return array{tenant: string, scripts: list<string>, response: Response}
+ */
+function throughStartSession(Visitor $visitor, ?StartSession $middleware = null): array
+{
+    $app = $visitor->app;
+    $request = new Request('GET', '/', ['host' => $visitor->host], cookies: [$app->kit->cookie->name => $visitor->cookie]);
+    $seen = ['tenant' => '', 'scripts' => []];
+    $response = ($middleware ?? $app->kit->startSession)->handle($request, static function (Request $r) use ($app, &$seen): Response {
+        $seen['tenant'] = $app->orm->tenant();
+        $seen['scripts'] = $seen['tenant'] === '' ? [] : array_map(static fn (Script $s): string => $s->name, $app->orm->all(Script::class, 'name'));
+
+        return Response::make(200, 'ok');
+    });
+
+    return [...$seen, 'response' => $response];
+}
+
+/** Two tenants' scripts, in the app's own database. */
+function scripts(MemberApp $app): void
+{
+    $connection = $app->orm->connection();
+    new Schema($connection, Dialect::for($connection))->create('scripts', static function (Table $scripts): void {
+        $scripts->uuid('id')->primary();
+        $scripts->string('name', 100);
+        $scripts->tenant();
+    });
+    foreach (['acme', 'globex'] as $tenant) {
+        foreach ([1, 2] as $i) {
+            $connection->execute('INSERT INTO scripts (id, name, tenant_id) VALUES (?, ?, ?)', [\Tinvar\Support\Uuid::v7(), "{$tenant}-script-{$i}", $tenant]);
+        }
+    }
+}
+
+it('runs the rest of a request as its session\'s tenant, and as no tenant where the session holds none', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        scripts($app);
+        $visitor = member($app);
+
+        expect(throughStartSession($visitor))->toMatchArray(['tenant' => '', 'scripts' => []])
+            ->and(throughStartSession(new Visitor($app)))->toMatchArray(['tenant' => '', 'scripts' => []]);
+
+        switchTo($visitor, 'acme');
+        expect(throughStartSession($visitor))->toMatchArray(['tenant' => 'acme', 'scripts' => ['acme-script-1', 'acme-script-2']])
+            // And no further: the tenant is the request's alone.
+            ->and($app->orm->tenant())->toBe('');
+        switchTo($visitor, 'globex');
+        expect(throughStartSession($visitor))->toMatchArray(['tenant' => 'globex', 'scripts' => ['globex-script-1', 'globex-script-2']]);
+    }, Tenancy::flat());
+})->with('drivers');
+
+it('sets the cookie a switch made inside the request it was made in', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $visitor = member($app);
+        $request = new Request('POST', '/_action/switch', ['host' => $visitor->host], cookies: [$app->kit->cookie->name => $visitor->cookie]);
+        $response = $app->kit->startSession->handle($request, static function (Request $r) use ($app): Response {
+            $state = SessionState::of($r);
+            $app->kit->sessions->switchTenant($state, $state->user() ?? throw new \LogicException('signed out'), 'acme');
+
+            return Response::make(303, '');
+        });
+        preg_match('/=([^;]+);/', $response->cookies()[$app->kit->cookie->name] ?? '', $m);
+        $visitor->cookie = $m[1] ?? '';
+        expect($visitor->state()->tenant())->toBe('acme');
+    }, Tenancy::flat());
+});
+
+// Fails closed: a session that holds a tenant never runs as none.
+it('refuses a session holding a tenant where its StartSession has no Orm with tenancy to run it as', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $visitor = member($app);
+        switchTo($visitor, 'acme');
+
+        // The kit's Orm, with no tenancy registered.
+        expect(static fn () => throughStartSession($visitor))->toThrow(\LogicException::class, 'tenancy');
+        // No Orm at all.
+        expect(static fn () => throughStartSession($visitor, new StartSession($app->kit->sessions, $app->auth)))->toThrow(\LogicException::class, 'tenancy');
+        // A session with no tenant goes on as it did.
+        expect(throughStartSession(member($app, 'bob@example.com'), new StartSession($app->kit->sessions, $app->auth))['tenant'])->toBe('');
     });
 });

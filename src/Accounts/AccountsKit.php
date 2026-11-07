@@ -25,6 +25,7 @@ use Tinvar\Jobs\Dispatcher;
 use Tinvar\Mail\Mailer;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
+use Tinvar\Orm\Orm;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\Encrypter;
@@ -101,6 +102,9 @@ final readonly class AccountsKit
      * @param AuditLog|null $audit where every sign-in, failed and not, every sign-out and
      *        every change to how an account signs in is recorded, about that account
      *        (ADR 0156); nowhere unless given
+     * @param Orm|null $orm the application's: StartSession runs each request as the tenant
+     *        its session was switched to through it (Sessions::switchTenant(), ADR 0181), and
+     *        refuses a session holding one where it has no tenancy registered
      */
     public function __construct(
         Connection $connection,
@@ -123,6 +127,7 @@ final readonly class AccountsKit
         ?Realms $realms = null,
         ?\Closure $keepHash = null,
         ?AuditLog $audit = null,
+        ?Orm $orm = null,
     ) {
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
@@ -136,7 +141,7 @@ final readonly class AccountsKit
         $local = $origin !== null && str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
-        $this->startSession = new StartSession($this->sessions, $auth, $csrf);
+        $this->startSession = new StartSession($this->sessions, $auth, $csrf, $orm);
         $this->requireSignIn = new RequireSignIn($auth, $paths, $realms);
 
         $this->accounts = new Accounts(
