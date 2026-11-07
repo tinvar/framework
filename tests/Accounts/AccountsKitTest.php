@@ -2269,3 +2269,30 @@ it('refuses a session holding a tenant where its StartSession has no Orm with te
         expect(throughStartSession(member($app, 'bob@example.com'), new StartSession($app->kit->sessions, $app->auth))['tenant'])->toBe('');
     });
 });
+
+// Review (ADR 0181): two switches of one session at once -- a double click,
+// or a thief holding a copy of the cookie racing its owner -- each read the
+// row before either deleted it, and each made a session of its own from it.
+it('makes one session of a switch whose row another switch took once it was read, and none for the other', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $laptop = member($app);
+        $user = $laptop->state()->user();
+        \assert($user !== null);
+        $connection = $app->orm->connection();
+        \assert($connection instanceof PdoConnection);
+        $before = $laptop->cookie;
+
+        // Read by this switch, then taken by the other, which commits first.
+        $connection->observeStatements(static function (string $sql) use ($connection, $user): void {
+            if (!str_starts_with($sql, 'SELECT * FROM sessions WHERE id = ?')) {
+                return;
+            }
+            $connection->observeStatements(null);
+            $connection->execute('DELETE FROM sessions WHERE user_id = ?', [$user->authIdentifier()]);
+        });
+
+        expect(switchTo($laptop, 'acme'))->toBeNull()
+            ->and($laptop->cookie)->toBe($before)
+            ->and((int) $connection->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [$user->authIdentifier()])[0]['n'])->toBe(0);
+    });
+})->with('drivers');

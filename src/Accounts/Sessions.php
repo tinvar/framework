@@ -483,7 +483,8 @@ final readonly class Sessions
      * every request.
      *
      * Null when the session has ended since the request opened it -- a
-     * sign-out everywhere, its expiry -- and nothing was made.
+     * sign-out everywhere, its expiry, another switch of it -- and nothing
+     * was made.
      *
      * @throws \LogicException where the session is not signed in as $user
      * @throws \InvalidArgumentException for a tenant no tenant can be named
@@ -519,7 +520,12 @@ final readonly class Sessions
             $redemption = $row['handoff_redemption'] ?? null;
             $redemption = \is_string($redemption) && $redemption !== '' ? $redemption : null;
 
-            $connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]);
+            // The row read is the one taken, or another switch of this
+            // session -- a double click, a copy of the cookie -- took it
+            // first, and that switch's session is the only one made from it.
+            if ($connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]) !== 1) {
+                return null;
+            }
             $connection->execute(
                 $redemption === null
                     ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
