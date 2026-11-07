@@ -6,6 +6,7 @@ namespace Tinvar\Identity;
 
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Http\HostName;
+use Tinvar\Support\DevMode;
 
 /**
  * The https origin a user's emailed links are built on: "Every emailed link
@@ -66,6 +67,9 @@ final readonly class CanonicalOrigins
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param (\Closure(Authenticatable, string): bool)|null $confined whether every membership a
      *        user holds is in that tenant or below it: only then is their reset built on its domain
+     * @param bool $localHttp whether the platform's origin may be plain http on `localhost` or a
+     *        subdomain of it -- development's, as EmailLinks(localHttp:) builds links on it. Refused
+     *        wherever the environment says production. A custom domain is https whatever this says
      */
     public function __construct(
         string $platform,
@@ -75,8 +79,13 @@ final readonly class CanonicalOrigins
         private ?\Closure $staff = null,
         ?\Closure $clock = null,
         private ?\Closure $confined = null,
+        bool $localHttp = false,
     ) {
-        $this->platform = self::origin($platform);
+        $marker = $localHttp ? DevMode::productionMarker(array_filter(getenv(), \is_string(...))) : null;
+        if ($marker !== null) {
+            throw new \InvalidArgumentException("Emailed links are built on https alone where {$marker}=production: set the app's https URL, and links are built on it.");
+        }
+        $this->platform = self::origin($platform, $localHttp);
         if ($primaryDomain !== null && ($domains === null || $realms === null)) {
             throw new \InvalidArgumentException(
                 'A tenant\'s primary domain is used only once its record and its realm are checked: give the custom domains and the realms too.',

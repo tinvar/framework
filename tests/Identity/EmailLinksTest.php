@@ -468,6 +468,25 @@ describe('the canonical origin', function () {
             ->and(new CanonicalOrigins(ORIGIN . '/')->platform)->toBe(ORIGIN);
     });
 
+    // A development host such as http://dash.localhost:8080 is the
+    // platform's origin there, as EmailLinks(localHttp:) builds links on it.
+    it('is http on localhost only when asked, and never where the environment says production', function () {
+        expect(new CanonicalOrigins('http://dash.localhost:8080/', localHttp: true)->platform)->toBe('http://dash.localhost:8080')
+            ->and(new CanonicalOrigins('http://localhost:8080', localHttp: true)->forTenant('acme'))->toBe('http://localhost:8080')
+            ->and(new CanonicalOrigins(ORIGIN, localHttp: true)->platform)->toBe(ORIGIN)
+            ->and(fn () => new CanonicalOrigins('http://dash.localhost:8080'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => new CanonicalOrigins('http://shop.example', localHttp: true))->toThrow(\InvalidArgumentException::class);
+
+        $previous = getenv('TINVAR_ENV');
+        putenv('TINVAR_ENV=production');
+        try {
+            expect(fn () => new CanonicalOrigins('http://dash.localhost:8080', localHttp: true))->toThrow(\InvalidArgumentException::class, 'https alone')
+                ->and(fn () => new CanonicalOrigins(ORIGIN, localHttp: true))->toThrow(\InvalidArgumentException::class, 'https alone');
+        } finally {
+            putenv($previous === false ? 'TINVAR_ENV' : "TINVAR_ENV={$previous}");
+        }
+    });
+
     it('builds a reset on the tenant\'s domain only for an account confined to it', function () {
         $origins = origins(new Domains(['shop.acme.test' => passing('shop.acme.test')]));
 
