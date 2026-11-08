@@ -321,7 +321,7 @@ it('keeps every epoch and ends every session as the accounts move onto the kit, 
         ->and($connection->select('SELECT user_id, epoch FROM auth_epochs'))->toBe([['user_id' => 'c1', 'epoch' => 7]])
         ->and($connection->select('SELECT user_id, epoch FROM credential_epochs'))->toBe([['user_id' => 'c1', 'epoch' => 3]])
         ->and($connection->select('SELECT COUNT(*) AS n FROM sessions'))->toBe([['n' => 0]])
-        ->and($columns('sessions'))->toBe(['id', 'user_id', 'realm', 'stage', 'created_at', 'last_seen_at', 'expires_at', 'confirmed_at', 'handoff_redemption', 'credentials', 'tenant'])
+        ->and($columns('sessions'))->toBe(['id', 'user_id', 'realm', 'stage', 'created_at', 'last_seen_at', 'expires_at', 'confirmed_at', 'handoff_redemption', 'credentials', 'tenant', 'factors'])
         ->and(array_intersect(['passkeys', 'passkey_challenges', 'two_factor_secrets', 'recovery_codes'], tables($connection)))->toHaveCount(4);
 
     $migrator->rollback(2);
