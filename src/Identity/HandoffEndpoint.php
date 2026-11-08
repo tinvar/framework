@@ -311,7 +311,7 @@ final class HandoffEndpoint
         // about. A custom domain is a host someone else runs, who can read
         // the session made there -- that is asked about, always.
         if (!$target->isCustom()) {
-            return $this->issue($user, $target, $challenge, $state, $returnTo);
+            return $this->issue($request, $user, $target, $challenge, $state, $returnTo);
         }
 
         // A domain the person said not to be asked about again, at the epoch
@@ -319,7 +319,7 @@ final class HandoffEndpoint
         // 0125). Every check above has held as for any other handoff; only
         // the screen is skipped.
         if ($this->remembered?->remembers($user->authIdentifier(), $this->auth->epoch(), TenantClaim::of($this->orm, $target->tenant), $target->panel, $target->origin, $this->now()) === true) {
-            return $this->issue($user, $target, $challenge, $state, $returnTo);
+            return $this->issue($request, $user, $target, $challenge, $state, $returnTo);
         }
 
         return $this->ask($request, $user, $target, $challenge, $state, $returnTo);
@@ -459,7 +459,7 @@ final class HandoffEndpoint
             $this->remembered->remember($user->authIdentifier(), $this->auth->epoch(), $ticket->tenant, $ticket->panel, $ticket->origin, $now);
         }
 
-        return $this->issue($user, $target, $ticket->challenge, $ticket->state, $ticket->returnTo);
+        return $this->issue($request, $user, $target, $ticket->challenge, $ticket->state, $ticket->returnTo);
     }
 
     /**
@@ -479,9 +479,14 @@ final class HandoffEndpoint
         ], '', '&', PHP_QUERY_RFC3986)), 303));
     }
 
-    /** A code for $user into $target, and the browser sent to redeem it there. */
-    private function issue(Authenticatable $user, Realm $target, string $challenge, string $state, string $returnTo): Response
+    /**
+     * A code for $user into $target, and the browser sent to redeem it
+     * there: carrying what this session proved, where the application's
+     * sessions say (HandoffFactors, ADR 0184).
+     */
+    private function issue(Request $request, Authenticatable $user, Realm $target, string $challenge, string $state, string $returnTo): Response
     {
+        $factors = $this->sessions instanceof HandoffFactors ? $this->sessions->factorsOf($request, $user) : '';
         $code = HandoffCode::mint(
             $this->signer,
             $target,
@@ -492,6 +497,7 @@ final class HandoffEndpoint
             $returnTo,
             $this->now(),
             TenantClaim::of($this->orm, $target->tenant),
+            preg_match(HandoffCode::FACTORS, $factors) === 1 ? $factors : '',
         );
 
         return self::private(Response::location($target->url(self::CALLBACK . '?code=' . rawurlencode($code->encode($this->signer))), 303));
@@ -603,7 +609,7 @@ final class HandoffEndpoint
         }
 
         $redemption = Arrival::redemptionOf($code);
-        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, $redemption));
+        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, $redemption, $code->factors));
         if ($fresh === '' || hash_equals($session, $fresh)) {
             // The one thing the application must not get wrong here: a
             // session the browser arrived with may be one an attacker

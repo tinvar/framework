@@ -20,7 +20,9 @@ use Tinvar\Auth\Authenticatable;
  *
  * The redemption names the code that brought them, hashed: the
  * application keeps it with the session it starts, so a replay of that
- * code can end the session (HandoffSessions::revoke()).
+ * code can end the session (HandoffSessions::revoke()). The factors are
+ * what the session the handoff came from proved (HandoffFactors), as the
+ * application's sessions wrote them: '' for nothing proved.
  */
 final readonly class Arrival
 {
@@ -31,6 +33,7 @@ final readonly class Arrival
         public string $returnTo,
         public string $tenant = '',
         public string $redemption = '',
+        public string $factors = '',
     ) {}
 
     /** The handle a code's redemption is known by: its id, hashed, so no store holds the id itself. */

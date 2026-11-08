@@ -29,7 +29,9 @@ use Tinvar\Support\Signer;
  * - where to go afterwards, a path on the target, decided when the handoff
  *   started and carried under the MAC;
  * - an **id**, claimed once in the nonce store on redemption; and an
- *   **expiry** a minute out, with no refresh.
+ *   **expiry** a minute out, with no refresh;
+ * - how the session it was minted from was signed in (HandoffFactors, ADR
+ *   0184), so the session it starts proves no more than that one did.
  *
  * Not the build: a code names no route, component or payload whose meaning
  * a deploy could change, and a deploy in the minute it is in flight should
@@ -61,6 +63,9 @@ final readonly class HandoffCode
     /** A state's shape: what HandoffEndpoint::start() makes, and no longer. */
     public const string STATE = '/^[A-Za-z0-9_-]{22,64}\z/';
 
+    /** The shape of what a code says its session proved (HandoffFactors): '' for nothing. */
+    public const string FACTORS = '/^[a-z+-]{0,64}\z/';
+
     public function __construct(
         public string $origin,
         public string $tenant,
@@ -73,12 +78,14 @@ final readonly class HandoffCode
         public string $id,
         public int $issuedAt,
         public int $expiresAt,
+        public string $factors = '',
     ) {}
 
     /**
      * A new code for $user at $epoch, into $target, for the session that made $challenge.
      *
      * @param string $tenant the target's tenant as a token claims it (TenantClaim::of())
+     * @param string $factors what the session minting it proved (HandoffFactors), '' for nothing
      */
     public static function mint(
         Signer $signer,
@@ -90,6 +97,7 @@ final readonly class HandoffCode
         string $returnTo,
         int $now,
         string $tenant,
+        string $factors = '',
     ): self {
         return new self(
             origin: $target->origin,
@@ -103,6 +111,7 @@ final readonly class HandoffCode
             id: Signer::encode(random_bytes(16)),
             issuedAt: $now,
             expiresAt: $now + self::TTL,
+            factors: $factors,
         );
     }
 
@@ -120,6 +129,7 @@ final readonly class HandoffCode
             'j' => $this->id,
             'i' => $this->issuedAt,
             'e' => $this->expiresAt,
+            'f' => $this->factors,
         ]);
     }
 
@@ -167,6 +177,9 @@ final readonly class HandoffCode
             id: $string('j'),
             issuedAt: $int('i'),
             expiresAt: $int('e'),
+            // None on a code minted before codes carried them, in the
+            // minute a deploy was in flight: nothing proved, never refused.
+            factors: \array_key_exists('f', $map) ? $string('f') : '',
         );
 
         // Shapes, though the MAC says this server wrote them: a reader that
@@ -175,6 +188,7 @@ final readonly class HandoffCode
         if (preg_match(self::ID, $code->id) !== 1
             || preg_match(self::CHALLENGE, $code->challenge) !== 1
             || preg_match(self::STATE, $code->state) !== 1
+            || preg_match(self::FACTORS, $code->factors) !== 1
             || $code->user === ''
             || Realm::hostOf($code->origin) === null) {
             throw new TokenError('a field is not the shape a minted code has');

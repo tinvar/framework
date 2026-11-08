@@ -80,6 +80,9 @@ final readonly class AccountsKit
 
     /** The middleware a signed-in page is behind: the sign-in page, or a handoff on another of the app's hosts. */
     public RequireSignIn $requireSignIn;
+
+    /** The middleware a page for sessions of two factors is behind (ADR 0184). */
+    public RequireMultiFactor $requireMultiFactor;
     public AccountPaths $paths;
 
     /**
@@ -149,6 +152,7 @@ final readonly class AccountsKit
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
         $this->startSession = new StartSession($this->sessions, $auth, $csrf, $orm);
         $this->requireSignIn = new RequireSignIn($auth, $paths, $realms);
+        $this->requireMultiFactor = new RequireMultiFactor($auth, $paths, $this->requireSignIn);
 
         $this->accounts = new Accounts(
             connection: $connection,
@@ -239,7 +243,8 @@ final readonly class AccountsKit
             ->instance(AccountPaths::class, $this->paths)
             ->instance(AccountLinks::class, $this->accountLinks)
             ->instance(StartSession::class, $this->startSession)
-            ->instance(RequireSignIn::class, $this->requireSignIn);
+            ->instance(RequireSignIn::class, $this->requireSignIn)
+            ->instance(RequireMultiFactor::class, $this->requireMultiFactor);
     }
 
     /** The session id a request carries, or '': what every token is bound through. */
@@ -251,11 +256,13 @@ final readonly class AccountsKit
     /**
      * The cookies a browser signed in as $user sends with $request, with no
      * password asked: for tests, through the application's signedIn(). Refused
-     * wherever the environment says production.
+     * wherever the environment says production. Signed in with $factors --
+     * none unless given -- as a test of a page that asks for two hands in a
+     * passkey, say.
      *
      * @return array<string, string>
      */
-    public function signedIn(Authenticatable $user, Request $request): array
+    public function signedIn(Authenticatable $user, Request $request, ?SessionFactors $factors = null): array
     {
         $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
         if ($marker !== null) {
@@ -265,6 +272,6 @@ final readonly class AccountsKit
             throw new \InvalidArgumentException('The accounts kit signs in an AccountUser, and was handed ' . get_debug_type($user) . '.');
         }
 
-        return [$this->cookie->name => $this->sessions->signedInCookie($user, $request)];
+        return [$this->cookie->name => $this->sessions->signedInCookie($user, $request, $factors)];
     }
 }

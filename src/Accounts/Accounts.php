@@ -121,6 +121,13 @@ final class Accounts
     /** On the `confirm` field: the session has not proved it is its owner's in the last five minutes. */
     public const string CONFIRM_FIRST = "Confirm it's you first: type your password, or use a passkey or a code from your authenticator app.";
 
+    /**
+     * On the `confirm` field: the account has a second factor -- a passkey,
+     * an authenticator app -- and a change to its second factors needs this
+     * session to have proved one too (ADR 0184).
+     */
+    public const string CONFIRM_SECOND_FACTOR = "Confirm it's you with one of your passkeys or a code from your authenticator app first.";
+
     /** How long a confirmation lets the session change how the account signs in, in seconds. */
     public const int CONFIRMATION_LIFETIME = Sessions::CONFIRMATION_LIFETIME;
 
@@ -223,7 +230,8 @@ final class Accounts
             return [$user, $this->sessions->credentials($user, $hash)];
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user, $checked);
+        // The link proved the inbox; the password was only just chosen.
+        $this->sessions->signIn(SessionState::of($http), $user, $checked, SessionFactors::of(SignInFactor::EmailLink));
         $this->signedIn($user);
 
         return $user;
@@ -284,7 +292,7 @@ final class Accounts
             return $user;
         });
 
-        return $this->enter($http, $user, $checked);
+        return $this->enter($http, $user, $checked, SignInFactor::EmailLink);
     }
 
     // ------------------------------------------------- signing in and out
@@ -324,7 +332,7 @@ final class Accounts
         // unknown address does -- and a revocation before that read changed
         // nothing a password signs in with: the same password would sign in
         // just after it.
-        return $this->enter($http, $user, $this->sessions->credentials($user, $hash));
+        return $this->enter($http, $user, $this->sessions->credentials($user, $hash), SignInFactor::Password);
     }
 
     /**
@@ -341,14 +349,16 @@ final class Accounts
         }
 
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
-        if (!$this->twoFactor->verify($user->authIdentifier(), $code)) {
+        $factor = $this->twoFactor->spend($user->authIdentifier(), $code);
+        if ($factor === null) {
             throw new ValidationException(['code' => [self::CODE_REFUSED]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
 
         // Held to what the password, or the link, was checked against: a
         // sign-out everywhere or a new password since has ended the sign-in.
-        if (!$this->sessions->passSecondFactor($state)) {
+        // Signed in with what the first proved, and which code this was.
+        if (!$this->sessions->passSecondFactor($state, $factor)) {
             throw new ValidationException(['code' => [self::SECOND_FACTOR_EXPIRED]]);
         }
         $this->signedIn($user);
@@ -425,7 +435,8 @@ final class Accounts
 
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordChanged, userId: $user->authIdentifier()));
 
-        return $this->enter($http, $user, $checked);
+        // The link proved the inbox, as a sign-in link does.
+        return $this->enter($http, $user, $checked, SignInFactor::EmailLink);
     }
 
     /**
@@ -449,7 +460,9 @@ final class Accounts
             return $this->sessions->credentials($user, $hash);
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user, $checked);
+        // Signed in again as it was: a change asked for proves nothing new.
+        $state = SessionState::of($http);
+        $this->sessions->signIn($state, $user, $checked, $state->factors());
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordChanged, userId: $user->authIdentifier()));
     }
 
@@ -538,7 +551,7 @@ final class Accounts
 
         $state = SessionState::of($http);
         if ($state->user()?->authIdentifier() === $user->authIdentifier()) {
-            $this->sessions->signIn($state, $user, $checked);
+            $this->sessions->signIn($state, $user, $checked, $state->factors());
         }
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::EmailChanged, $old, userId: $user->authIdentifier()));
 
@@ -567,7 +580,10 @@ final class Accounts
 
     /**
      * Confirms the session with a code from the account's authenticator
-     * app, counted as any second factor is. Not a recovery code: those are
+     * app, counted as any second factor is, and adds the code to what the
+     * session proved, under a new id (Sessions::stepUp(), ADR 0184): a
+     * session signed in by a password alone is then one of two factors.
+     * Not a recovery code: those are
      * for a sign-in that has lost the app, and spending one here would be
      * spending it for nothing.
      */
@@ -579,7 +595,7 @@ final class Accounts
             throw new ValidationException(['code' => ["That code didn't work. Type the code your authenticator app shows now."]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
-        $this->sessions->confirm(SessionState::of($http), $user);
+        $this->stepUp($http, $user, SignInFactor::AuthenticatorCode, 'code');
     }
 
     /**
@@ -606,11 +622,26 @@ final class Accounts
         ];
     }
 
-    /** Confirms the session with one of the account's own passkeys, verified as a sign-in's is. */
+    /**
+     * Confirms the session with one of the account's own passkeys, verified
+     * as a sign-in's is -- its user verified -- and steps it up to two
+     * factors under a new id (Sessions::stepUp(), ADR 0184).
+     */
     public function confirmWithPasskey(Request $http, AccountUser $user, string $credential): void
     {
         $this->verifyPasskey($http, $credential, PasskeyChallenges::CONFIRM, $user);
-        $this->sessions->confirm(SessionState::of($http), $user);
+        $this->stepUp($http, $user, SignInFactor::Passkey, 'credential');
+    }
+
+    /**
+     * Whether this session's sign-in proved two factors (ADR 0184): a
+     * passkey, or a password or an emailed link and a code -- at sign-in, or
+     * since, by confirming with a code or a passkey. What a page a stolen
+     * password must not open asks (RequireMultiFactor).
+     */
+    public function multiFactor(Request $http): bool
+    {
+        return SessionState::of($http)->factors()->multiFactor();
     }
 
     // ----------------------------------------------------------- two-factor
@@ -636,6 +667,7 @@ final class Accounts
     public function beginTwoFactor(Request $http, AccountUser $user): array
     {
         $this->assertRecentlyConfirmed($http);
+        $this->assertMayChangeFactors($http, $user);
         $secret = $this->twoFactor->begin($user->authIdentifier());
 
         return ['secret' => Base32::encode($secret), 'uri' => Totp::uri($secret, $this->issuer, $user->accountEmail())];
@@ -664,6 +696,7 @@ final class Accounts
     public function confirmTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): array
     {
         $this->assertRecentlyConfirmed($http);
+        $this->assertMayChangeFactors($http, $user);
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
         $codes = $this->twoFactor->confirm($user->authIdentifier(), $code);
         if ($codes === null) {
@@ -686,6 +719,7 @@ final class Accounts
      */
     public function disableTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
+        $this->assertMayChangeFactors($http, $user);
         $this->confirmPassword($http, $user, $password, 'currentPassword');
         $checked = $this->connection->durableTransaction(function () use ($http, $user): Credentials {
             $this->twoFactor->disable($user->authIdentifier());
@@ -698,7 +732,8 @@ final class Accounts
             return $this->sessions->credentials($user);
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user, $checked);
+        $state = SessionState::of($http);
+        $this->sessions->signIn($state, $user, $checked, $state->factors());
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::TwoFactorDisabled, userId: $user->authIdentifier()));
     }
 
@@ -709,6 +744,7 @@ final class Accounts
      */
     public function regenerateRecoveryCodes(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): array
     {
+        $this->assertMayChangeFactors($http, $user);
         $this->confirmPassword($http, $user, $password, 'currentPassword');
         if (!$this->twoFactor->enabled($user->authIdentifier())) {
             throw new ValidationException(['currentPassword' => ['Two-factor sign-in is off, so there are no recovery codes to replace. Turn it on first.']]);
@@ -739,6 +775,7 @@ final class Accounts
     {
         $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
+        $this->assertMayChangeFactors($http, $user);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
 
         return [
@@ -770,6 +807,7 @@ final class Accounts
     {
         $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
+        $this->assertMayChangeFactors($http, $user);
         $challenge = $this->challenges->consume(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
         if ($challenge === null) {
             throw new ValidationException(['credential' => ['Adding the passkey took too long, or was started in another tab. Try again.']]);
@@ -834,7 +872,7 @@ final class Accounts
     public function signInWithPasskey(Request $http, string $credential): AccountUser
     {
         [$user, $checked] = $this->verifyPasskey($http, $credential, PasskeyChallenges::AUTHENTICATE);
-        $this->sessions->signIn(SessionState::of($http), $user, $checked);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked, SessionFactors::of(SignInFactor::Passkey));
         $this->signedIn($user);
 
         return $user;
@@ -856,6 +894,7 @@ final class Accounts
     public function removePasskey(Request $http, AccountUser $user, string $id): bool
     {
         $this->assertRecentlyConfirmed($http);
+        $this->assertMayChangeFactors($http, $user);
         $name = null;
         foreach ($this->passkeys->of($user->authIdentifier()) as $passkey) {
             if ($passkey->id === $id) {
@@ -880,7 +919,8 @@ final class Accounts
             return false;
         }
 
-        $this->sessions->signIn(SessionState::of($http), $user, $checked);
+        $state = SessionState::of($http);
+        $this->sessions->signIn($state, $user, $checked, $state->factors());
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyRemoved, name: $name, userId: $user->authIdentifier()));
 
         return true;
@@ -1134,6 +1174,38 @@ final class Accounts
         return $stored !== null && $this->passwords->verify($password, $stored) ? $stored : null;
     }
 
+    /**
+     * The session's confirmation, with a code or a passkey, added to what it
+     * proved (Sessions::stepUp()); SESSION_ENDED on $field where it ended
+     * once the request began.
+     */
+    private function stepUp(Request $http, AccountUser $user, SignInFactor $factor, string $field): void
+    {
+        if (!$this->sessions->stepUp(SessionState::of($http), $user, $factor)) {
+            throw new ValidationException([$field => [self::SESSION_ENDED]]);
+        }
+    }
+
+    /**
+     * A change to an account's second factors -- a passkey added or removed,
+     * an authenticator app turned on or off, new recovery codes -- refused
+     * (CONFIRM_SECOND_FACTOR on `confirm`) once the account has one, unless
+     * this session proved two factors (ADR 0184). A password is all a thief
+     * may have, and a factor of their own they could add with it, or the
+     * owner's they could take away to add one, would sign them in with two:
+     * past every page that asks for two. The first second factor is added
+     * from a session of one, as it has to be.
+     */
+    private function assertMayChangeFactors(Request $http, AccountUser $user): void
+    {
+        $id = $user->authIdentifier();
+        if (SessionState::of($http)->factors()->multiFactor() || (!$this->twoFactor->enabled($id) && $this->passkeys->count($id) === 0)) {
+            return;
+        }
+
+        throw new ValidationException(['confirm' => [self::CONFIRM_SECOND_FACTOR]]);
+    }
+
     /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */
     private function assertRecentlyConfirmed(Request $http): void
     {
@@ -1144,17 +1216,18 @@ final class Accounts
 
     /**
      * Signs in, or moves to the second-factor stage where two-factor is on,
-     * held to what the sign-in was checked against.
+     * held to what the sign-in was checked against, with $first, what it
+     * proved.
      */
-    private function enter(Request $http, AccountUser $user, Credentials $checked): SignInResult
+    private function enter(Request $http, AccountUser $user, Credentials $checked, SignInFactor $first): SignInResult
     {
         $state = SessionState::of($http);
         if ($this->twoFactor->enabled($user->authIdentifier())) {
-            $this->sessions->beginSecondFactor($state, $user, $checked);
+            $this->sessions->beginSecondFactor($state, $user, $checked, SessionFactors::of($first));
 
             return SignInResult::SecondFactor;
         }
-        $this->sessions->signIn($state, $user, $checked);
+        $this->sessions->signIn($state, $user, $checked, SessionFactors::of($first));
         $this->signedIn($user);
 
         return SignInResult::SignedIn;

@@ -8,8 +8,8 @@ use Tinvar\Http\Request;
 
 /**
  * This request's session: whose it is, who is half-way through signing in
- * on it, the tenant it runs as, and the cookie to replace it with if a
- * sign-in, a sign-out or a switch of tenant rotated it.
+ * on it, how it was signed in, the tenant it runs as, and the cookie to
+ * replace it with if a sign-in, a sign-out or a switch of tenant rotated it.
  *
  * Carried on the Request rather than held by a service: the middleware that
  * reads the session and the action that rotates it are long-lived, and one
@@ -34,6 +34,7 @@ final class SessionState
      *        to when this request opened it; null signed out
      * @param string|null $tenant the tenant its user switched it to (Sessions::switchTenant());
      *        null signed out, and until they switch
+     * @param SessionFactors|null $factors what its sign-in proved (ADR 0184); none unless given
      */
     public function __construct(
         #[\SensitiveParameter]
@@ -45,6 +46,7 @@ final class SessionState
         private ?int $confirmedAt = null,
         private ?string $credentialEpoch = null,
         private ?string $tenant = null,
+        private ?SessionFactors $factors = null,
     ) {}
 
     public static function of(Request $request): self
@@ -101,6 +103,18 @@ final class SessionState
         return $this->tenant;
     }
 
+    /**
+     * What the session's sign-in proved, sealed with its row (ADR 0184): a
+     * passkey, a password and a code, an emailed link... None signed out,
+     * half-way through signing in, and for a session made before factors
+     * were kept. An app requires two with RequireMultiFactor, or asks
+     * factors()->multiFactor() itself.
+     */
+    public function factors(): SessionFactors
+    {
+        return $this->user === null ? SessionFactors::none() : ($this->factors ?? SessionFactors::none());
+    }
+
     /** Called by Sessions when the owner proves it is them. */
     public function confirmed(int $at): void
     {
@@ -109,9 +123,10 @@ final class SessionState
 
     /**
      * Called by Sessions when it rotates the id; the middleware sets the
-     * cookie. $tenant is the new session's: null for all but a switch.
+     * cookie. $tenant is the new session's: null for all but a switch and a
+     * step up; $factors what the new session's sign-in proved.
      */
-    public function replaceWith(#[\SensitiveParameter] string $cookie, ?AccountUser $user, ?AccountUser $pending = null, ?string $tenant = null): void
+    public function replaceWith(#[\SensitiveParameter] string $cookie, ?AccountUser $user, ?AccountUser $pending = null, ?string $tenant = null, ?SessionFactors $factors = null): void
     {
         $this->replacement = $cookie;
         $this->user = $user;
@@ -120,6 +135,7 @@ final class SessionState
         $this->confirmedAt = null;
         $this->credentialEpoch = null;
         $this->tenant = $tenant;
+        $this->factors = $factors;
     }
 
     /** The cookie the response must set, or null if the session was not rotated. */

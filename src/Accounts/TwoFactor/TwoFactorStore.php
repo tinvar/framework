@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Accounts\TwoFactor;
 
 use Carbon\CarbonImmutable;
+use Tinvar\Accounts\SignInFactor;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Schema\Schema;
@@ -129,12 +130,21 @@ final readonly class TwoFactorStore
      */
     public function verify(string $user, #[\SensitiveParameter] string $code): bool
     {
+        return $this->spend($user, $code) !== null;
+    }
+
+    /**
+     * As verify(), saying which of the two $code was, spent: a code from the
+     * app, or a recovery code; null for neither.
+     */
+    public function spend(string $user, #[\SensitiveParameter] string $code): ?SignInFactor
+    {
         $row = $this->connection->select(
             'SELECT secret, last_used_step FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NOT NULL',
             [$user],
         )[0] ?? null;
         if ($row === null) {
-            return false;
+            return null;
         }
 
         $compact = (string) preg_replace('/\s+/', '', $code);
@@ -148,13 +158,13 @@ final readonly class TwoFactorStore
             return $step !== null && $this->connection->execute(
                 'UPDATE two_factor_secrets SET last_used_step = ? WHERE user_id = ? AND (last_used_step IS NULL OR last_used_step < ?)',
                 [$step, $user, $step],
-            ) === 1;
+            ) === 1 ? SignInFactor::AuthenticatorCode : null;
         }
 
         return $this->connection->execute(
             'UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL',
             [$this->moment(), $user, self::hashCode($code)],
-        ) === 1;
+        ) === 1 ? SignInFactor::RecoveryCode : null;
     }
 
     /** Turns two-factor sign-in off for $user: the secret and every recovery code forgotten. */

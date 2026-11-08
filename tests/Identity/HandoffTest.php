@@ -816,6 +816,21 @@ describe('a code\'s claims', function () {
             ->and(static fn () => HandoffCode::decode($encoded, new Signer(KEY_OTHER, HandoffCode::PURPOSE), $app->now))->toThrow(\Tinvar\Render\TokenError::class);
     });
 
+    // ADR 0184: a code carries what the session it was minted from proved,
+    // under its MAC; one minted before codes carried it proves nothing.
+    it('carry what the session minting them proved, nothing for a code minted before they did, and nothing of another shape', function () {
+        $app = new App();
+        $realm = Realm::domain('https://acme.example', 'acme', 'portal');
+        $code = HandoffCode::mint($app->signer, $realm, 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, 'acme', 'password+authenticator-code');
+        expect(HandoffCode::decode($code->encode($app->signer), $app->signer, $app->now)->factors)->toBe('password+authenticator-code');
+
+        $fields = ['o' => $realm->origin, 'y' => 'acme', 'n' => 'portal', 'u' => 'alice', 'h' => 'h', 'c' => str_repeat('c', 43), 's' => str_repeat('s', 22), 'r' => '/', 'j' => str_repeat('j', 22), 'i' => $app->now, 'e' => $app->now + 30];
+        $older = SignedToken::encode($app->signer, HandoffCode::PURPOSE, $fields);
+        $odd = SignedToken::encode($app->signer, HandoffCode::PURPOSE, [...$fields, 'f' => 'Passkey; admin']);
+        expect(HandoffCode::decode($older, $app->signer, $app->now)->factors)->toBe('')
+            ->and(static fn () => HandoffCode::decode($odd, $app->signer, $app->now))->toThrow(\Tinvar\Render\TokenError::class);
+    });
+
     it('are refused living longer than a code is minted for, or issued in the future', function () {
         $app = new App();
         $realm = Realm::domain('https://acme.example', 'acme', 'portal');

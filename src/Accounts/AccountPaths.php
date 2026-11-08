@@ -34,6 +34,9 @@ final readonly class AccountPaths
         public string $account = '/account',
         // The account's API tokens page: what the email about a new token points to.
         public string $apiTokens = '/account/api-tokens',
+        // Where a session signed in with one factor proves a second -- a code
+        // or a passkey -- before a page that asks for two (RequireMultiFactor).
+        public string $verify = '/account/verify',
     ) {
         foreach (get_object_vars($this) as $name => $path) {
             if (!\is_string($path) || preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {
@@ -66,11 +69,19 @@ final readonly class AccountPaths
         // Back to the sign-in pages would only ask again, and nothing under
         // /_ is a page.
         $path = explode('?', $next, 2)[0];
-        if (\in_array($path, [$this->signIn, $this->secondFactor, $this->signUp], true) || ($path !== HandoffEndpoint::AUTHORIZE && str_starts_with($path, '/_'))) {
+        if (\in_array($path, [$this->signIn, $this->secondFactor, $this->signUp, $this->verify], true) || ($path !== HandoffEndpoint::AUTHORIZE && str_starts_with($path, '/_'))) {
             return $this->home;
         }
 
         return $next;
+    }
+
+    /** The page that asks a session of one factor for a second, remembering where it was going. */
+    public function verifyFor(string $path, ?string $query = null): string
+    {
+        $next = $query === null || $query === '' ? $path : "{$path}?{$query}";
+
+        return $this->verify . '?next=' . rawurlencode($this->next($next));
     }
 
     /** The sign-in page's address, remembering where the visitor was going. */

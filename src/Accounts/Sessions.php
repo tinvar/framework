@@ -44,6 +44,14 @@ use Tinvar\Support\Signer;
  * session is held to, its handoff and its expiry. Every other rotation
  * makes a session with no tenant chosen (ADR 0181).
  *
+ * And every row records what its sign-in proved (SessionFactors, ADR 0184)
+ * -- a password, a passkey, a password and a code -- sealed under the app
+ * key to the row's id, realm and user, so a row given another's factors, or
+ * factors it never proved, reads as having none. A sign-in records its own;
+ * a switch of tenant and a change the session asks for carry the session's;
+ * a handoff's arrival takes those of the session it came from; and a code or
+ * a passkey proved on a session adds to them under a new id (stepUp()).
+ *
  * And every session is held to what its sign-in was checked against
  * (Credentials): the account's credential epoch, which every revocation
  * moves -- a sign-out everywhere, a new password or address, two-factor
@@ -80,11 +88,16 @@ final readonly class Sessions
     /** What a row's credentials are sealed under, with the app key. */
     private const string CREDENTIALS_PURPOSE = 'session-credentials';
 
+    /** What a row's factors are sealed under, with the app key. */
+    private const string FACTORS_PURPOSE = 'session-factors';
+
     /** Where open() reads a session's row with its account's credential and auth epochs, by the row's hashed id. */
     private const string WITH_EPOCHS = 'FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id '
         . 'LEFT JOIN ' . AuthEpochs::TABLE . ' a ON a.user_id = s.user_id WHERE s.id = ?';
 
     private Signer $seals;
+
+    private Signer $factorSeals;
 
     public function __construct(
         private Connection $connection,
@@ -96,6 +109,7 @@ final readonly class Sessions
         string $key,
     ) {
         $this->seals = new Signer($key, self::CREDENTIALS_PURPOSE);
+        $this->factorSeals = new Signer($key, self::FACTORS_PURPOSE);
     }
 
     /** @param class-string<Model> $userModel */
@@ -126,6 +140,10 @@ final readonly class Sessions
             // The tenant the session runs as (switchTenant()), as long as the
             // ORM's tenant columns are; null until its user chooses one.
             $sessions->string('tenant', 255)->nullable();
+            // What its sign-in proved (SessionFactors), sealed to the row
+            // (sealFactors()); null on a row made before factors were kept,
+            // which reads as none.
+            $sessions->string('factors', 128)->nullable();
             $sessions->index(['user_id'], 'sessions_user');
             $sessions->index(['expires_at'], 'sessions_expiry');
             $sessions->index(['handoff_redemption'], 'sessions_handoff');
@@ -193,6 +211,24 @@ final readonly class Sessions
         }
         $schema->table('sessions', static function (Table $sessions): void {
             $sessions->string('tenant', 255)->nullable();
+        });
+    }
+
+    /**
+     * Adds `factors` to a sessions table define() made before it had one; a
+     * table that has it is left as it is. Every session there was signed in
+     * before its factors were kept, and reads as having none -- signed in
+     * still, but no page that asks for two factors opens to it until it
+     * proves them again (ADR 0184). Every sign-in writes the column, so an
+     * app on the kit runs this before it serves.
+     */
+    public static function addFactors(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'factors')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->string('factors', 128)->nullable();
         });
     }
 
@@ -296,6 +332,7 @@ final readonly class Sessions
             confirmedAt: $confirmed,
             credentialEpoch: $credentialEpoch,
             tenant: \is_string($tenant) && $tenant !== '' ? $tenant : null,
+            factors: $this->factorsOf($row, $id, $realm, $user->authIdentifier()),
         );
     }
 
@@ -370,11 +407,13 @@ final readonly class Sessions
     /**
      * Binds the session to $user, under a new id, held to what their sign-in
      * was checked against ($checked, from credentials()), and moves both
-     * users' epochs.
+     * users' epochs. $factors is what the sign-in proved; none unless given,
+     * and a change the session asks for, which signs it in again, hands in
+     * the session's own (SessionState::factors()).
      */
-    public function signIn(SessionState $state, AccountUser $user, Credentials $checked): void
+    public function signIn(SessionState $state, AccountUser $user, Credentials $checked, ?SessionFactors $factors = null): void
     {
-        $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked));
+        $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked), factors: $factors);
     }
 
     /**
@@ -383,24 +422,28 @@ final readonly class Sessions
      * nobody until passSecondFactor(). $user's epoch stays where it is --
      * nothing of theirs has been let in yet.
      */
-    public function beginSecondFactor(SessionState $state, AccountUser $user, Credentials $checked): void
+    public function beginSecondFactor(SessionState $state, AccountUser $user, Credentials $checked, ?SessionFactors $first = null): void
     {
-        $this->rotate($state, $user, SessionStage::SecondFactor, $this->sealFor($user, $checked));
+        $this->rotate($state, $user, SessionStage::SecondFactor, $this->sealFor($user, $checked), factors: $first);
     }
 
     /**
      * Signs in the user whose sign-in waits on its second factor in this
      * session, its code just checked, under a new id -- held to what the
-     * first factor was checked against, which the waiting row carries.
+     * first factor was checked against, which the waiting row carries, and
+     * with what it proved, and $second.
      * False when that sign-in has ended since the request began: a sign-out
      * everywhere or a new password deleted the row, or its ten minutes are
      * up.
      */
-    public function passSecondFactor(SessionState $state): bool
+    public function passSecondFactor(SessionState $state, SignInFactor $second = SignInFactor::AuthenticatorCode): bool
     {
         $user = $state->pending();
+        if (!$second->isSecond()) {
+            throw new \InvalidArgumentException('A second factor is a code: ' . $second->value . ' is not one.');
+        }
 
-        return $user !== null && $this->rotate($state, $user, SessionStage::SignedIn, promote: true) !== null;
+        return $user !== null && $this->rotate($state, $user, SessionStage::SignedIn, promote: true, factors: SessionFactors::of($second)) !== null;
     }
 
     /** Ends the session, and starts a new signed-out one -- a cookie, no row -- in its place. */
@@ -419,7 +462,10 @@ final readonly class Sessions
      * here, so nothing any of their tabs holds there has stopped being
      * theirs. Whoever this host's session belonged to before, if anyone
      * else, still moves on. The handoff's redemption is kept with the row,
-     * so a replay of its code ends the session (revokeArrival()).
+     * so a replay of its code ends the session (revokeArrival()). It was
+     * signed in with what the session the handoff came from proved
+     * ($factors, which the handoff's code carries under its MAC), and no
+     * more.
      *
      * Null when $user's auth epoch is no longer $epoch, the one the
      * handoff's code was checked at: they signed in or out elsewhere, or a
@@ -432,7 +478,7 @@ final readonly class Sessions
      *        the one this request came to, the only one the session will be good on
      * @param string $epoch the auth epoch the handoff endpoint checked the code's against (Arrival::$epoch)
      */
-    public function arrive(SessionState $state, AccountUser $user, string $realm, string $epoch, string $redemption = ''): ?string
+    public function arrive(SessionState $state, AccountUser $user, string $realm, string $epoch, string $redemption = '', ?SessionFactors $factors = null): ?string
     {
         if ($realm !== $state->realm) {
             throw new \LogicException('A handoff arrives into the session of the host it names; this request came to another.');
@@ -442,7 +488,7 @@ final readonly class Sessions
             return null;
         }
 
-        return $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked), moveEpoch: false, redemption: $redemption);
+        return $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked), moveEpoch: false, redemption: $redemption, factors: $factors);
     }
 
     /**
@@ -498,14 +544,61 @@ final readonly class Sessions
             throw new \InvalidArgumentException('A session runs as a tenant with a name: printable, and as long as a tenant column holds.');
         }
 
+        return $this->carry($state, $user, tenant: $tenant);
+    }
+
+    /**
+     * Adds $factor, just proved on this session -- a code from the account's
+     * authenticator app, or one of its passkeys -- to what the session's
+     * sign-in proved, under a new id, and stamps it confirmed: the "confirm
+     * it's you" step, which a page that asks for two factors sends a session
+     * of one to (RequireMultiFactor, ADR 0184).
+     *
+     * A new id, as for every change of what a session may do: a copy of the
+     * cookie taken before -- one a thief holds beside its owner -- is not
+     * stepped up with it, and ends. Otherwise a rotation that is no sign-in,
+     * as a switch is: the same user, epochs, credentials, handoff, tenant and
+     * expiry, read from the row. A factor the session has already proved
+     * changes nothing but the confirmation, under the same id.
+     *
+     * False, with nothing made, where the session is not signed in as $user,
+     * or has ended since the request opened it.
+     */
+    public function stepUp(SessionState $state, AccountUser $user, SignInFactor $factor): bool
+    {
+        if ($state->id === '' || $state->user()?->authIdentifier() !== $user->authIdentifier()) {
+            return false;
+        }
+        if ($state->factors()->has($factor)) {
+            $this->confirm($state, $user);
+
+            return $state->confirmedAt() !== null;
+        }
+
+        return $this->carry($state, $user, add: $factor) !== null;
+    }
+
+    /**
+     * The session, signed in as $user, under a new id in one durable
+     * transaction, with what its row holds -- the user, realm, sealed
+     * credentials, handoff redemption, tenant, factors and expiry -- carried
+     * over, and the id it had ended: a switch of tenant to $tenant, or a step
+     * up adding $add to its factors and stamping it confirmed. No epoch
+     * moves. The new id; null where the row has gone since the request
+     * opened it, and nothing was made.
+     */
+    private function carry(SessionState $state, AccountUser $user, ?string $tenant = null, ?SignInFactor $add = null): ?string
+    {
         $now = $this->cookie->now();
         $cookies = $this->cookie;
         $connection = $this->connection;
+        $factorsOf = $this->factorsOf(...);
+        $sealFactors = $this->sealFactors(...);
         // Durable, as every rotation is: what a session runs as decides
         // every request, and an old id a power cut brought back would too.
-        $made = $connection->durableTransaction(static function () use ($connection, $cookies, $state, $user, $tenant, $now): ?array {
+        $made = $connection->durableTransaction(static function () use ($connection, $cookies, $factorsOf, $sealFactors, $state, $user, $tenant, $add, $now): ?array {
             // The row whole, as open() reads it: a table made before the
-            // handoff's column was has none to carry.
+            // handoff's column, or the tenant's, has none to carry.
             $row = $connection->select(
                 'SELECT * FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
                 [self::hash($state->id), $state->realm, $user->authIdentifier(), SessionStage::SignedIn->value, $now],
@@ -518,29 +611,48 @@ final readonly class Sessions
             $cookie = $cookies->issue(signedIn: true, until: $expires);
             $id = (string) $cookies->id($cookie);
             $redemption = $row['handoff_redemption'] ?? null;
-            $redemption = \is_string($redemption) && $redemption !== '' ? $redemption : null;
+            $kept = $row['tenant'] ?? null;
+            $tenant ??= \is_string($kept) && $kept !== '' ? $kept : null;
+            // What the row proved, as its seal says -- none where it says
+            // nothing, or something else -- and what was just proved.
+            $factors = $factorsOf($row, $state->id, $state->realm, $user->authIdentifier());
+            if ($add !== null) {
+                $factors = $factors->with($add);
+            }
 
-            // The row read is the one taken, or another switch of this
+            // The row read is the one taken, or another rotation of this
             // session -- a double click, a copy of the cookie -- took it
-            // first, and that switch's session is the only one made from it.
+            // first, and that one's session is the only one made from it.
             if ($connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]) !== 1) {
                 return null;
             }
-            $connection->execute(
-                $redemption === null
-                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, tenant, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [self::hash($id), $user->authIdentifier(), $state->realm, SessionStage::SignedIn->value, $now, $now, $expires, $row['credentials'], $tenant, ...($redemption === null ? [] : [$redemption])],
-            );
+            self::insert($connection, [
+                'id' => self::hash($id),
+                'user_id' => $user->authIdentifier(),
+                'realm' => $state->realm,
+                'stage' => SessionStage::SignedIn->value,
+                'created_at' => $now,
+                'last_seen_at' => $now,
+                'expires_at' => $expires,
+                'credentials' => $row['credentials'],
+                'factors' => $sealFactors($factors, $id, $state->realm, $user->authIdentifier()),
+                'tenant' => $tenant,
+                'handoff_redemption' => \is_string($redemption) && $redemption !== '' ? $redemption : null,
+                // A switch carries no confirmation; a step up is one.
+                'confirmed_at' => $add === null ? null : $now,
+            ]);
 
-            return [$cookie, $id];
+            return [$cookie, $id, $tenant, $factors];
         });
         if ($made === null) {
             return null;
         }
-        [$cookie, $id] = $made;
+        [$cookie, $id, $tenant, $factors] = $made;
 
-        $state->replaceWith($cookie, $user, tenant: $tenant);
+        $state->replaceWith($cookie, $user, tenant: $tenant, factors: $factors);
+        if ($add !== null) {
+            $state->confirmed($now);
+        }
 
         return $id;
     }
@@ -597,12 +709,14 @@ final readonly class Sessions
 
     /**
      * A test's session for $user, with no password asked: the cookie value
-     * a browser signed in on $request's host would send.
+     * a browser signed in on $request's host would send, signed in with
+     * $factors -- none unless given, so a page that asks for two factors
+     * sends it on to prove them, as it would a session of one.
      */
-    public function signedInCookie(AccountUser $user, Request $request): string
+    public function signedInCookie(AccountUser $user, Request $request, ?SessionFactors $factors = null): string
     {
         $state = new SessionState('', self::realmOf($request));
-        $this->signIn($state, $user, $this->credentials($user));
+        $this->signIn($state, $user, $this->credentials($user), $factors);
 
         return $state->replacement() ?? throw new \LogicException('Signing in made no session.');
     }
@@ -614,10 +728,13 @@ final readonly class Sessions
      *        session, which must still be there
      * @param bool $moveEpoch whether $user moves to a new epoch; a handoff's arrival does not (arrive())
      * @param string $redemption the handoff code that started the session, hashed (revokeArrival())
+     * @param SessionFactors|null $factors what the sign-in proved -- for a second factor passed, the
+     *        code, added to what the waiting row's first factor proved -- none unless given
      * @return string|null the new session id; null when the second-factor row to promote has gone
      */
-    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, ?string $seal = null, bool $promote = false, bool $everywhere = false, bool $moveEpoch = true, string $redemption = ''): ?string
+    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, ?string $seal = null, bool $promote = false, bool $everywhere = false, bool $moveEpoch = true, string $redemption = '', ?SessionFactors $factors = null): ?string
     {
+        $factors ??= SessionFactors::none();
         if ($user !== null && $seal === null && !$promote) {
             throw new \LogicException('A session is made held to what its sign-in was checked against.');
         }
@@ -635,19 +752,23 @@ final readonly class Sessions
         $connection = $this->connection;
         $epochs = $this->epochs;
         $credentials = $this->credentials;
-        $made = $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $seal, $promote, $everywhere, $moveEpoch, $redemption, $id, $now, $expires): bool {
+        $factorsOf = $this->factorsOf(...);
+        $factorSigner = $this->factorSeals;
+        $made = $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $factorsOf, $factorSigner, $state, $user, $stage, $seal, $promote, $everywhere, $moveEpoch, $redemption, $id, $now, $expires, &$factors): bool {
             // A second factor passed carries over what the first was checked
             // against, from the row that waited for it: gone -- a sign-out
             // everywhere, a new password, its ten minutes up -- and there is
-            // nobody to sign in.
+            // nobody to sign in. And what the first proved, as its seal says.
             if ($promote) {
-                $seal = $connection->select(
-                    'SELECT credentials FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
+                $waiting = $connection->select(
+                    'SELECT * FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
                     [self::hash($state->id), $state->realm, $user?->authIdentifier(), SessionStage::SecondFactor->value, $now],
-                )[0]['credentials'] ?? null;
-                if (!\is_string($seal)) {
+                )[0] ?? null;
+                $seal = $waiting['credentials'] ?? null;
+                if ($waiting === null || $user === null || !\is_string($seal)) {
                     return false;
                 }
+                $factors = $factorsOf($waiting, $state->id, $state->realm, $user->authIdentifier())->with(...$factors->all());
             }
 
             // This host's row alone: an id presented on the wrong host is not
@@ -679,12 +800,18 @@ final readonly class Sessions
 
             // The handoff's column only for a handoff's session, so an app
             // with one host signs in on a table made before the column was.
-            $connection->execute(
-                $redemption === ''
-                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [self::hash($id), $user->authIdentifier(), $state->realm, $stage->value, $now, $now, $expires, $seal, ...($redemption === '' ? [] : [$redemption])],
-            );
+            self::insert($connection, [
+                'id' => self::hash($id),
+                'user_id' => $user->authIdentifier(),
+                'realm' => $state->realm,
+                'stage' => $stage->value,
+                'created_at' => $now,
+                'last_seen_at' => $now,
+                'expires_at' => $expires,
+                'credentials' => $seal,
+                'factors' => self::sealFactorsWith($factorSigner, $factors, $id, $state->realm, $user->authIdentifier()),
+                'handoff_redemption' => $redemption === '' ? null : $redemption,
+            ]);
 
             // In the insert's own transaction, so it costs no second turn at
             // the write lock. A subquery for the bound: SQLite takes LIMIT on
@@ -703,9 +830,63 @@ final readonly class Sessions
             return null;
         }
 
-        $state->replaceWith($cookie, $stage === SessionStage::SignedIn ? $user : null, $stage === SessionStage::SecondFactor ? $user : null);
+        $state->replaceWith($cookie, $stage === SessionStage::SignedIn ? $user : null, $stage === SessionStage::SecondFactor ? $user : null, factors: $factors);
 
         return $id;
+    }
+
+    /**
+     * What a row's sign-in proved, as its seal says: the factors sealed to
+     * this row's id, realm and user (sealFactors()), and none for a row with
+     * no seal, or one made for another row or rewritten -- fewer factors are
+     * all a seal it cannot vouch for can mean.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function factorsOf(array $row, #[\SensitiveParameter] string $id, string $realm, string $user): SessionFactors
+    {
+        $sealed = $row['factors'] ?? null;
+        $dot = \is_string($sealed) ? strrpos($sealed, '.') : false;
+        if (!\is_string($sealed) || $dot === false) {
+            return SessionFactors::none();
+        }
+        $encoded = substr($sealed, 0, $dot);
+        $factors = SessionFactors::decode($encoded);
+
+        // Compared as written, so an encoding the decode reads differently
+        // -- a name it passes over, an order it puts right -- is no match.
+        return $factors->encode() === $encoded && hash_equals($this->sealFactors($factors, $id, $realm, $user), $sealed)
+            ? $factors
+            : SessionFactors::none();
+    }
+
+    /** $factors, as a row keeps them: readable, and sealed to the row's id, realm and user under the app key. */
+    private function sealFactors(SessionFactors $factors, #[\SensitiveParameter] string $id, string $realm, string $user): string
+    {
+        return self::sealFactorsWith($this->factorSeals, $factors, $id, $realm, $user);
+    }
+
+    private static function sealFactorsWith(Signer $signer, SessionFactors $factors, #[\SensitiveParameter] string $id, string $realm, string $user): string
+    {
+        $encoded = $factors->encode();
+
+        return $encoded . '.' . Signer::encode($signer->sign(json_encode([self::hash($id), $realm, $user, $encoded], JSON_THROW_ON_ERROR)));
+    }
+
+    /**
+     * A row, with the columns given a value: one left null is left out, so
+     * a table made before an optional column -- a handoff's, a tenant's --
+     * takes a row that has nothing for it.
+     *
+     * @param array<string, string|int|null> $columns
+     */
+    private static function insert(Connection $connection, array $columns): void
+    {
+        $columns = array_filter($columns, static fn (string|int|null $value): bool => $value !== null);
+        $connection->execute(
+            'INSERT INTO sessions (' . implode(', ', array_keys($columns)) . ') VALUES (' . implode(', ', array_fill(0, \count($columns), '?')) . ')',
+            array_values($columns),
+        );
     }
 
     /** $checked, sealed, for a session of $user's: refused when it was read for another account. */
