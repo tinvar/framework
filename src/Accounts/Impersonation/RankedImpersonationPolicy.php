@@ -19,8 +19,9 @@ use Tinvar\Accounts\AccountUser;
 final readonly class RankedImpersonationPolicy implements ImpersonationPolicy
 {
     /**
-     * @param \Closure(AccountUser): bool $permitted whether a user holds the app's permission to impersonate
-     * @param \Closure(AccountUser): int $rank a user's privilege, higher for more
+     * @param \Closure(AccountUser, string): bool $permitted whether a user holds the app's permission
+     *        to impersonate, in the tenant (ADR 0194); a closure of the user alone is handed it too
+     * @param \Closure(AccountUser, string): int $rank a user's privilege in the tenant, higher for more
      * @param bool $sameRank whether a user may act as one of their own rank; never above it
      */
     public function __construct(
@@ -29,15 +30,15 @@ final readonly class RankedImpersonationPolicy implements ImpersonationPolicy
         private bool $sameRank = false,
     ) {}
 
-    public function mayImpersonate(AccountUser $impersonator): bool
+    public function mayImpersonate(AccountUser $impersonator, string $tenant): bool
     {
-        return ($this->permitted)($impersonator) === true;
+        return ($this->permitted)($impersonator, $tenant) === true;
     }
 
-    public function mayImpersonateUser(AccountUser $impersonator, AccountUser $target): bool
+    public function mayImpersonateUser(AccountUser $impersonator, AccountUser $target, string $tenant): bool
     {
-        $mine = ($this->rank)($impersonator);
-        $theirs = ($this->rank)($target);
+        $mine = ($this->rank)($impersonator, $tenant);
+        $theirs = ($this->rank)($target, $tenant);
 
         return $this->sameRank ? $theirs <= $mine : $theirs < $mine;
     }

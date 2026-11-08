@@ -261,7 +261,9 @@ final class AuditLog implements ModelChanges, ActionObserver
     {
         $user = $this->auth->user();
         if ($user instanceof Service) {
-            return new Actor(ActorKind::Service, $user->serviceName());
+            // With who was acting as the member its token was for, where
+            // staff minted it while impersonating them (ADR 0194).
+            return new Actor(ActorKind::Service, $user->serviceName(), $this->auth->impersonator());
         }
         // A tenant's API token acts for its tenant as a service would, as
         // itself and never as the member who made it (ADR 0193): named by

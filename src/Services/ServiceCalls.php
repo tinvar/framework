@@ -200,7 +200,7 @@ final readonly class ServiceCalls
 
         $bindsHost = ($this->hosts ?? new CallHosts())->issuing(array_map(static fn (array $entry): Operation => $entry[0], $named), $host);
 
-        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable, bound: $bound, host: $bindsHost);
+        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable, bound: $bound, host: $bindsHost, impersonation: $user === null ? null : $this->auth->impersonation(), impersonator: $user === null ? null : $this->auth->impersonator());
     }
 
     /** The token a request carries, in HEADER; '' for none. */
@@ -275,6 +275,13 @@ final readonly class ServiceCalls
             }
 
             $run = fn (): CallResult => $this->runner->run($declared, $arguments);
+            // A token minted while staff impersonated its user (ADR 0194):
+            // the call is recorded with who was acting as them.
+            if ($claims->impersonator !== null && $claims->impersonator !== '') {
+                $service = $this->auth->user();
+                $plain = $run;
+                $run = fn (): CallResult => $this->auth->actingAs($service, $plain, $this->auth->epoch(), $claims->impersonator);
+            }
             if ($declared->panel === null || $this->panels === null) {
                 return $run();
             }
@@ -320,7 +327,9 @@ final readonly class ServiceCalls
                 return CallResult::refused('context');
             }
             $user = $this->users->find($claims->user);
-            $epoch = $user === null ? '' : $this->users->epoch($user);
+            // Bound to the impersonation it was minted in, where it was
+            // (ADR 0194): it ends with the epoch that impersonation's end moves.
+            $epoch = $user === null ? '' : AuthContext::boundEpoch($this->users->epoch($user), $claims->impersonation);
             if ($user === null || !hash_equals($claims->authHash, $this->tokens->authHash($claims->user, $epoch))) {
                 return CallResult::refused('context');
             }
@@ -339,7 +348,7 @@ final readonly class ServiceCalls
 
         $memberships = $this->memberships;
         try {
-            $this->auth->actingAs($user, fn () => RequirePanelMembership::verify($this->auth, $memberships, $this->orm, $binding), $epoch);
+            $this->auth->actingAs($user, fn () => RequirePanelMembership::verify($this->auth, $memberships, $this->orm, $binding), $epoch, $claims->impersonator);
         } catch (HttpException) {
             return CallResult::forbidden();
         }

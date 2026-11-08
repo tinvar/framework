@@ -67,9 +67,13 @@ final readonly class ContextTokens
      * @param bool $singleUse whether its id is to be spent at its first use, by whoever checks it
      * @param array<string, string|int> $bound arguments a call with it must carry, each exactly
      * @param string $host the host it is bound to (CallHosts::issuing()); ContextToken::NO_HOST for none
+     * @param string|null $impersonation the impersonation its user is acted as in (ADR 0194):
+     *        $epoch is bound to it (AuthContext::boundEpoch()), and the token carries it
+     * @param string|null $impersonator who is acting as its user then
      */
-    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false, array $bound = [], string $host = ContextToken::NO_HOST): string
+    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false, array $bound = [], string $host = ContextToken::NO_HOST, ?string $impersonation = null, ?string $impersonator = null): string
     {
+        $impersonation = $user === null || $impersonation === '' ? null : $impersonation;
         $bound = ContextToken::boundOf($bound);
         $operations = array_values(array_unique($operations));
         if ($operations === [] || \count($operations) > ContextToken::MAX_OPERATIONS) {
@@ -96,6 +100,8 @@ final readonly class ContextTokens
             singleUse: $singleUse,
             bound: $bound,
             host: $host,
+            impersonator: $impersonation === null ? null : ($impersonator ?? ''),
+            impersonation: $impersonation,
         )->toMap());
     }
 

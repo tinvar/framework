@@ -507,7 +507,10 @@ final class QueryCache
             // outlived the role change or the impersonation that shaped it
             // until its TTL ran out. The application moves the epoch at those
             // moments, so the next lookup misses and the body runs as who the
-            // user is now. Hex, because the epoch is the application's string
+            // user is now. And while staff impersonate the user the epoch
+            // carries the impersonation (AuthContext::epoch(), ADR 0194): the
+            // user's own sessions run on the same epoch meanwhile, and share
+            // no answer with it, either way. Hex, because the epoch is the application's string
             // and may be any bytes: bytes JSON cannot encode would have left
             // the user uncacheable rather than keyed. A guest has no epoch
             // (AuthContext keeps it ''), so the guest key is the one shape it

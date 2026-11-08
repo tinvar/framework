@@ -399,7 +399,10 @@ final readonly class Dispatcher
                     $job::class . ' runs as the user who dispatched it, and nobody is signed in.',
                 );
 
-                return [$user, $this->auth->epoch()];
+                // The user's own epoch, as the runner reads it again: a job
+                // started while staff impersonate them ends when the epoch
+                // moves at the impersonation's end (ADR 0194).
+                return [$user, $this->auth->accountEpoch()];
             }
             $starter = $starter || $job instanceof RunsAsStarter;
         }
@@ -408,7 +411,7 @@ final readonly class Dispatcher
         // nobody when nobody is.
         $user = $this->auth->id();
         if ($starter && $user !== null) {
-            return [$user, $this->auth->epoch()];
+            return [$user, $this->auth->accountEpoch()];
         }
 
         return [null, ''];

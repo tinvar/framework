@@ -68,6 +68,8 @@ final readonly class ContextToken
         public ?bool $singleUse = false,
         public array $bound = [],
         public ?string $host = null,
+        public ?string $impersonator = null,
+        public ?string $impersonation = null,
     ) {}
 
     /** Whether it names $operation. */
@@ -122,6 +124,14 @@ final readonly class ContextToken
         if ($this->bound !== []) {
             $map['g'] = $this->bound;
         }
+        // Who was acting as the user, and in which impersonation, for a
+        // token minted while staff impersonate them (ADR 0194): its authHash
+        // is over the epoch bound to that impersonation, and a call made with
+        // it is recorded as theirs.
+        if ($this->impersonation !== null) {
+            $map['p'] = $this->impersonator ?? '';
+            $map['q'] = $this->impersonation;
+        }
 
         return $map;
     }
@@ -159,6 +169,8 @@ final readonly class ContextToken
             singleUse: \array_key_exists('s', $map) ? (\is_bool($map['s']) ? $map['s'] : throw new TokenError("field 's' is not a boolean")) : null,
             bound: \array_key_exists('g', $map) ? self::bound($map['g']) : [],
             host: \array_key_exists('h', $map) ? self::string($map, 'h') : null,
+            impersonator: \array_key_exists('q', $map) ? self::string($map, 'p') : null,
+            impersonation: \array_key_exists('q', $map) ? self::string($map, 'q') : null,
         );
     }
 

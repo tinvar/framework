@@ -9,7 +9,6 @@ use Tinvar\Accounts\AccountPaths;
 use Tinvar\Accounts\AccountUser;
 use Tinvar\Accounts\AccountUsers;
 use Tinvar\Accounts\AuthEpochs;
-use Tinvar\Accounts\SessionCookie;
 use Tinvar\Accounts\SessionState;
 use Tinvar\Accounts\Sessions;
 use Tinvar\Audit\AuditLog;
@@ -21,7 +20,7 @@ use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Model;
-use Tinvar\Orm\NamesDriver;
+use Tinvar\Orm\Orm;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 use Tinvar\Support\Signer;
@@ -43,8 +42,11 @@ use Tinvar\Validation\ValidationException;
  * **One host.** start() turns this browser's session into the user's at
  * once: the impersonator's own session is parked under a key no cookie
  * names (Sessions::impersonate()), and a new one for the user, under a new
- * id, names the impersonation. stop() parks the user's away and makes the
- * impersonator's a session again, under a new id (Sessions::unpark()).
+ * id, names the impersonation. The parked session is what the impersonation
+ * is held to -- revoke it and the impersonation ends -- and never comes
+ * back: stop() ends the impersonation and signs the browser out, and the
+ * impersonator signs in again (ADR 0194, "What a review found"). Nothing a
+ * browser holds on this host tells them from script in the user's pages.
  *
  * **Another of the app's hosts.** With `origin:` naming one of the app's
  * own hosts (Realms, never a custom domain), start() records the
@@ -53,16 +55,20 @@ use Tinvar\Validation\ValidationException;
  * signed in as the impersonator -- RequireSignIn in front of the page brings
  * them there by a handoff if they are not (ArriveImpersonating). The
  * session turned is that host's; the one they started from is left as it
- * was, and stop() sends the browser back to it.
+ * was, and stop() sends the browser back to it, signing this host out.
  *
  * Through it all: every request of the impersonated session carries the
  * impersonator (SessionState::impersonator(), handed to AuthContext by
  * StartSession), so the audit log, jobs and ApiTokens see them; nothing
  * that changes how the user signs in may be done (Accounts refuses it); a
  * handoff never carries the session to another host (HandoffEndpoint
- * refuses it); and the user's auth epoch moves at the start and at the
- * end, so nothing minted for them meanwhile counts after. The start and
- * the stop are in the audit log, where the app keeps one, with the reason.
+ * refuses it); what is bound to the user's epoch is bound to the
+ * impersonation too (AuthContext::epoch()); it runs in the tenant it was
+ * started in, which the policy is asked about; and the user's auth epoch
+ * moves at the start and at the end -- a stop, or its time running out,
+ * which EndImpersonations, scheduled every minute, sees to whether or not
+ * its browser comes back. The start and the end are in the audit log, where
+ * the app keeps one, with the reason.
  */
 final readonly class Impersonations
 {
@@ -77,7 +83,7 @@ final readonly class Impersonations
     /** The longest reason kept, in characters. */
     public const int MAX_REASON = 500;
 
-    /** Ended rows swept per start, at most. */
+    /** Impersonations whose time is up ended per start, and per run of EndImpersonations, at most. */
     public const int SWEEP_BATCH = 100;
 
     /** What a grant is signed under, with the app key. */
@@ -90,6 +96,8 @@ final readonly class Impersonations
      * @param Realms|null $realms the app's hosts, where it has more than one: the only places
      *        an impersonation started on one goes to
      * @param AuditLog|null $audit where the start and the stop are recorded, where the app keeps one
+     * @param Orm|null $orm the application's: the tenant an impersonation is started in, which it
+     *        runs in; none for an app without tenancy
      */
     public function __construct(
         private Connection $connection,
@@ -104,6 +112,7 @@ final readonly class Impersonations
         string $key,
         private ?Realms $realms = null,
         private ?AuditLog $audit = null,
+        private ?Orm $orm = null,
     ) {
         $this->signer = new Signer($key, self::PURPOSE);
     }
@@ -138,6 +147,9 @@ final readonly class Impersonations
             $rows->bigInteger('epoch')->nullable();
             // The key the impersonator's own session is parked under.
             $rows->string('parked', 64)->nullable();
+            // The tenant it was started in, which its session runs in; ''
+            // for none.
+            $rows->string('tenant', 255)->default('');
             $rows->index(['expires_at'], 'impersonations_expiry');
         }, $ifNotExists);
     }
@@ -163,7 +175,8 @@ final readonly class Impersonations
         if ($this->panels->currentOrNull() !== $this->config->panel) {
             throw new ImpersonationRefused(ImpersonationRefusal::WrongPanel);
         }
-        $this->permitted($impersonator, $target);
+        $tenant = $this->tenant();
+        $this->permitted($impersonator, $target, $tenant);
         $reason = trim($reason);
         if ($reason === '') {
             throw new ValidationException(['reason' => ['Say why you are impersonating them: it goes in the audit log.']]);
@@ -191,13 +204,15 @@ final readonly class Impersonations
         $id = bin2hex(random_bytes(16));
         $now = $this->now();
         $until = $now + $this->config->minutes * 60;
-        $made = $this->connection->durableTransaction(function () use ($state, $impersonator, $target, $reason, $here, $elsewhere, $to, $back, $id, $now, $until): ?array {
-            $this->sweep($now);
+        // Those whose time is up, ended first, as nobody: the epoch each
+        // left its user on moves now, not at some later sweep.
+        $this->auth->actingAs(null, fn (): int => $this->endExpired());
+        $made = $this->connection->durableTransaction(function () use ($state, $impersonator, $target, $reason, $here, $elsewhere, $to, $back, $id, $now, $until, $tenant): ?array {
             $this->connection->execute(
-                'INSERT INTO ' . self::TABLE . ' (id, impersonator_id, user_id, realm, reason, landing, return_to, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$id, $impersonator->authIdentifier(), $target->authIdentifier(), $elsewhere->host ?? $here, $reason, $to, $back, $now, $until],
+                'INSERT INTO ' . self::TABLE . ' (id, impersonator_id, user_id, realm, reason, landing, return_to, created_at, expires_at, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$id, $impersonator->authIdentifier(), $target->authIdentifier(), $elsewhere->host ?? $here, $reason, $to, $back, $now, $until, $tenant],
             );
-            $made = $elsewhere !== null ? [] : $this->begin($state, $impersonator, $target, $id, $now, $until);
+            $made = $elsewhere !== null ? [] : $this->begin($state, $impersonator, $target, $id, $now, $until, $tenant);
             if ($made === null) {
                 return null;
             }
@@ -205,6 +220,7 @@ final readonly class Impersonations
                 'impersonation' => $id,
                 'reason' => $reason,
                 'host' => $elsewhere->host ?? $here,
+                'tenant' => $tenant,
                 'until' => CarbonImmutable::createFromTimestamp($until)->toIso8601ZuluString(),
             ]);
 
@@ -249,8 +265,9 @@ final readonly class Impersonations
                 throw new ImpersonationRefused(ImpersonationRefusal::GrantRefused);
             }
             $target = $this->users->find((string) $row['user_id']) ?? throw new ImpersonationRefused(ImpersonationRefusal::GrantRefused);
-            $this->permitted($impersonator, $target);
-            $made = $this->begin($state, $impersonator, $target, $id, $now, (int) $row['expires_at'])
+            $tenant = (string) ($row['tenant'] ?? '');
+            $this->permitted($impersonator, $target, $tenant);
+            $made = $this->begin($state, $impersonator, $target, $id, $now, (int) $row['expires_at'], $tenant)
                 ?? throw new ImpersonationRefused(ImpersonationRefusal::SessionEnded);
 
             return [...$made, 'target' => $target, 'landing' => (string) $row['landing']];
@@ -262,11 +279,13 @@ final readonly class Impersonations
     }
 
     /**
-     * Stops the impersonation this session is, and returns where the
-     * browser goes: back to the page it was started from, on the host it
-     * was started on. On this host the impersonator's own session is theirs
-     * again, under a new id -- or, where it has ended meanwhile, the browser
-     * is signed out.
+     * Stops the impersonation this session is, and returns where the browser
+     * goes. The impersonator's parked session is dropped with it and this
+     * browser is signed out: whatever it holds, the user's pages could have
+     * used too, so nothing here hands the impersonator's session back
+     * (ADR 0194, "What a review found"). Started on another host, it goes
+     * back to the page it was started from there, where their session was
+     * never touched; on this one, to sign in again first.
      *
      * @throws ImpersonationRefused where the session is no impersonation, or ended meanwhile
      */
@@ -279,37 +298,73 @@ final readonly class Impersonations
             throw new ImpersonationRefused(ImpersonationRefusal::NotImpersonating);
         }
 
-        $made = $this->connection->durableTransaction(function () use ($state, $impersonation, $target): ?array {
+        $back = $this->connection->durableTransaction(function () use ($state, $impersonation, $target): ?string {
             if (!$this->sessions->endImpersonated($state, $impersonation->id)) {
                 return null;
             }
-            $row = $this->connection->select('SELECT parked, return_to FROM ' . self::TABLE . ' WHERE id = ?', [$impersonation->id])[0] ?? null;
-            if ($row === null || $this->connection->execute('DELETE FROM ' . self::TABLE . ' WHERE id = ?', [$impersonation->id]) !== 1) {
+            $row = $this->end($impersonation->id);
+            if ($row === null) {
                 return null;
             }
-            $this->epochs->bump($target->authIdentifier());
-            $back = $this->sessions->unpark((string) ($row['parked'] ?? ''), $impersonation->impersonator, $state->realm);
             $this->record(SecurityEvent::ImpersonationStopped, $target, [
                 'impersonation' => $impersonation->id,
                 'reason' => $impersonation->reason,
                 'ended' => 'stopped',
             ]);
 
-            return ['back' => $back, 'to' => (string) $row['return_to']];
+            return (string) $row['return_to'];
         });
-        if ($made === null) {
+        if ($back === null) {
             throw new ImpersonationRefused(ImpersonationRefusal::SessionEnded);
         }
 
-        $back = $made['back'];
-        if ($back === null) {
-            $state->replaceWith($this->sessions->cookie()->issue(), null);
+        $state->replaceWith($this->sessions->cookie()->issue(), null);
 
-            return $this->paths->signedOut;
+        return str_starts_with($back, '/') ? $this->paths->signInFor($back) : $back;
+    }
+
+    /**
+     * Ends every impersonation whose time is up, $limit at most, and returns
+     * how many: what EndImpersonations runs every minute, and start() before
+     * it begins one. Each in a durable transaction of its own -- its row, its
+     * session and the parked one deleted, its user's auth epoch moved where
+     * it had begun, and `auth.impersonation_stopped` recorded, `ended:
+     * expired` -- so a time box holds though its browser never comes back:
+     * nothing bound to the user's epoch then counts after it.
+     */
+    public function endExpired(int $limit = self::SWEEP_BATCH): int
+    {
+        $now = $this->now();
+        $ids = array_map(
+            static fn (array $row): string => (string) $row['id'],
+            $this->connection->select('SELECT id FROM ' . self::TABLE . ' WHERE expires_at <= ? ORDER BY expires_at LIMIT ' . max(1, $limit), [$now]),
+        );
+        $ended = 0;
+        foreach ($ids as $id) {
+            $ended += $this->connection->durableTransaction(function () use ($id, $now): int {
+                $row = $this->connection->select('SELECT * FROM ' . self::TABLE . ' WHERE id = ? AND expires_at <= ?', [$id, $now])[0] ?? null;
+                if ($row === null) {
+                    return 0;
+                }
+                $this->connection->execute('DELETE FROM sessions WHERE impersonation = ?', [$id]);
+                if ($this->end($id) === null) {
+                    return 0;
+                }
+                if (is_numeric($row['arrived_at'] ?? null)) {
+                    $target = $this->users->find((string) $row['user_id']);
+                    $this->audit?->security(SecurityEvent::ImpersonationStopped, $target instanceof Model ? $target : null, [
+                        'impersonation' => $id,
+                        'reason' => (string) $row['reason'],
+                        'impersonator' => (string) $row['impersonator_id'],
+                        'ended' => 'expired',
+                    ]);
+                }
+
+                return 1;
+            });
         }
-        $state->replaceWith($back['cookie'], $back['user'], tenant: $back['tenant'], factors: $back['factors']);
 
-        return $made['to'];
+        return $ended;
     }
 
     /** The impersonation this request's session is, or null. */
@@ -350,9 +405,9 @@ final readonly class Impersonations
      *
      * @return array{cookie: string, factors: \Tinvar\Accounts\SessionFactors, impersonation: Impersonation}|null
      */
-    private function begin(SessionState $state, AccountUser $impersonator, AccountUser $target, string $id, int $now, int $until): ?array
+    private function begin(SessionState $state, AccountUser $impersonator, AccountUser $target, string $id, int $now, int $until, string $tenant): ?array
     {
-        $made = $this->sessions->impersonate($state, $impersonator, $target, $id);
+        $made = $this->sessions->impersonate($state, $impersonator, $target, $id, $tenant === '' ? null : $tenant);
         if ($made === null) {
             return null;
         }
@@ -394,16 +449,16 @@ final readonly class Impersonations
         return $user;
     }
 
-    /** The policy's word, and never oneself. */
-    private function permitted(AccountUser $impersonator, AccountUser $target): void
+    /** The policy's word, in $tenant, and never oneself. */
+    private function permitted(AccountUser $impersonator, AccountUser $target, string $tenant): void
     {
-        if (!$this->config->policy->mayImpersonate($impersonator)) {
+        if (!$this->config->policy->mayImpersonate($impersonator, $tenant)) {
             throw new ImpersonationRefused(ImpersonationRefusal::NotPermitted);
         }
         if ($impersonator->authIdentifier() === $target->authIdentifier()) {
             throw new ImpersonationRefused(ImpersonationRefusal::Themselves);
         }
-        if (!$this->config->policy->mayImpersonateUser($impersonator, $target)) {
+        if (!$this->config->policy->mayImpersonateUser($impersonator, $target, $tenant)) {
             throw new ImpersonationRefused(ImpersonationRefusal::Outranked);
         }
     }
@@ -427,22 +482,33 @@ final readonly class Impersonations
     }
 
     /**
-     * Deletes rows ended long enough ago that no session can name them any
-     * more -- a session lasts SessionCookie::LIFETIME at most -- so the one
-     * that does is still there for open() to end with them: a grant never
-     * redeemed, an impersonation whose session went with its user's sign-
-     * out everywhere. SQLite and Postgres take no LIMIT on a DELETE; MySQL
-     * takes it, and refuses a subquery naming the table.
+     * Deletes impersonation $id's row and the session it parked, inside the
+     * caller's transaction, and moves its user's epoch where it had begun:
+     * the row as it was, or null where another request ended it first.
+     *
+     * @return array<string, mixed>|null
      */
-    private function sweep(int $now): void
+    private function end(string $id): ?array
     {
-        $now -= SessionCookie::LIFETIME;
-        $this->connection->execute(
-            $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql'
-                ? 'DELETE FROM ' . self::TABLE . ' WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH
-                : 'DELETE FROM ' . self::TABLE . ' WHERE id IN (SELECT id FROM ' . self::TABLE . ' WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
-            [$now],
-        );
+        $row = $this->connection->select('SELECT * FROM ' . self::TABLE . ' WHERE id = ?', [$id])[0] ?? null;
+        if ($row === null || $this->connection->execute('DELETE FROM ' . self::TABLE . ' WHERE id = ?', [$id]) !== 1) {
+            return null;
+        }
+        $parked = $row['parked'] ?? null;
+        if (\is_string($parked) && $parked !== '') {
+            $this->connection->execute('DELETE FROM sessions WHERE id = ?', [$parked]);
+        }
+        if (is_numeric($row['arrived_at'] ?? null)) {
+            $this->epochs->bump((string) $row['user_id']);
+        }
+
+        return $row;
+    }
+
+    /** The tenant this request runs in, which an impersonation started in it is pinned to; '' for none. */
+    private function tenant(): string
+    {
+        return $this->orm !== null && $this->orm->hasTenancy() && !$this->orm->isUnscoped() ? $this->orm->tenant() : '';
     }
 
     /**

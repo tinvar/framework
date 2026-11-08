@@ -49,7 +49,7 @@ final readonly class StartSession implements Middleware
         $state = $this->sessions->open($request);
         // With who is acting as the user, while staff impersonate them (ADR
         // 0194): the audit log, the job dispatcher and ApiTokens read it.
-        $this->auth->login($state->user(), $state->epoch(), impersonator: $state->impersonator());
+        $this->auth->login($state->user(), $state->epoch(), impersonator: $state->impersonator(), impersonation: $state->impersonation()?->id);
 
         $inner = $request->withAttribute(SessionState::ATTRIBUTE, $state);
         $tenant = $state->tenant();

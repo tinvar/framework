@@ -213,7 +213,7 @@ final readonly class ToolCalls
         }
         $host = ($this->hosts ?? new CallHosts())->issuing($operations);
 
-        return $this->grants->issue('', $tools, $this->orm->tenant(), $panel, $user->authIdentifier(), $this->auth->epoch(), $ttl, host: $host);
+        return $this->grants->issue('', $tools, $this->orm->tenant(), $panel, $user->authIdentifier(), $this->auth->epoch(), $ttl, host: $host, impersonation: $this->auth->impersonation(), impersonator: $this->auth->impersonator());
     }
 
     /**
@@ -291,7 +291,10 @@ final readonly class ToolCalls
         // refuses the call now, not at the next one.
         if ($this->users !== null) {
             $current = $this->users->find($user->authIdentifier());
-            if ($current === null || !hash_equals($claims->authHash, $this->grants->authHash($user->authIdentifier(), $this->users->epoch($current)))) {
+            // Bound to the impersonation it was minted in, where it was
+            // (ADR 0194), as the request's own epoch is.
+            $epoch = $current === null ? '' : AuthContext::boundEpoch($this->users->epoch($current), $claims->impersonation);
+            if ($current === null || !hash_equals($claims->authHash, $this->grants->authHash($user->authIdentifier(), $epoch))) {
                 return false;
             }
         }

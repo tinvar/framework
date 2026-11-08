@@ -186,6 +186,7 @@ final readonly class AccountsKit
             key: $key,
             realms: $realms,
             audit: $audit,
+            orm: $orm,
         );
 
         $this->accounts = new Accounts(

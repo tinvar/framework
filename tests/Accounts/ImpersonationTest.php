@@ -72,13 +72,16 @@ final class Revoked
 {
     /** @var list<string> */
     public static array $emails = [];
+
+    /** @var list<string> tenants in which nobody may impersonate */
+    public static array $tenants = [];
 }
 
 function config(int $minutes = 30, bool $sameRank = false): ImpersonationConfig
 {
     return new ImpersonationConfig(
         policy: new RankedImpersonationPolicy(
-            permitted: static fn (AccountUser $user): bool => rank($user) >= 2 && !\in_array($user->accountEmail(), Revoked::$emails, true),
+            permitted: static fn (AccountUser $user, string $tenant): bool => rank($user) >= 2 && !\in_array($user->accountEmail(), Revoked::$emails, true) && !\in_array($tenant, Revoked::$tenants, true),
             rank: rank(...),
             sameRank: $sameRank,
         ),
@@ -297,17 +300,20 @@ it('turns the staff member\'s session into the user\'s, keeping who they are, an
 
         $during = clone $staff;
         $epochDuring = $app->kit->epochs->of($adaId);
-        expect(stop($staff))->toBe('/admin/users');
+        // On one host nothing the browser holds tells the staff member from
+        // script in Ada's pages: the parked session is dropped, and they sign
+        // in again to go back to the page they started from.
+        expect(stop($staff))->toBe('/sign-in?next=%2Fadmin%2Fusers');
 
-        // Back to the staff member's own session, under a new id again.
-        expect($staff->who())->toBe('staff@example.com')
+        expect($staff->who())->toBeNull()
             ->and($staff->state()->impersonation())->toBeNull()
             ->and($during->who())->toBeNull()
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [$staffId])[0]['n'])->toBe(0)
             ->and($ada->who())->toBe('ada@example.com')
             // Ada's epoch moves again: nothing minted while she was acted as counts after.
             ->and($app->kit->epochs->of($adaId))->not->toBe($epochDuring)
             ->and(count($app, Impersonations::TABLE))->toBe(0)
-            ->and($staff->do(static fn (Request $r, AuthContext $auth): array => [$auth->id(), $auth->impersonator()]))->toBe([$staffId, null]);
+            ->and($staff->do(static fn (Request $r, AuthContext $auth): array => [$auth->id(), $auth->impersonator()]))->toBe([null, null]);
 
         // Both ends in the audit log: the start by the staff member, the stop by them as Ada.
         $entries = audit($app);
@@ -450,22 +456,19 @@ it('refuses every change to how the user signs in while impersonating them, and 
     });
 })->with('drivers');
 
-it('carries the impersonation across a switch of tenant, and a sign-out ends it and the parked session both', function (string $driver) {
+it('signs out of an impersonation and the parked session both', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $staff = new Browser($app)->signIn('staff@example.com');
         start($staff, 'ada@example.com');
         $staffId = find($app, 'staff@example.com')->authIdentifier();
 
-        $staff->do(static fn (Request $r): ?string => $app->kit->sessions->switchTenant(SessionState::of($r), SessionState::of($r)->user() ?? throw new \LogicException(), 'acme'));
-        expect($staff->who())->toBe('ada@example.com')
-            ->and($staff->state()->tenant())->toBe('acme')
-            ->and($staff->state()->impersonator())->toBe($staffId);
+        expect($staff->state()->impersonator())->toBe($staffId);
 
         $staff->do(static fn (Request $r): mixed => $app->kit->accounts->signOut($r));
         expect($staff->who())->toBeNull()
             ->and(count($app, Impersonations::TABLE))->toBe(0)
             ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [$staffId])[0]['n'])->toBe(0);
-    }, tenancy: \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+    });
 })->with('drivers');
 
 it('starts on one host and arrives on another by a grant the impersonator\'s own session there redeems once', function (string $driver) {
@@ -501,9 +504,12 @@ it('starts on one host and arrives on another by a grant the impersonator\'s own
         $again = new Browser($app, 'app.example')->signIn('staff@example.com');
         expect(refusal(static fn () => $arrive($again, $grant)))->toBe(ImpersonationRefusal::GrantRefused);
 
-        // Stopping sends the browser back to the panel it started from, on its own host.
+        // Stopping sends the browser back to the panel it started from, on
+        // its own host, where its session was never touched; this host's
+        // parked one is dropped.
         expect(stop($platform))->toBe('https://admin.app.example/users/7')
-            ->and($platform->who())->toBe('staff@example.com')
+            ->and($platform->who())->toBeNull()
+            ->and($admin->who())->toBe('staff@example.com')
             ->and(array_column(audit($app), 0))->toBe(['auth.impersonation_started', 'auth.impersonation_stopped']);
     });
 })->with('drivers');
@@ -612,3 +618,105 @@ it('holds its configuration to a panel, a time box and a page path, and a kit gi
     $connection = PdoConnection::sqlite(':memory:', 'accounts');
     expect(static fn () => new MemberApp($connection, impersonation: config(), panelContext: false))->toThrow(\LogicException::class, 'PanelContext');
 });
+
+// What a review of ADR 0194 found.
+
+it('ends an impersonation whose time is up though its browser never comes back, moving the user\'s epoch, from the scheduled task', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        $adaId = find($app, 'ada@example.com')->authIdentifier();
+        $staffId = find($app, 'staff@example.com')->authIdentifier();
+        start($staff, 'ada@example.com');
+        $during = $app->kit->epochs->of($adaId);
+
+        $app->now += 29 * 60;
+        expect(impersonations($app)->endExpired())->toBe(0)
+            ->and($app->kit->epochs->of($adaId))->toBe($during);
+
+        // Its time is up; nobody opens the staff browser.
+        $app->now += 2 * 60;
+        new \Tinvar\Accounts\Impersonation\EndImpersonations()(impersonations($app));
+        expect($app->kit->epochs->of($adaId))->not->toBe($during)
+            ->and(count($app, Impersonations::TABLE))->toBe(0)
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id IN (?, ?)', [$adaId, $staffId])[0]['n'])->toBe(0)
+            ->and($staff->who())->toBeNull();
+        $stopped = audit($app)[1];
+        expect([$stopped[0], $stopped[3]])->toBe(['auth.impersonation_stopped', $adaId])
+            ->and($stopped[4])->toMatchArray(['ended' => 'expired', 'impersonator' => $staffId]);
+    });
+})->with('drivers');
+
+it('moves the user\'s epoch when another start sweeps an impersonation whose time is up', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        $root = new Browser($app)->signIn('root@example.com');
+        $adaId = find($app, 'ada@example.com')->authIdentifier();
+        start($staff, 'ada@example.com');
+        $during = $app->kit->epochs->of($adaId);
+
+        $app->now += 31 * 60;
+        $root->signIn('root@example.com');
+        start($root, 'peer@example.com');
+        expect($app->kit->epochs->of($adaId))->not->toBe($during)
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM impersonations WHERE user_id = ?', [$adaId])[0]['n'])->toBe(0);
+    });
+});
+
+it('never gives the impersonator\'s session to whoever holds the impersonated cookie', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        start($staff, 'ada@example.com');
+        $thief = new Browser($app);
+        $thief->cookie = $staff->cookie;
+
+        stop($thief);
+        expect($thief->who())->toBeNull()
+            ->and($staff->who())->toBeNull()
+            ->and((int) $app->orm->connection()->select('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?', [find($app, 'staff@example.com')->authIdentifier()])[0]['n'])->toBe(0);
+    });
+});
+
+it('binds what is bound to the user\'s epoch during an impersonation to that impersonation, and jobs to the user\'s own epoch', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        $ada = new Browser($app)->signIn('ada@example.com');
+        start($staff, 'ada@example.com');
+        $impersonation = $staff->state()->impersonation()?->id;
+
+        $own = $ada->do(static fn (Request $r, AuthContext $auth): array => [$auth->id(), $auth->epoch(), $auth->accountEpoch(), $auth->impersonation()]);
+        $acted = $staff->do(static fn (Request $r, AuthContext $auth): array => [$auth->id(), $auth->epoch(), $auth->accountEpoch(), $auth->impersonation()]);
+        expect($acted[0])->toBe($own[0])
+            ->and($acted[1])->not->toBe($own[1])
+            ->and($acted[1])->toBe(AuthContext::boundEpoch($own[1], $impersonation))
+            ->and($acted[2])->toBe($own[2])
+            ->and($acted[3])->toBe($impersonation)
+            ->and($own[3])->toBeNull();
+
+        // A cached answer for one is no answer for the other: the key takes the epoch.
+        $signer = new Signer(MemberApp::KEY, 'route');
+        expect(\Tinvar\Render\TokenClaims::hashAuth($signer, $acted[0], $acted[1]))->not->toBe(\Tinvar\Render\TokenClaims::hashAuth($signer, $own[0], $own[1]));
+
+        // Inside actingAs() there is no impersonation, and the epoch is the one given.
+        expect($staff->do(static fn (Request $r, AuthContext $auth): array => $auth->actingAs($auth->user(), static fn (): array => [$auth->epoch(), $auth->impersonation()], '7')))->toBe(['7', null]);
+    });
+});
+
+it('holds an impersonation to the tenant it was started in: asked of the policy, pinned on the session, and never switched', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        $staff->do(static fn (Request $r): ?string => $app->kit->sessions->switchTenant(SessionState::of($r), SessionState::of($r)->user() ?? throw new \LogicException(), 'acme'));
+
+        Revoked::$tenants = ['acme'];
+        try {
+            expect(refusal(static fn () => start($staff, 'ada@example.com')))->toBe(ImpersonationRefusal::NotPermitted);
+        } finally {
+            Revoked::$tenants = [];
+        }
+
+        start($staff, 'ada@example.com');
+        expect($staff->who())->toBe('ada@example.com')
+            ->and($staff->state()->tenant())->toBe('acme')
+            ->and(refusal(static fn () => $staff->do(static fn (Request $r): ?string => $app->kit->sessions->switchTenant(SessionState::of($r), SessionState::of($r)->user() ?? throw new \LogicException(), 'globex'))))->toBe(ImpersonationRefusal::WhileImpersonating)
+            ->and($staff->state()->tenant())->toBe('acme');
+    }, tenancy: \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+})->with('drivers');
