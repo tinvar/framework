@@ -82,6 +82,9 @@ final readonly class CompiledEndpoint
         public ?\Tinvar\Routing\HostPattern $host = null,
         public array $scopes = [],
         public ?string $rawBody = null,
+        // #[EndpointBudget]: the shared budget it spends in place of
+        // `throttle:endpoints` (ADR 0187); null for that one.
+        public ?\Tinvar\Attributes\EndpointBudget $budget = null,
     ) {}
 
     /** Whether an API token is what signs its caller in (ADR 0159). */

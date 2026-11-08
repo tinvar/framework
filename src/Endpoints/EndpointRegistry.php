@@ -15,6 +15,7 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\RequiresScope;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\EndpointBudget;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\WithoutSession;
 use Tinvar\Auth\BuildRules;
@@ -351,6 +352,7 @@ final class EndpointRegistry
             $panels = Panel::declaredOn($class, $method->getName());
             PanelBinding::of($panels);
             $throttle = Throttle::declaredOn($class, $method->getName());
+            $budget = EndpointBudget::declaredOn($class, $method->getName());
             $cors = Cors::declaredOn($class, $method->getName());
         } catch (\LogicException|\InvalidArgumentException $e) {
             throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
@@ -403,6 +405,7 @@ final class EndpointRegistry
             host: $host,
             scopes: $scopes,
             rawBody: $rawBody,
+            budget: $budget,
         );
     }
 
@@ -514,6 +517,19 @@ final class EndpointRegistry
                     $endpoint->throttle->bucket,
                     $other->throttle->perMinute,
                     $endpoint->throttle->perMinute,
+                ));
+            }
+
+            if ($endpoint->budget !== null && $other->budget !== null
+                && $endpoint->budget->name === $other->budget->name
+                && $endpoint->budget->perMinute !== $other->budget->perMinute) {
+                throw new EndpointException(\sprintf(
+                    "Both %s and %s spend the endpoint budget '%s', at %d and %d a minute. One budget has one size.",
+                    $other->where(),
+                    $endpoint->where(),
+                    $endpoint->budget->name,
+                    $other->budget->perMinute,
+                    $endpoint->budget->perMinute,
                 ));
             }
 

@@ -87,7 +87,6 @@ use Tinvar\Data\SharedRegistry;
 use Tinvar\Routing\CompiledRoute;
 use Tinvar\Routing\Domains;
 use Tinvar\Routing\HostMatch;
-use Tinvar\Routing\HostPattern;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
@@ -467,17 +466,16 @@ final class Kernel
     private readonly Pipeline $sessionlessStack;
 
     /**
-     * The same two stacks, for the endpoints of each host given a budget of
-     * its own -- `endpoints@<host>` in the limits, the host as its
-     * #[Domain] writes it -- spending that in place of `throttle:endpoints`
-     * (ADR 0187).
+     * The same two stacks, for the endpoints of each #[EndpointBudget],
+     * spending that in place of `throttle:endpoints` (ADR 0187), by the
+     * budget's name.
      *
      * @var array<string, Pipeline>
      */
-    private readonly array $endpointStacksByHost;
+    private readonly array $endpointStacksByBudget;
 
     /** @var array<string, Pipeline> */
-    private readonly array $sessionlessStacksByHost;
+    private readonly array $sessionlessStacksByBudget;
 
     /** Caddy's on-demand TLS `ask`: the one given, or the one the container holds (ADR 0161). */
     private readonly ?TlsAskEndpoint $tlsAsk;
@@ -1311,23 +1309,26 @@ final class Kernel
             ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: true),
         ]);
 
-        // A host's own budget (ADR 0187): `endpoints@api.{root}` sizes the
-        // shared budget its endpoints spend, apart from the one the rest do,
-        // so an API's scripts and a browser's fetches are not one number.
-        // A host no endpoint is on would be a limit that limits nothing.
-        $hostBudgets = self::hostBudgets($limits, $endpoints);
-        $byHost = [];
-        $sessionlessByHost = [];
-        foreach (array_keys($hostBudgets) as $host) {
-            $bucket = EndpointHandler::HOST_BUDGET . $host;
-            $byHost[$host] = $entryStack($bucket, authentication: new RequireAuthentication($this->auth, EndpointHandler::entryPoint(...)));
-            $sessionlessByHost[$host] = new Pipeline([
-                ...$this->floodGuardFor($throttle, $bucket, $limits),
-                ...$this->throttleFor($throttle, $bucket, $limits, byAddress: true),
+        // An #[EndpointBudget] (ADR 0187): endpoints that declare one spend
+        // it in place of `throttle:endpoints`, through the same stack -- its
+        // flood guard, its passes by address and by account -- so an API's
+        // scripts and a browser's fetches are not one number.
+        $byBudget = [];
+        $sessionlessByBudget = [];
+        foreach ($endpoints?->all() ?? [] as $endpoint) {
+            $budget = $endpoint->budget;
+            if ($budget === null || isset($byBudget[$budget->name])) {
+                continue;
+            }
+            $sized = [$budget->counter() => $budget->perMinute];
+            $byBudget[$budget->name] = $entryStack($budget->counter(), authentication: new RequireAuthentication($this->auth, EndpointHandler::entryPoint(...)), budgets: $sized);
+            $sessionlessByBudget[$budget->name] = new Pipeline([
+                ...$this->floodGuardFor($throttle, $budget->counter(), $sized),
+                ...$this->throttleFor($throttle, $budget->counter(), $sized, byAddress: true),
             ]);
         }
-        $this->endpointStacksByHost = $byHost;
-        $this->sessionlessStacksByHost = $sessionlessByHost;
+        $this->endpointStacksByBudget = $byBudget;
+        $this->sessionlessStacksByBudget = $sessionlessByBudget;
 
         // A CORS preflight runs nothing of an endpoint's and opens no
         // session; the flood guard keeps a stream of them from costing more
@@ -1336,6 +1337,12 @@ final class Kernel
 
         foreach ($endpoints?->all() ?? [] as $endpoint) {
             // A bucket nothing counts would look enforced and limit nothing.
+            if ($endpoint->budget !== null && $throttle === null) {
+                throw new \InvalidArgumentException(
+                    "{$endpoint->where()} spends the endpoint budget '{$endpoint->budget->name}', and the Kernel was given "
+                    . 'no Throttle to count it in.',
+                );
+            }
             if ($endpoint->throttle !== null && $throttle === null) {
                 throw new \InvalidArgumentException(
                     "{$endpoint->where()} names the throttle bucket '{$endpoint->throttle->bucket}', and the Kernel was given "
@@ -1429,7 +1436,6 @@ final class Kernel
             maxJsonDepth: $maxJsonDepth,
             throttle: $throttle,
             endpointsLimit: $limits['endpoints'] ?? 0,
-            hostEndpointsLimits: self::hostBudgets($limits, $endpoints),
             tokenSignIn: $tokenSignIn,
             tokenHold: $tokenSignIn === null ? null : static fn (CompiledEndpoint $e): HoldApiToken => new HoldApiToken($e->scopes, $orm, $panels),
         );
@@ -2933,7 +2939,7 @@ final class Kernel
      */
     private function runEndpoint(EndpointHandler $handler, CompiledEndpoint $endpoint, array $parameters, Request $request, string $rawBody): Response
     {
-        $host = $endpoint->host?->pattern;
+        $budget = $endpoint->budget?->name;
         if ($endpoint->sessionless) {
             if ($this->auth->check()) {
                 throw new \LogicException(
@@ -2946,7 +2952,7 @@ final class Kernel
             // And PHP's own copies of them, for the stack's run (ADR 0125),
             // and for a streamed body's, which runs as the response is sent,
             // after the stack has returned and they were put back.
-            $stack = $host === null ? $this->sessionlessStack : ($this->sessionlessStacksByHost[$host] ?? $this->sessionlessStack);
+            $stack = $budget === null ? $this->sessionlessStack : $this->sessionlessStacksByBudget[$budget];
 
             return CookielessGlobals::stream(CookielessGlobals::run(fn (): Response => $stack->run(
                 $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
@@ -2954,7 +2960,7 @@ final class Kernel
             )));
         }
 
-        $stack = $host === null ? $this->endpointStack : ($this->endpointStacksByHost[$host] ?? $this->endpointStack);
+        $stack = $budget === null ? $this->endpointStack : $this->endpointStacksByBudget[$budget];
 
         return $stack->run(
             $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
@@ -3373,35 +3379,6 @@ final class Kernel
         }
 
         return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress, cost: $cost)];
-    }
-
-    /**
-     * Each host given an endpoint budget of its own, and its size; refused
-     * for a host no endpoint is on, which would read as limited and limit
-     * nothing.
-     *
-     * @param array<string, int> $limits
-     * @return array<string, int>
-     */
-    private static function hostBudgets(array $limits, ?EndpointRegistry $endpoints): array
-    {
-        $served = array_map(static fn (HostPattern $host): string => $host->pattern, $endpoints?->hostPatterns() ?? []);
-        $budgets = [];
-        foreach ($limits as $name => $limit) {
-            if (!str_starts_with($name, EndpointHandler::HOST_BUDGET)) {
-                continue;
-            }
-            $host = substr($name, \strlen(EndpointHandler::HOST_BUDGET));
-            if (!\in_array($host, $served, true)) {
-                throw new \InvalidArgumentException(
-                    "The limit '{$name}' is for the host '{$host}', and no endpoint is on it, so it would limit nothing. "
-                    . 'Name a host as an endpoint\'s #[Domain] writes it' . ($served === [] ? '.' : ': ' . implode(', ', $served) . '.'),
-                );
-            }
-            $budgets[$host] = $limit;
-        }
-
-        return $budgets;
     }
 
     /** How many files a request carries, each one an upload to count. */

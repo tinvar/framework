@@ -368,10 +368,8 @@ final class Configs
             if ($key->type === 'map') {
                 $pair = explode('=', $part, 2);
                 $name = trim($pair[0], " \t");
-                // `@` and braces for a key that names a host as #[Domain]
-                // writes it: a host's own endpoint budget, `endpoints@api.{root}` (ADR 0187).
-                if (\count($pair) !== 2 || preg_match('/^[A-Za-z0-9_.@{}-]{1,128}\z/', $name) !== 1) {
-                    $problems[] = "{$key->variable}'s {$at}" . self::ordinal($at) . ' entry is not key=value, the key letters, digits, _, -, ., @ and braces';
+                if (\count($pair) !== 2 || preg_match('/^[A-Za-z0-9_.-]{1,128}\z/', $name) !== 1) {
+                    $problems[] = "{$key->variable}'s {$at}" . self::ordinal($at) . ' entry is not key=value, the key letters, digits, _, - and .';
 
                     continue;
                 }

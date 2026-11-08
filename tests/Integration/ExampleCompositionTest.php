@@ -107,7 +107,6 @@ it('refuses a short app key rather than signing with it', function () {
 it('reads throttle limits from the environment, or refuses them', function () {
     expect(Configs::load(ServerConfig::class, [])->throttle)->toBe([])
         ->and(Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=600, sign-in.address=0'])->throttle)->toBe(['actions' => 600, 'sign-in.address' => 0])
-        ->and(Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'endpoints@api.{root}=1200'])->throttle)->toBe(['endpoints@api.{root}' => 1200])
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=lots']))->toThrow(ConfigException::class, "TINVAR_THROTTLE's 1st value must be a whole number")
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'Actions=5']))->toThrow(ConfigException::class, 'TINVAR_THROTTLE names buckets in lower case')
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=99999999']))->toThrow(ConfigException::class, 'from 0 to 9999999');

@@ -3,15 +3,18 @@
 declare(strict_types=1);
 
 /**
- * `throttle:endpoints@<host>` (ADR 0187): the endpoints one #[Domain] serves
- * spend a shared budget of their own, sized apart from the one every other
- * endpoint spends -- an API host's scripts are not a browser's fetches.
+ * #[EndpointBudget] (ADR 0187): endpoints that declare one spend a shared
+ * budget of their own, sized on the attribute, in place of the one every
+ * other endpoint spends -- an API's scripts are not a browser's fetches.
  */
 
-namespace Tinvar\Tests\Endpoints\HostBudget;
+namespace Tinvar\Tests\Endpoints\Budget;
 
+use Tinvar\Actions\ActionException;
 use Tinvar\Actions\ActionRegistry;
+use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Domain;
+use Tinvar\Attributes\EndpointBudget;
 use Tinvar\Attributes\Get;
 use Tinvar\Attributes\Middleware as UseMiddleware;
 use Tinvar\Attributes\NoAuthorization;
@@ -20,6 +23,7 @@ use Tinvar\Attributes\WithoutSession;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Data\Data;
+use Tinvar\Endpoints\EndpointException;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Http\ArrayThrottleStore;
 use Tinvar\Http\Kernel;
@@ -70,7 +74,7 @@ final class Site
     }
 }
 
-#[WithoutSession(reason: 'a script sends a bearer token'), Domain('api.{root}')]
+#[WithoutSession(reason: 'a script sends a bearer token'), Domain('api.{root}'), EndpointBudget('api', perMinute: 3)]
 final class Api
 {
     #[Get('/v1/status', name: 'api.status'), UseMiddleware(Bearer::class), NoAuthorization(reason: 'a status')]
@@ -80,11 +84,44 @@ final class Api
     }
 }
 
-function hostKernel(array $limits): Kernel
+/** Another class naming the same budget, on the method: one budget between them. */
+#[WithoutSession(reason: 'a script sends a bearer token'), Domain('api.{root}')]
+final class ApiMore
+{
+    #[Get('/v1/more', name: 'api.more'), UseMiddleware(Bearer::class), NoAuthorization(reason: 'a status'), EndpointBudget('api', perMinute: 3)]
+    public function more(): Answer
+    {
+        return new Answer('more');
+    }
+}
+
+final class TwoSizes
+{
+    #[Get('/a', name: 'two.a'), PublicAccess, NoAuthorization(reason: 'test'), EndpointBudget('wide', perMinute: 3)]
+    public function a(): Answer
+    {
+        return new Answer('a');
+    }
+
+    #[Get('/b', name: 'two.b'), PublicAccess, NoAuthorization(reason: 'test'), EndpointBudget('wide', perMinute: 4)]
+    public function b(): Answer
+    {
+        return new Answer('b');
+    }
+}
+
+#[EndpointBudget('api', perMinute: 3)]
+final class BudgetedAction
+{
+    #[Action('budgeted.save'), NoAuthorization(reason: 'test')]
+    public function save(): void {}
+}
+
+function budgetKernel(array $limits = []): Kernel
 {
     $auth = new AuthContext();
     $registry = new EndpointRegistry();
-    $registry->registerAll([Site::class, Api::class]);
+    $registry->registerAll([Site::class, Api::class, ApiMore::class]);
     $fixture = new Fixture(racks: 1, unitsPerRack: 1);
 
     return new Kernel(
@@ -117,8 +154,8 @@ function call(Kernel $kernel, string $host, string $path, ?string $bearer = null
     );
 }
 
-it('gives a host\'s endpoints a budget of their own, and leaves the shared one to the rest', function () {
-    $kernel = hostKernel(['endpoints' => 1, 'endpoints@api.{root}' => 3]);
+it('spends a budget of its own in place of the shared one, and leaves the shared one to the rest', function () {
+    $kernel = budgetKernel(['endpoints' => 1]);
 
     foreach (range(1, 3) as $n) {
         expect(call($kernel, 'api.shop.test', '/v1/status', 'ada')->status)->toBe(200, "call {$n}");
@@ -131,29 +168,40 @@ it('gives a host\'s endpoints a budget of their own, and leaves the shared one t
         ->and(call($kernel, 'api.shop.test', '/v1/status', 'bob', '192.0.2.2')->status)->toBe(200);
 });
 
-it('counts the host\'s budget by account too, once the endpoint\'s own middleware signed the caller in', function () {
-    $kernel = hostKernel(['endpoints@api.{root}' => 2]);
+it('is one budget for every endpoint naming it, whichever class it is on', function () {
+    $kernel = budgetKernel();
+
+    expect(call($kernel, 'api.shop.test', '/v1/status', 'ada')->status)->toBe(200)
+        ->and(call($kernel, 'api.shop.test', '/v1/more', 'ada')->status)->toBe(200)
+        ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada')->status)->toBe(200)
+        ->and(call($kernel, 'api.shop.test', '/v1/more', 'ada')->status)->toBe(429);
+});
+
+it('counts by account too, once the endpoint\'s own middleware signed the caller in', function () {
+    $kernel = budgetKernel();
 
     expect(call($kernel, 'api.shop.test', '/v1/status', 'ada', '192.0.2.1')->status)->toBe(200)
         ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada', '192.0.2.2')->status)->toBe(200)
-        // A third address is a fresh address bucket, and the same account.
-        ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada', '192.0.2.3')->status)->toBe(429);
+        ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada', '192.0.2.3')->status)->toBe(200)
+        // A fourth address is a fresh address bucket, and the same account.
+        ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada', '192.0.2.4')->status)->toBe(429);
 });
 
-it('says the host\'s limit in the headers it answers with', function () {
-    $kernel = hostKernel(['endpoints@api.{root}' => 700]);
-
-    expect(call($kernel, 'api.shop.test', '/v1/status', 'ada')->header('x-ratelimit-limit'))->toBe('700');
+it('says its own limit in the headers it answers with', function () {
+    expect(call(budgetKernel(), 'api.shop.test', '/v1/status', 'ada')->header('x-ratelimit-limit'))->toBe('3');
 });
 
-it('spends the shared budget on a host given none of its own', function () {
-    $kernel = hostKernel(['endpoints' => 1]);
-
-    expect(call($kernel, 'api.shop.test', '/v1/status', 'ada')->status)->toBe(200)
-        ->and(call($kernel, 'api.shop.test', '/v1/status', 'ada')->status)->toBe(429);
+it('is refused when two endpoints give one budget two sizes', function () {
+    expect(fn () => (new EndpointRegistry())->register(TwoSizes::class))
+        ->toThrow(EndpointException::class, 'One budget has one size');
 });
 
-it('refuses a budget for a host no endpoint is on, which would limit nothing', function () {
-    expect(fn () => hostKernel(['endpoints@admin.{root}' => 10]))
-        ->toThrow(\InvalidArgumentException::class, 'no endpoint');
+it('is refused on an action, which spends throttle:actions', function () {
+    expect(fn () => (new ActionRegistry())->register(BudgetedAction::class))
+        ->toThrow(ActionException::class, 'only an endpoint reads');
+});
+
+it('refuses a budget that is not one, or allows nothing', function () {
+    expect(fn () => new EndpointBudget('no spaces', 1))->toThrow(\InvalidArgumentException::class)
+        ->and(fn () => new EndpointBudget('api', 0))->toThrow(\InvalidArgumentException::class);
 });

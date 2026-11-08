@@ -450,15 +450,14 @@ it('reads a list and a map, item by item, as strictly as one key', function (): 
     $config = Configs::load(Lists::class, [
         'LISTTEST_HOSTS' => 'a.test, b.test',
         'LISTTEST_PORTS' => '8080',
-        'LISTTEST_LIMITS' => 'actions=600, sign-in.address=0, endpoints@api.{root}=1200',
+        'LISTTEST_LIMITS' => 'actions=600, sign-in.address=0',
         'LISTTEST_SHADES' => 'dark,light',
         'LISTTEST_FLAGS' => 'beta=1,legacy=0',
     ]);
 
     expect($config->hosts)->toBe(['a.test', 'b.test'])
         ->and($config->ports)->toBe([8080])
-        // A host's own endpoint budget is keyed by its host as #[Domain] writes it (ADR 0187).
-        ->and($config->limits)->toBe(['actions' => 600, 'sign-in.address' => 0, 'endpoints@api.{root}' => 1200])
+        ->and($config->limits)->toBe(['actions' => 600, 'sign-in.address' => 0])
         ->and($config->shades)->toBe([Shade::Dark, Shade::Light])
         ->and($config->flags)->toBe(['beta' => true, 'legacy' => false])
         ->and(Configs::load(Lists::class, [])->ports)->toBe([80, 443])
