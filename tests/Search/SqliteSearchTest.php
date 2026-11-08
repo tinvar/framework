@@ -16,6 +16,7 @@ use Tinvar\Auth\Gate;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Page;
 use Tinvar\Orm\Query;
+use Tinvar\Orm\SubtreePage;
 use Tinvar\Orm\TenantBounds;
 use Tinvar\Search\Search;
 use Tinvar\Search\SearchableModel;
@@ -308,6 +309,29 @@ describe('tenancy', function () {
         expect(fn () => $within(fn (): array => $search->for(Ticket::class)->query('printer')->get()))->toThrow(\LengthException::class, 'withinSubtreePages()')
             ->and(fn () => $within(fn (): Page => $search->for(Ticket::class)->query('printer')->paginate()))->toThrow(\LengthException::class)
             ->and($orm->actAs('acme', fn (): array => names($search->for(Ticket::class)->query('printer')->get())))->toBe(['Printer jammed']);
+    });
+
+    // A new row is the tenant in force's: made in the page that holds it,
+    // it is indexed there and found by that tenant; a page that does not
+    // hold it refuses it rather than lose it from the index (ADR 0196).
+    it('indexes a row made inside a page of withinSubtreePages() under the tenant in force', function () {
+        [$orm, $search] = sqliteSearch(null, ['globex' => 'acme', 'initech' => 'acme']);
+        $pages = [];
+        $made = static function (SubtreePage $page) use ($orm, &$pages): void {
+            if (\in_array('acme', $page->tenants, true)) {
+                ticket($orm, 'Printer jammed');
+                $pages[] = 'made';
+            } else {
+                expect(fn () => ticket($orm, 'Printer lost'))->toThrow(\LogicException::class, 'actAs()');
+                $pages[] = 'refused';
+            }
+        };
+
+        $orm->actAs('acme', fn (): ?string => $orm->grantSubtree(fn (): ?string => $orm->withinSubtreePages($made, 1)));
+
+        expect($pages)->toBe(['made', 'refused', 'refused'])
+            ->and($orm->actAs('acme', fn (): array => names($search->for(Ticket::class)->query('printer')->get())))->toBe(['Printer jammed'])
+            ->and($orm->actAs('globex', fn (): array => names($search->for(Ticket::class)->query('printer')->get())))->toBe([]);
     });
 
     it('indexes a row written across tenants under its own tenant', function () {
