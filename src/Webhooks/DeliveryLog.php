@@ -19,6 +19,16 @@ interface DeliveryLog
     public function recent(string $tenant, int $limit = 50): array;
 
     /**
+     * The latest tries at deliveries to one of a tenant's subscriptions,
+     * newest first: the subscription's own log on its tenant's page (ADR
+     * 0197). Named by tenant as well as subscription, so another tenant's
+     * subscription id finds nothing.
+     *
+     * @return list<DeliveryAttempt>
+     */
+    public function forSubscription(string $tenant, string $subscription, int $limit = 50): array;
+
+    /**
      * Forgets up to $limit tries made before $before, every tenant's; how
      * many it forgot (PruneSentWebhooks).
      */

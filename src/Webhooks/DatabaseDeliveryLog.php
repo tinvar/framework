@@ -44,6 +44,8 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
             $attempts->index(['delivery'], "{$table}_delivery");
             // What a tenant's deliveries page asks: theirs, newest first.
             $attempts->index(['tenant', 'attempted_at'], "{$table}_tenant_recent");
+            // What a subscription's own log asks (ADR 0197).
+            $attempts->index(['tenant', 'subscription', 'attempted_at'], "{$table}_subscription_recent");
             // What pruning asks: every tenant's, oldest first (prune()).
             $attempts->index(['attempted_at'], "{$table}_attempted");
         }, $ifNotExists);
@@ -83,6 +85,30 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
             "SELECT * FROM {$this->table} WHERE tenant = ? ORDER BY attempted_at DESC, id DESC LIMIT " . max(0, $limit),
             [$tenant],
         ));
+    }
+
+    public function forSubscription(string $tenant, string $subscription, int $limit = 50): array
+    {
+        // On the `_subscription_recent` index define() makes; a table made
+        // before ADR 0197 reads it off `_tenant_recent` until a migration
+        // adds it (DatabaseDeliveryLog::addSubscriptionIndex()).
+        return array_map(self::attempt(...), $this->connection->select(
+            "SELECT * FROM {$this->table} WHERE tenant = ? AND subscription = ? ORDER BY attempted_at DESC, id DESC LIMIT " . max(0, $limit),
+            [$tenant, $subscription],
+        ));
+    }
+
+    /**
+     * The index forSubscription() reads by, for a log table define() made
+     * before ADR 0197: the application's migration calls this once.
+     */
+    public static function addSubscriptionIndex(Schema $schema, string $table = 'webhook_deliveries'): void
+    {
+        new self($schema->connection(), $table);
+
+        $schema->table($table, static function (Table $attempts) use ($table): void {
+            $attempts->index(['tenant', 'subscription', 'attempted_at'], "{$table}_subscription_recent");
+        });
     }
 
     public function prune(int $before, int $limit): int

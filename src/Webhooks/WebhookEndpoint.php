@@ -233,13 +233,20 @@ final class WebhookEndpoint
             throw new HttpException(404, "{$class} is not set up for this tenant.", 'not_found');
         }
 
-        $signature = WebhookSignature::parse($request->header(WebhookSignature::HEADER));
+        $signature = WebhookSignature::parseEach($request->header(WebhookSignature::HEADER));
         if ($signature === null) {
             throw self::unsigned('The delivery carries no signature this endpoint can read.');
         }
-        [$timestamp, $nonce, $mac] = $signature;
+        [$timestamp, $nonce, $macs] = $signature;
         $expected = WebhookSignature::mac($secret, $timestamp, $nonce, $request->method, self::target($request), $rawBody);
-        if (!hash_equals($expected, $mac)) {
+        // One MAC for each secret a sender rotating its own signs with (ADR
+        // 0197): ours need verify one of them. Every one is compared, so the
+        // time taken says nothing of which.
+        $verified = false;
+        foreach ($macs as $mac) {
+            $verified = hash_equals($expected, $mac) || $verified;
+        }
+        if (!$verified) {
             throw self::unsigned('The delivery\'s signature does not verify.');
         }
 

@@ -77,6 +77,29 @@ final readonly class OutboundWebhooks
     }
 
     /**
+     * Queues $event for every subscription of the tenant in force that
+     * chose it (ADR 0197): one delivery each, under ids of their own, the
+     * data encoded once.
+     *
+     *     $webhooks->publish(OrderEvent::Placed, new OrderPlacedData($order), $subscriptions);
+     *
+     * @param Data|array<array-key, mixed> $data
+     * @return list<string> the deliveries' ids; none when no subscription chose it
+     */
+    public function publish(\BackedEnum|string $event, Data|array $data, WebhookSubscribers $to, bool $resendable = true): array
+    {
+        $name = $event instanceof \BackedEnum ? (string) $event->value : $event;
+        if (preg_match('/^[a-z0-9][a-z0-9._-]{0,63}\z/', $name) !== 1) {
+            throw new \InvalidArgumentException("'{$name}' is not an event name: lowercase letters, digits, '.', '_' and '-', up to 64.");
+        }
+        // Encoded first, so a model is refused whether or not anyone chose the event.
+        $encoded = $this->encoder->encode($data);
+        $subscriptions = $to->subscribedTo($name);
+
+        return array_map(fn (string $subscription): string => $this->queue($subscription, $name, $encoded, keep: $resendable), $subscriptions);
+    }
+
+    /**
      * Sends a delivery's event again, as a new delivery: found in the
      * tenant in force, so another tenant's id finds nothing, and kept with
      * the delivery it repeats and $by, who asked.

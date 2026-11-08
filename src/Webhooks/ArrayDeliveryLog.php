@@ -27,6 +27,13 @@ final class ArrayDeliveryLog implements DeliveryLog
         return \array_slice(array_reverse($mine), 0, max(0, $limit));
     }
 
+    public function forSubscription(string $tenant, string $subscription, int $limit = 50): array
+    {
+        $mine = array_values(array_filter($this->recorded, static fn (DeliveryAttempt $a): bool => $a->tenant === $tenant && $a->subscription === $subscription));
+
+        return \array_slice(array_reverse($mine), 0, max(0, $limit));
+    }
+
     public function prune(int $before, int $limit): int
     {
         $pruned = 0;

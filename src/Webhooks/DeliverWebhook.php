@@ -36,11 +36,20 @@ use Tinvar\Outbound\Target;
  * or a connection that fails, is tried again with the backoff below; a
  * destination the policy refuses, a 410, or a subscription that is gone
  * ends the delivery at once, since trying again changes none of those.
+ *
+ * A subscription that is paused (WebhookSubscription::$active) ends the
+ * delivery unsent. One signs with each secret it holds -- two while its
+ * secret is rotated (ADR 0197). And where the subscriptions keep count
+ * (CountsDeliveryFailures), each delivery is counted as it ends, so one
+ * that keeps failing is disabled.
  */
-#[Queue(self::QUEUE, tries: 6, backoff: [30, 120, 600, 1800, 3600], timeout: 30)]
+#[Queue(self::QUEUE, tries: self::TRIES, backoff: [30, 120, 600, 1800, 3600], timeout: 30)]
 final readonly class DeliverWebhook implements Job
 {
     public const string QUEUE = 'webhooks';
+
+    /** Tries a delivery has before it ends undelivered. */
+    public const int TRIES = 6;
 
     /** Seconds one try may take: well inside the job's own timeout. */
     public const float TIMEOUT = 10.0;
@@ -77,6 +86,13 @@ final readonly class DeliverWebhook implements Job
 
             return;
         }
+        if (!$subscription->active) {
+            // Paused, or disabled, since the event: nothing is sent to it.
+            $record(DeliveryAttempt::GONE, null, 'subscription_paused', 0);
+
+            return;
+        }
+        $counts = $subscriptions instanceof CountsDeliveryFailures ? $subscriptions : null;
 
         try {
             $target = Target::parse($subscription->url);
@@ -85,8 +101,8 @@ final readonly class DeliverWebhook implements Job
                 $subscription->url,
                 [
                     'content-type' => 'application/json',
-                    WebhookSignature::HEADER => WebhookSignature::header(
-                        $subscription->secret,
+                    WebhookSignature::HEADER => WebhookSignature::headerForEach(
+                        $subscription->signingSecrets(),
                         time(),
                         $this->delivery,
                         'POST',
@@ -107,16 +123,21 @@ final readonly class DeliverWebhook implements Job
             // a loopback, private or metadata address is the network's to
             // know. The reason is in the failed job, for the operator.
             $record(DeliveryAttempt::REFUSED, null, null, 0);
+            $counts?->deliveryFailed($this->subscription, 'destination_refused');
 
             throw new JobRefused('destination_refused', "Webhook delivery {$this->delivery} is refused: {$e->getMessage()}", $e);
         } catch (OutboundFailed $e) {
             $record(DeliveryAttempt::FAILED, $e->status, $e->reason, $e->milliseconds);
+            if ($attempt >= self::TRIES) {
+                $counts?->deliveryFailed($this->subscription, $e->reason);
+            }
 
             throw $e;
         }
 
         if ($response->successful()) {
             $record(DeliveryAttempt::DELIVERED, $response->status, null, $response->milliseconds);
+            $counts?->deliveryArrived($this->subscription);
 
             return;
         }
@@ -126,16 +147,21 @@ final readonly class DeliverWebhook implements Job
         // receiver's window, and the next was handled a second time.
         if ($response->status === 409) {
             $record(DeliveryAttempt::DELIVERED, $response->status, 'already_received', $response->milliseconds);
+            $counts?->deliveryArrived($this->subscription);
 
             return;
         }
         if ($response->status === 410) {
             $record(DeliveryAttempt::GONE, $response->status, 'receiver_gone', $response->milliseconds);
+            $counts?->deliveryFailed($this->subscription, 'receiver_gone', receiverGone: true);
 
             throw new JobRefused('receiver_gone', "Webhook delivery {$this->delivery} was answered 410: the receiver asked to be sent nothing more.");
         }
 
         $record(DeliveryAttempt::FAILED, $response->status, 'status', $response->milliseconds);
+        if ($attempt >= self::TRIES) {
+            $counts?->deliveryFailed($this->subscription, "status_{$response->status}");
+        }
 
         throw new \RuntimeException("Webhook delivery {$this->delivery} ({$this->event}) was answered {$response->status}.");
     }
