@@ -18,6 +18,7 @@ use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Storage\StorageKey;
@@ -280,6 +281,17 @@ final class ActionRegistry
                     $optionalUploads[$name] = true;
                 }
                 continue;
+            }
+
+            // The body's bytes are an endpoint's (ADR 0183): another server
+            // signs what it sends one. An action's body is the framework's
+            // own protocol, sent by the application's pages with the
+            // session's token, and nobody signs it.
+            if ($typeName === RawBody::class) {
+                throw new ActionException(
+                    "{$where}: \${$name} takes the request's RawBody, which only an endpoint is handed. A caller that "
+                    . 'signs its body is another server: declare an endpoint (#[Post], #[WithoutSession]) for it.',
+                );
             }
 
             throw ActionException::unbindable($where, $name, $typeName);

@@ -50,6 +50,8 @@ final readonly class CompiledEndpoint
      * @param list<string> $scopes what its #[RequiresScope] names (ADR 0159): an API token
      *        holding all of them signs its caller in, and nothing else does -- it is then
      *        $sessionless too. None for an endpoint a session reaches
+     * @param string|null $rawBody the parameter taking the body's bytes (Tinvar\Http\RawBody,
+     *        ADR 0183); null for an endpoint that takes none
      */
     public function __construct(
         public string $name,
@@ -79,6 +81,7 @@ final readonly class CompiledEndpoint
         public array $revalidates = [],
         public ?\Tinvar\Routing\HostPattern $host = null,
         public array $scopes = [],
+        public ?string $rawBody = null,
     ) {}
 
     /** Whether an API token is what signs its caller in (ADR 0159). */

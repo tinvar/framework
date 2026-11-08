@@ -14,6 +14,7 @@ use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Pipeline;
+use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\Throttle;
@@ -92,6 +93,16 @@ final class EndpointHandler
      */
     public function handle(Request $request, CompiledEndpoint $endpoint, array $parameters, string $rawBody = ''): Response
     {
+        // The body's bytes, for its own middleware and a RawBody parameter
+        // (ADR 0183): held to the limit first, so nothing of the endpoint's
+        // reads more than it, and none of it runs for a body too large.
+        if (\strlen($rawBody) > $this->maxBodyBytes) {
+            throw new HttpException(413, 'Request body is too large.', 'body_too_large');
+        }
+        if (self::bytesArrived($request, $rawBody)) {
+            $request = $request->withAttribute(RawBody::ATTRIBUTE, new RawBody($rawBody));
+        }
+
         $entry = $this->entry === null
             ? []
             : $this->entry->stackFor($endpoint->tenantFrom, $this->entry->panelFor($endpoint->panels, $endpoint->class));
@@ -164,13 +175,35 @@ final class EndpointHandler
         return [$class, $endpoint->method];
     }
 
+    /**
+     * Whether $rawBody is the body as it arrived. Not for a multipart one,
+     * whose bytes PHP consumed as it parsed it, nor for any other body PHP
+     * parsed with nothing left raw -- a caller in the same process handing
+     * a parsed body alone: the empty string there is not what was sent, and
+     * a signature checked over it would check nothing.
+     */
+    private static function bytesArrived(Request $request, string $rawBody): bool
+    {
+        return Limits::type($request) !== 'multipart/form-data' && ($rawBody !== '' || ($request->body === [] && $request->files === []));
+    }
+
     /** @param array<string, string> $parameters */
     private function dispatch(Request $request, CompiledEndpoint $endpoint, array $parameters, string $rawBody): Response
     {
+        if ($endpoint->rawBody !== null && RawBody::of($request) === null) {
+            throw new HttpException(415, 'This endpoint reads the body as it was sent: send it as bytes, not as multipart form data.', 'unsupported_media_type');
+        }
+
         // A GET's input is its query string; anything else's, its body,
         // under the limits /_action and /_query take theirs under.
         if (\in_array($request->method, ['GET', 'HEAD'], true)) {
             $input = $request->query;
+        } elseif ($endpoint->rawBody !== null && !Limits::decodes($request)) {
+            // A body of a type no form request reads -- a signed blob, a
+            // protobuf -- reaches a method that takes its bytes as they are,
+            // with no input beside them; one the endpoints decode is decoded
+            // as for every other endpoint, so its form requests bind.
+            $input = [];
         } else {
             $input = Limits::input($request, $rawBody, $this->maxBodyBytes, $this->maxJsonDepth);
             // The hidden field a form posted without script carries: CSRF

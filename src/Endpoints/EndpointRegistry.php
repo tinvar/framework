@@ -21,6 +21,7 @@ use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
+use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
@@ -194,6 +195,7 @@ final class EndpointRegistry
         $optional = [];
         $required = [];
         $taken = [];
+        $rawBody = null;
 
         foreach ($method->getParameters() as $parameter) {
             $parameterName = $parameter->getName();
@@ -240,6 +242,15 @@ final class EndpointRegistry
             if ($typeName === Request::class) {
                 continue;
             }
+            // The body's bytes, as they arrived (ADR 0183): once, since two
+            // parameters would be one value under two names.
+            if ($typeName === RawBody::class) {
+                if ($rawBody !== null) {
+                    throw new EndpointException("{$where}: \${$parameterName} takes the RawBody twice, after \${$rawBody}; one parameter reads the body's bytes.");
+                }
+                $rawBody = $parameterName;
+                continue;
+            }
             if (!$type->isBuiltin() && is_subclass_of($typeName, Model::class)) {
                 throw new EndpointException(
                     "{$where}: \${$parameterName} takes {$typeName} and the path has no {{$parameterName}}. An endpoint "
@@ -248,7 +259,7 @@ final class EndpointRegistry
             }
 
             throw new EndpointException(
-                "{$where}: \${$parameterName} ({$typeName}) is neither in the path, a form request, nor the Request. "
+                "{$where}: \${$parameterName} ({$typeName}) is neither in the path, a form request, the Request nor its RawBody. "
                 . 'Read input through a form request, which validates it.',
             );
         }
@@ -391,6 +402,7 @@ final class EndpointRegistry
             revalidates: $declaration->revalidates,
             host: $host,
             scopes: $scopes,
+            rawBody: $rawBody,
         );
     }
 

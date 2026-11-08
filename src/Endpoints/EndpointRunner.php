@@ -13,6 +13,7 @@ use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\RawBody;
 use Tinvar\Http\EntryGates;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -415,6 +416,10 @@ final class EndpointRunner
                 isset($endpoint->models[$name]) => $models[$name],
                 isset($endpoint->scalars[$name]) => Binder::cast($path[$name] ?? '', $parameter->getType()),
                 isset($requests[$name]) => $requests[$name],
+                // Set by EndpointHandler before the endpoint's middleware
+                // ran, which refused a request without one (ADR 0183).
+                $name === $endpoint->rawBody => RawBody::of($request)
+                    ?? throw new \LogicException("{$endpoint->where()} takes the RawBody, and its request carries none."),
                 default => $request,
             };
         }

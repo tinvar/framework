@@ -136,9 +136,7 @@ final class Limits
         int $maxBytes = self::MAX_BODY_BYTES,
         int $maxDepth = self::MAX_JSON_DEPTH,
     ): array {
-        $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
-
-        return match ($type) {
+        return match (self::type($request)) {
             'application/json' => self::decodeJson($rawBody, $maxBytes, $maxDepth),
             'application/x-www-form-urlencoded', 'multipart/form-data' => self::form($request->body, $maxBytes, $maxDepth),
             '' => $rawBody === ''
@@ -150,6 +148,21 @@ final class Limits
                 'unsupported_media_type',
             ),
         };
+    }
+
+    /**
+     * Whether input() reads a body of this request's Content-Type rather
+     * than refusing it: JSON, a form, or none named.
+     */
+    public static function decodes(Request $request): bool
+    {
+        return \in_array(self::type($request), ['application/json', 'application/x-www-form-urlencoded', 'multipart/form-data', ''], true);
+    }
+
+    /** The request's Content-Type, its parameters dropped, lowercased. */
+    public static function type(Request $request): string
+    {
+        return strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
     }
 
     /**
