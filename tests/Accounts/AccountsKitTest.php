@@ -1121,6 +1121,50 @@ it('ends a sign-in link when the account signs in anywhere, and asks it for the 
     });
 });
 
+it('welcomes an account made for someone with a link that sets its password, for a week, once', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $made = new \Tinvar\Tests\Accounts\Fixtures\Members($app->orm)->create('bea@example.com', 'Bea', '');
+        $app->kit->accounts->sendWelcome($made);
+        $app->work();
+        expect($app->links('welcome', 'bea@example.com'))->toHaveCount(1);
+
+        $url = $app->links('welcome', 'bea@example.com')[0];
+        expect($url)->toStartWith('https://app.example/password/reset?token=');
+
+        // Long after a reset link would have closed, it still opens.
+        $app->now += 6 * 86_400;
+        expect($app->kit->accounts->resetOffer(token($url))?->accountEmail())->toBe('bea@example.com');
+
+        $visitor = new Visitor($app);
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($url), 'a brand new passphrase'));
+        expect($visitor->who())->toBe('bea@example.com')
+            // Used: it opens nothing again.
+            ->and($app->kit->accounts->resetOffer(token($url)))->toBeNull();
+    });
+})->with('drivers');
+
+it('closes a welcome link after a week', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $made = new \Tinvar\Tests\Accounts\Fixtures\Members($app->orm)->create('bea@example.com', 'Bea', '');
+        $app->kit->accounts->sendWelcome($made);
+        $app->work();
+        $url = $app->links('welcome', 'bea@example.com')[0];
+
+        $app->now += 8 * 86_400;
+        expect($app->kit->accounts->resetOffer(token($url)))->toBeNull()
+            ->and(refused(static fn () => new Visitor($app)->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($url), 'a brand new passphrase'))))
+            ->toBe(['token' => [Accounts::LINK_REFUSED]]);
+    });
+});
+
+it('refuses to send a welcome for an app whose mails cannot say one', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $plain = new MemberApp($app->orm->connection(), mails: new \Tinvar\Tests\Accounts\Fixtures\PlainMemberMails());
+        $made = new \Tinvar\Tests\Accounts\Fixtures\Members($plain->orm)->create('bea@example.com', 'Bea', '');
+        expect(static fn () => $plain->kit->accounts->sendWelcome($made))->toThrow(\LogicException::class, 'WelcomeMails');
+    });
+});
+
 it('refuses to send sign-in links for an app whose mails cannot say one', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $plain = new MemberApp($app->orm->connection(), mails: new \Tinvar\Tests\Accounts\Fixtures\PlainMemberMails());

@@ -170,8 +170,13 @@ final readonly class MemberMail implements Mailable
     }
 }
 
-final readonly class MemberMails implements AccountMails, SignInLinkMails
+final readonly class MemberMails implements AccountMails, SignInLinkMails, \Tinvar\Accounts\WelcomeMails
 {
+    public function welcome(AccountUser $user, string $url, int $days): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'welcome', $url);
+    }
+
     public function signInLink(AccountUser $user, string $url, int $minutes): Mailable
     {
         return new MemberMail($user->accountEmail(), 'sign-in-link', $url);

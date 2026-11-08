@@ -396,10 +396,25 @@ final class Accounts
         }
     }
 
-    /** The account a reset link is for, for the page it lands on; null for every reason it would not open. */
+    /**
+     * Welcomes an account the application made for someone -- by an
+     * operator, a billing system, an import -- with a link to choose its
+     * password, open a week (ADR 0189). Queued, as every account email is.
+     * The app's AccountMails must implement WelcomeMails, which says what
+     * the email says.
+     */
+    public function sendWelcome(AccountUser $user): void
+    {
+        if (!$this->mails instanceof WelcomeMails) {
+            throw new \LogicException('Welcoming an account needs the app\'s AccountMails to implement WelcomeMails, which says what the email says.');
+        }
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::Welcome, userId: $user->authIdentifier()));
+    }
+
+    /** The account a reset link -- or a welcome's (ADR 0189) -- is for, for the page it lands on; null for every reason it would not open. */
     public function resetOffer(string $token): ?AccountUser
     {
-        $link = $this->links->peek($token, EmailLinks::PASSWORD_RESET);
+        $link = $this->links->peek($token, EmailLinks::PASSWORD_RESET) ?? $this->links->peek($token, EmailLinks::SET_PASSWORD);
 
         return $link === null ? null : $this->users->find($link->user);
     }
@@ -416,7 +431,7 @@ final class Accounts
     {
         $hash = $this->passwords->hash($password);
         [$user, $checked] = $this->connection->durableTransaction(function () use ($token, $hash): array {
-            $link = $this->links->consume($token, EmailLinks::PASSWORD_RESET);
+            $link = $this->links->consume($token, EmailLinks::PASSWORD_RESET) ?? $this->links->consume($token, EmailLinks::SET_PASSWORD);
             $user = $link === null ? null : $this->users->find($link->user);
             if ($user === null) {
                 throw new ValidationException(['token' => [self::LINK_REFUSED]]);
@@ -1001,6 +1016,9 @@ final class Accounts
             AccountMailKind::PasswordReset => ($existing = $this->users->findByEmail($job->email)) === null
                 ? null
                 : $this->mails->passwordReset($existing, $this->links->passwordReset($existing), $minutes(EmailLinks::PASSWORD_RESET)),
+            AccountMailKind::Welcome => $user === null || !$this->mails instanceof WelcomeMails
+                ? null
+                : $this->mails->welcome($user, $this->links->setPassword($user), intdiv(EmailLinks::LIFETIMES[EmailLinks::SET_PASSWORD], 86_400)),
             // To an address another account has, nothing: the account asking
             // would learn whose it is from whatever came back. Nor once the
             // epoch the session asking was opened at has moved -- a reset, a

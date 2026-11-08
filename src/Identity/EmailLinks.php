@@ -56,6 +56,15 @@ final readonly class EmailLinks
     /** Lets the holder choose the account's password. */
     public const string PASSWORD_RESET = 'password-reset';
 
+    /**
+     * Lets the holder choose the first password of an account made for them
+     * -- by an operator, a billing system, an import -- rather than by
+     * signing up (ADR 0189). About the account and its epoch, as a reset is,
+     * so setting a password, or a sign-out everywhere, ends it; open a week,
+     * as an invite is, since its reader did not ask for it.
+     */
+    public const string SET_PASSWORD = 'set-password';
+
     /** Joins the holder's address to a panel in a tenant (Invitations). */
     public const string INVITE = 'invite';
 
@@ -88,13 +97,14 @@ final readonly class EmailLinks
 
     /**
      * How long each kind of link opens: fifteen minutes for one that signs
-     * in or sets a password, the time it takes to read the email; a week
-     * for an invite or an opt-in, the time it takes someone to get round to
-     * it.
+     * in or resets a password, the time it takes to read the email asked
+     * for; a week for an invite, an opt-in or a welcome, the time it takes
+     * someone to get round to one they did not ask for.
      */
     public const array LIFETIMES = [
         self::SIGN_IN => 900,
         self::PASSWORD_RESET => 900,
+        self::SET_PASSWORD => 604_800,
         self::INVITE => 604_800,
         self::OPT_IN => 604_800,
         self::SIGN_UP => 86_400,

@@ -10,6 +10,7 @@ enum AccountMailKind: string
     case SignUp = 'sign-up';
     case SignInLink = 'sign-in-link';
     case PasswordReset = 'password-reset';
+    case Welcome = 'welcome';
     case EmailChange = 'email-change';
     case EmailChanged = 'email-changed';
     case PasswordChanged = 'password-changed';

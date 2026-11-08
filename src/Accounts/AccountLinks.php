@@ -102,6 +102,12 @@ final readonly class AccountLinks
         return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->linkOrigin(), $this->paths->resetPassword, '', $user)['url'];
     }
 
+    /** A welcome's link (ADR 0189): to the reset page, which takes it as a reset, for a week. */
+    public function setPassword(AccountUser $user): string
+    {
+        return $this->links->issue(EmailLinks::SET_PASSWORD, $this->linkOrigin(), $this->paths->resetPassword, '', $user)['url'];
+    }
+
     /**
      * The URL of the link that moves $user to $email, held to $epoch: the
      * auth epoch the session asking for the change was opened at, so a
