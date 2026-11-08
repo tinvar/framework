@@ -1196,6 +1196,30 @@ it('hands the app the passwords it hashes with, for an account it makes itself',
     });
 });
 
+it('binds the users it was given and its lookup over them, which the accounts and tenancy pages are built with', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $container = $app->kit->register(new \Tinvar\Container\Container());
+
+        expect($container->get(\Tinvar\Accounts\AccountUsers::class))->toBe($app->kit->users)
+            ->and($app->kit->users)->toBeInstanceOf(Members::class)
+            ->and($container->get(UserLookup::class))->toBe($app->kit->lookup);
+    });
+});
+
+it('leaves the users and the lookup the app bound already as it bound them', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $users = new Members($app->orm);
+        $lookup = new \Tinvar\Accounts\AccountUserLookup($users, $app->kit->epochs);
+        $container = new \Tinvar\Container\Container()
+            ->instance(\Tinvar\Accounts\AccountUsers::class, $users)
+            ->bind(UserLookup::class, static fn (): object => $lookup);
+        $app->kit->register($container);
+
+        expect($container->get(\Tinvar\Accounts\AccountUsers::class))->toBe($users)
+            ->and($container->get(UserLookup::class))->toBe($lookup);
+    });
+});
+
 it('makes and opens no link, sends no account email and starts no passkey ceremony for an app with no https origin, and signs in by password', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $owner = member($app);

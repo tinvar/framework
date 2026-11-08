@@ -57,6 +57,11 @@ final readonly class AccountsKit
     public CredentialEpochs $credentials;
     public EmailLinks $links;
     public AccountLinks $accountLinks;
+
+    /** The application's users, as it gave them: what AcceptInvitationPage makes an account in. */
+    public AccountUsers $users;
+
+    /** The users as a signed-in session is found again, at their auth epoch: what SendTenantInvite reads an invitee by. */
     public UserLookup $lookup;
 
     /**
@@ -133,6 +138,7 @@ final readonly class AccountsKit
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
         $this->epochs = new AuthEpochs($connection);
         $this->credentials = new CredentialEpochs($connection);
+        $this->users = $users;
         $this->lookup = new AccountUserLookup($users, $this->epochs);
         $this->tokenHolders = new AccountTokenHolders($users, $this->credentials, $this->epochs);
         $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials, $key);
@@ -210,9 +216,21 @@ final readonly class AccountsKit
     /** The tables migrate() makes, last first, for a migration's down(). */
     public const array TABLES = ['recovery_codes', 'two_factor_secrets', 'passkey_challenges', 'passkeys', 'email_links', 'credential_epochs', 'auth_epochs', 'sessions'];
 
-    /** What the application's pages, actions and middleware are built with. */
+    /**
+     * What the application's pages, actions and middleware are built with.
+     * Its users and the lookup over them too -- the tenant pages'
+     * AcceptInvitationPage and SendTenantInvite are built with them -- unless
+     * the application registered its own already.
+     */
     public function register(Container $container): Container
     {
+        if (!$container->registered(AccountUsers::class)) {
+            $container->instance(AccountUsers::class, $this->users);
+        }
+        if (!$container->registered(UserLookup::class)) {
+            $container->instance(UserLookup::class, $this->lookup);
+        }
+
         return $container
             ->instance(Accounts::class, $this->accounts)
             ->instance(Sessions::class, $this->sessions)
