@@ -54,25 +54,35 @@ http://:{$TINVAR_PORT} {
 	# change is the Host its requests name: an address, localhost, or a name
 	# under .localhost, which a browser resolves to loopback itself.
 	#
-	# And the one name a tunnel serves it under, where `serve --dev
-	# --public-host` names one (ADR 0190): the tunnel's own, which no page
-	# elsewhere can point at this machine. Its default is a name no request
-	# can carry (.invalid, RFC 6761).
+	# And the names a tunnel serves it under, where `serve --dev
+	# --public-host` names them (ADR 0190, 0195): the tunnel's own, which no
+	# page elsewhere can point at this machine. Its default is a name no
+	# request can carry (.invalid, RFC 6761).
 	@foreignhost not host localhost 127.0.0.1 ::1 [::1] *.localhost *.*.localhost {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
 	respond @foreignhost "Misdirected Request" 421
 	# The stand-in itself is never let in: with no name given, the token
 	# below is a stand-in too, and a request built by hand may carry both.
 	@standin host public-host.tinvar.invalid
 	respond @standin "Misdirected Request" 421
+	# A name held to the token with no token to hold it to -- the
+	# Caddyfile started by hand, not by serve -- is refused, not opened by
+	# the stand-in token.
+	@notoken {
+		host {$TINVAR_DEV_SHARED_HOST:public-host.tinvar.invalid}
+		expression "'{$TINVAR_DEV_SHARE_TOKEN:none}' == 'none'"
+	}
+	respond @notoken "Misdirected Request" 421
 
 	# Through the tunnel it is still dev -- every request's props, the
-	# source the dev server serves -- so that name answers only
-	# a visitor holding this run's share token: in the query, on the first
-	# request, and in a cookie of its own from then on. The hub's stream
-	# and the dev server's modules and socket are behind it too, as they
-	# are behind the Host check above.
+	# source the dev server serves -- so names shared with `--share` (a
+	# quick tunnel's always are) answer only a visitor holding this run's
+	# share token: in the query, on the first request, and in a cookie of
+	# its own from then on. The hub's stream and the dev server's modules
+	# and socket are behind it too, as they are behind the Host check
+	# above. Names not shared -- on the developer's own domain, behind what
+	# they put in front of it -- answer as loopback's do.
 	@unshared {
-		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		host {$TINVAR_DEV_SHARED_HOST:public-host.tinvar.invalid}
 		not header_regexp Cookie `(?:^|;\s*)__Host-tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}(?:;|$)`
 		not query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
 	}
@@ -84,11 +94,11 @@ http://:{$TINVAR_PORT} {
 	# history and what PHP reads of the request line; anything else -- a
 	# webhook's POST -- goes on, without it in the query.
 	@sharing {
-		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		host {$TINVAR_DEV_SHARED_HOST:public-host.tinvar.invalid}
 		query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
 	}
 	@sharingpage {
-		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		host {$TINVAR_DEV_SHARED_HOST:public-host.tinvar.invalid}
 		query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
 		method GET HEAD
 	}

@@ -27,7 +27,7 @@ use Tinvar\Support\PrivateDirectory;
  * stopped together.
  *
  *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--renderers=N]
- *                [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME]
+ *                [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME[,NAME...] [--share]]
  *
  * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server
  * is the renderer, with HMR and no separate build"): no build is needed, the
@@ -36,8 +36,8 @@ use Tinvar\Support\PrivateDirectory;
  * modules and HMR socket under /_vite/ on its own origin, by the framework's
  * resources/Caddyfile.dev. Refused, loudly, wherever the environment says
  * production, and on any address but loopback. With --public-host it also
- * answers the one name a tunnel serves it under, to a visitor holding the
- * share token it prints (PublicHost, ADR 0190).
+ * answers the names a tunnel serves it under; with --share, only to a
+ * visitor holding the share token it prints (PublicHost, ADR 0190, 0195).
  *
  * The app is a directory with a Caddyfile and a build: the command knows
  * nothing about any particular app. It passes the app what it decided as
@@ -103,14 +103,14 @@ final class ServeCommand
     public const int MAX_RENDERERS = 64;
 
     /** Options that take no value: dev mode, and the background children to start beside the server. */
-    private const array FLAGS = ['dev', 'worker', 'schedule'];
+    private const array FLAGS = ['dev', 'worker', 'schedule', 'share'];
 
     /**
      * What only `serve --dev` hands FrankenPHP: kept out of the environment of
      * every serve that is not, so none left over in a shell or an env file
      * turns dev mode on, or points a proxy at whatever holds the port.
      */
-    private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST', PublicHost::HOST_ENV, PublicHost::TOKEN_ENV];
+    private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST', PublicHost::HOST_ENV, PublicHost::SHARED_ENV, PublicHost::TOKEN_ENV];
 
     /** The prefix of the private directory each serve runs in (PrivateDirectory). */
     public const string RUN_PREFIX = 'tinvar-serve';
@@ -296,7 +296,10 @@ final class ServeCommand
         if (isset($options['public-host']) && !$dev) {
             throw new ServeException('--public-host is for --dev: a build is served by its own Caddyfile, under the names it gives.');
         }
-        $publicHost = isset($options['public-host']) ? PublicHost::of($options['public-host']) : null;
+        if (isset($options['share']) && !isset($options['public-host'])) {
+            throw new ServeException('--share holds the names --public-host gives to a share token; it names none.');
+        }
+        $publicHost = isset($options['public-host']) ? PublicHost::of($options['public-host'], shared: isset($options['share'])) : null;
 
         $app = $this->app($options['app'] ?? null, requireCaddyfile: !$dev);
         // The build: dist/ in the app, unless TINVAR_BUILD_DIR names one of
@@ -379,7 +382,7 @@ final class ServeCommand
             if (preg_match('/^--([a-z]+(?:-[a-z]+)*)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new ServeException(
                     "Unknown argument '{$argument}'. Usage: tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] "
-                    . '[--workers=N] [--renderers=N] [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME]',
+                    . '[--workers=N] [--renderers=N] [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME[,NAME...] [--share]]',
                 );
             }
             $options[$m[1]] = $m[2];
@@ -504,7 +507,7 @@ final class ServeCommand
                     [
                         'node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin',
                         // The tunnel's name, which Vite's own host check lets in too.
-                        ...($plan['publicHost'] === null ? [] : ["--public-host={$plan['publicHost']->host}"]),
+                        ...($plan['publicHost'] === null ? [] : ['--public-host=' . implode(',', $plan['publicHost']->hosts)]),
                     ],
                     $plan['app'],
                     [...$rendererEnv, ...array_intersect_key(getenv(), array_flip(self::DEV_RENDERER_ENV)), 'NODE_ENV' => 'development'],
@@ -613,13 +616,19 @@ final class ServeCommand
                 $plan['pool'] === null ? $directory : "{$plan['pool']}, run as " . (string) FrameworkConfig::load()->rendererUserName(),
             ));
         if ($plan['publicHost'] !== null) {
-            // On its own line of standard output, as the URL is: what a
-            // caller hands on, and the only place the token is ever said.
-            ($this->out)("Shared at {$plan['publicHost']->shareUrl()}");
-            ($this->err)(
-                "Anyone with that address reaches this dev server -- the app's source, its PHP included, and every "
-                . "page's props -- until it stops. {$plan['publicHost']->host} without the token is refused.",
-            );
+            // Each on its own line of standard output, as the URL is: what a
+            // caller hands on, and, where shared, the only place the token
+            // is ever said.
+            foreach ($plan['publicHost']->shareUrls() as $url) {
+                ($this->out)("Shared at {$url}");
+            }
+            $names = implode(', ', $plan['publicHost']->hosts);
+            ($this->err)($plan['publicHost']->shared()
+                ? "Anyone with that address reaches this dev server -- the app's source, its PHP included, and every "
+                    . "page's props -- until it stops. {$names} without the token is refused."
+                : "Anyone who reaches {$names} reaches this dev server -- the app's source, its PHP included, and every "
+                    . "page's props -- with no token asked for. Keep the tunnel to whom you choose (Cloudflare Access), "
+                    . 'or pass --share.');
         }
 
         $status = $this->supervise($children, $plan['app'], $environment);

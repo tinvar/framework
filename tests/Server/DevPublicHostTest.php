@@ -3,11 +3,13 @@
 declare(strict_types=1);
 
 /**
- * A tunnel's one name in dev (ADR 0190): `serve --dev --public-host` lets in
- * exactly that name beside loopback's, and only for a visitor holding the
- * run's share token -- first in the query, which is taken out before the
- * app reads it, then in a cookie of its own. Every other name is still
- * refused, as DNS rebinding would send it.
+ * A tunnel's names in dev (ADR 0190, 0195): `serve --dev --public-host`
+ * lets in exactly those names beside loopback's. With `--share` -- which a
+ * quick tunnel always has -- only for a visitor holding the run's share
+ * token, first in the query, which is taken out before the app reads it,
+ * then in a cookie of its own; without it, names on the developer's own
+ * domain answer as loopback's do. Every other name is still refused, as
+ * DNS rebinding would send it.
  *
  * The dev Caddyfile is run for real, by FrankenPHP, in front of a front
  * controller that says what it was asked. Skipped without FrankenPHP.
@@ -27,18 +29,46 @@ const TOKEN = '0123456789abcdef0123456789abcdef';
 
 // ------------------------------------------------------------- the name
 
-it('takes a host name a tunnel serves, normalized, with a fresh token each time', function () {
+it('takes a host name a tunnel serves, normalized, with a fresh token each time it is shared', function () {
     $one = PublicHost::of('Dev.Example.com');
     $two = PublicHost::of('dev.example.com');
 
-    expect($one->host)->toBe('dev.example.com')
+    expect($one->hosts)->toBe(['dev.example.com'])
+        ->and($one->shared())->toBeTrue()
         ->and($one->token)->toMatch('/^[0-9a-f]{32}\z/')
         ->and($one->token)->not->toBe($two->token)
-        ->and(PublicHost::of(NAME, TOKEN)->shareUrl())->toBe('https://' . NAME . '/?tinvar-share=' . TOKEN)
-        ->and(PublicHost::of(NAME, TOKEN)->environment())->toBe([
+        ->and(PublicHost::of(NAME, token: TOKEN)->shareUrls())->toBe(['https://' . NAME . '/?tinvar-share=' . TOKEN])
+        ->and(PublicHost::of(NAME, token: TOKEN)->environment())->toBe([
             'TINVAR_DEV_PUBLIC_HOST' => NAME,
+            'TINVAR_DEV_SHARED_HOST' => NAME,
             'TINVAR_DEV_SHARE_TOKEN' => TOKEN,
         ]);
+});
+
+// ADR 0195: an app on several hosts -- dash., api. and admin. of one
+// domain -- names each, and names on the developer's own domain need no
+// token.
+it('takes several names, comma-separated, once each, and none of them shared unless asked', function () {
+    $hosts = PublicHost::of('dash.dev.example.com, API.dev.example.com,dash.dev.example.com', shared: false);
+
+    expect($hosts->hosts)->toBe(['dash.dev.example.com', 'api.dev.example.com'])
+        ->and($hosts->shared())->toBeFalse()
+        ->and($hosts->token)->toBeNull()
+        ->and($hosts->shareUrls())->toBe(['https://dash.dev.example.com/', 'https://api.dev.example.com/'])
+        // The Caddyfile is told the names, and no name it holds to a token.
+        ->and($hosts->environment())->toBe(['TINVAR_DEV_PUBLIC_HOST' => 'dash.dev.example.com api.dev.example.com'])
+        ->and(PublicHost::of('a.example.com,b.example.com', token: TOKEN)->shareUrls())->toBe([
+            'https://a.example.com/?tinvar-share=' . TOKEN,
+            'https://b.example.com/?tinvar-share=' . TOKEN,
+        ])
+        ->and(fn () => PublicHost::of(implode(',', array_map(static fn (int $i): string => "h{$i}.example.com", range(1, 17)))))
+        ->toThrow(ServeException::class, 'at most 16 hosts');
+
+    // A quick tunnel's name is anyone's who has the address: never without
+    // the token, as it had before names could go without (ADR 0190).
+    expect(fn () => PublicHost::of('dash.example.com,grade-habits-seller-arrange.trycloudflare.com', shared: false))
+        ->toThrow(ServeException::class, "a Cloudflare quick tunnel's, which is held to the share token: pass --share")
+        ->and(PublicHost::of(NAME, shared: true)->shared())->toBeTrue();
 });
 
 it('refuses what is not a tunnel\'s host name', function (string $given) {
@@ -55,7 +85,9 @@ it('refuses what is not a tunnel\'s host name', function (string $given) {
     'the dev Caddyfile\'s stand-in' => 'public-host.tinvar.invalid',
     'nothing' => '',
     'a wildcard' => '*.trycloudflare.com',
-    'two names' => 'a.example.com b.example.com',
+    'two names, not comma-separated' => 'a.example.com b.example.com',
+    'an empty name in a list' => 'a.example.com,,b.example.com',
+    'a bad name in a list' => 'a.example.com,localhost',
 ]);
 
 // -------------------------------------------------------------- serving
@@ -78,15 +110,19 @@ it('plans --public-host for dev alone', function () {
     $command = new ServeCommand(projectRoot: ROOT);
 
     try {
-        $plan = $command->plan(['--dev', "--app={$app}", '--public-host=' . NAME]);
+        $plan = $command->plan(['--dev', "--app={$app}", '--public-host=' . NAME, '--share']);
     } catch (ServeException $e) {
         // No FrankenPHP or renderer here: what is planned of the name is
         // decided before either is looked for, and refused the same way.
         $this->markTestSkipped($e->getMessage());
     }
 
-    expect($plan['publicHost']?->host)->toBe(NAME)
+    expect($plan['publicHost']?->hosts)->toBe([NAME])
+        ->and($plan['publicHost']?->shared())->toBeTrue()
+        ->and($command->plan(['--dev', "--app={$app}", '--public-host=a.example.com,b.example.com'])['publicHost']?->shared())->toBeFalse()
         ->and($command->plan(['--dev', "--app={$app}"])['publicHost'])->toBeNull()
+        ->and(fn () => $command->plan(['--dev', "--app={$app}", '--share']))
+        ->toThrow(ServeException::class, '--share holds the names --public-host gives')
         ->and(fn () => $command->plan(["--app={$app}", '--public-host=' . NAME]))
         ->toThrow(ServeException::class, '--public-host is for --dev')
         ->and(fn () => $command->plan(['--dev', "--app={$app}", '--public-host=localhost']))
@@ -101,6 +137,17 @@ it('plans --public-host for dev alone', function () {
  */
 function started(string $app, ?PublicHost $public): array
 {
+    return startedWith($app, $public?->environment() ?? []);
+}
+
+/**
+ * FrankenPHP on the dev Caddyfile, told exactly $public of the names' variables.
+ *
+ * @param array<string, string> $public
+ * @return array{int, resource}
+ */
+function startedWith(string $app, array $public): array
+{
     try {
         $frankenphp = FrankenPhp::locate(ROOT);
     } catch (ServeException) {
@@ -108,7 +155,7 @@ function started(string $app, ?PublicHost $public): array
     }
     $port = new PortFinder()->find('127.0.0.1');
     $env = [
-        ...array_diff_key(array_filter(getenv(), \is_string(...)), array_flip([PublicHost::HOST_ENV, PublicHost::TOKEN_ENV])),
+        ...array_diff_key(array_filter(getenv(), \is_string(...)), array_flip([PublicHost::HOST_ENV, PublicHost::SHARED_ENV, PublicHost::TOKEN_ENV])),
         'TINVAR_HOST' => '127.0.0.1',
         'TINVAR_PORT' => (string) $port,
         'TINVAR_APP_ROOT' => $app,
@@ -116,7 +163,7 @@ function started(string $app, ?PublicHost $public): array
         'TINVAR_VITE_PORT' => '9',
         'TINVAR_LIVE_SUBSCRIBER_KEY' => str_repeat('s', 32),
         'TINVAR_LIVE_PUBLISHER_KEY' => str_repeat('p', 32),
-        ...($public?->environment() ?? []),
+        ...$public,
     ];
     $process = proc_open(
         [$frankenphp, 'run', '--config', ROOT . '/packages/framework/resources/Caddyfile.dev', '--adapter', 'caddyfile'],
@@ -185,7 +232,7 @@ function fetch(int $port, string $host, string $path = '/', array $headers = [],
 
 it('answers the tunnel\'s name only with the share token, and every other name as before', function () {
     $app = devApp();
-    [$port, $process] = started($app, PublicHost::of(NAME, TOKEN));
+    [$port, $process] = started($app, PublicHost::of(NAME, token: TOKEN));
 
     try {
         // Loopback's names, with no token, as ever.
@@ -228,6 +275,57 @@ it('answers the tunnel\'s name only with the share token, and every other name a
         // With the cookie, among others: every request after.
         expect(fetch($port, NAME, '/', ['Cookie: a=b; __Host-tinvar-share=' . TOKEN . '; c=d'])[0])->toBe(200)
             ->and(fetch($port, NAME, '/', ['Cookie: __Host-tinvar-share=' . TOKEN])[0])->toBe(200);
+    } finally {
+        stop($process);
+    }
+});
+
+it('answers several names on the developer\'s own domain with no token, and still refuses every other', function () {
+    $app = devApp();
+    [$port, $process] = started($app, PublicHost::of('dash.dev.example.com,api.dev.example.com', shared: false));
+
+    try {
+        [$status, , $body] = fetch($port, 'dash.dev.example.com', '/?page=2');
+        expect($status)->toBe(200)
+            ->and(json_decode($body, true))->toMatchArray(['host' => 'dash.dev.example.com', 'query' => 'page=2'])
+            ->and(fetch($port, 'api.dev.example.com')[0])->toBe(200)
+            ->and(fetch($port, 'localhost')[0])->toBe(200)
+            ->and(fetch($port, 'admin.dev.example.com')[0])->toBe(421)
+            ->and(fetch($port, 'evil.example')[0])->toBe(421)
+            // No token stands in front of them, and none is asked for or set.
+            ->and(fetch($port, 'dash.dev.example.com', '/?tinvar-share=' . TOKEN)[1])->toBe([])
+            ->and(fetch($port, 'public-host.tinvar.invalid')[0])->toBe(421);
+    } finally {
+        stop($process);
+    }
+});
+
+it('holds every name it shares to the token', function () {
+    $app = devApp();
+    [$port, $process] = started($app, PublicHost::of('dash.dev.example.com,api.dev.example.com', token: TOKEN));
+
+    try {
+        expect(fetch($port, 'dash.dev.example.com')[0])->toBe(403)
+            ->and(fetch($port, 'api.dev.example.com')[0])->toBe(403)
+            ->and(fetch($port, 'api.dev.example.com', '/', ['Cookie: __Host-tinvar-share=' . TOKEN])[0])->toBe(200)
+            ->and(fetch($port, 'dash.dev.example.com', '/?tinvar-share=' . TOKEN)[0])->toBe(303);
+    } finally {
+        stop($process);
+    }
+});
+
+// The Caddyfile started by hand, with a shared name and no token: the
+// stand-in token opens nothing.
+it('refuses a shared name that has no token to hold it to', function () {
+    $app = devApp();
+    $shared = PublicHost::of(NAME, token: TOKEN)->environment();
+    unset($shared[PublicHost::TOKEN_ENV]);
+    [$port, $process] = startedWith($app, $shared);
+
+    try {
+        expect(fetch($port, NAME, '/?tinvar-share=none')[0])->toBe(421)
+            ->and(fetch($port, NAME, '/', ['Cookie: __Host-tinvar-share=none'])[0])->toBe(421)
+            ->and(fetch($port, 'localhost')[0])->toBe(200);
     } finally {
         stop($process);
     }

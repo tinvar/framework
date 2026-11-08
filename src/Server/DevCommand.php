@@ -14,7 +14,7 @@ use Tinvar\Support\PrivateDirectory;
  * needs in dev.
  *
  *   tinvar dev [--host=HOST] [--port=PORT] [--app=DIR] [--frankenphp=PATH] [--worker] [--schedule]
- *              [--tunnel | --public-host=NAME]
+ *              [--tunnel | --public-host=NAME[,NAME...] [--share]]
  *
  * tinvar-spec.md, "Dev experience": "`dev` supervises PHP, the renderer and
  * Vite's dev server, with HMR passed through PHP so the app runs on one
@@ -41,8 +41,10 @@ use Tinvar\Support\PrivateDirectory;
  *
  * With --tunnel it also opens a Cloudflare quick tunnel to it: cloudflared,
  * run here, which prints the trycloudflare.com name it was given, and serve
- * is told that name as --public-host, to let in a visitor holding the share
- * token it prints and no one else (ADR 0190). --public-host names a tunnel
+ * is told that name as --public-host with --share, to let in a visitor
+ * holding the share token it prints and no one else (ADR 0190). A quick
+ * tunnel is always shared: its address is all that stands in front of the
+ * app's source. --public-host names the hosts of a tunnel
  * the developer runs themselves, a named one on a domain of theirs.
  *
  * Refused first, before anything is read or started, wherever the
@@ -446,7 +448,9 @@ final class DevCommand
             if (preg_match(self::QUICK_TUNNEL, (string) @file_get_contents($log), $m) === 1) {
                 ($this->err)("[tunnel] {$m[1]} reaches port {$port}; serve answers it with the share token alone.");
 
-                return [$tunnel, [...$rest, "--port={$port}", "--public-host={$m[1]}"]];
+                // Shared, always: the random name is all that stands in
+                // front of the app's source otherwise.
+                return [$tunnel, [...$rest, "--port={$port}", "--public-host={$m[1]}", '--share']];
             }
             if (!proc_get_status($process)['running'] || $this->stopRequested()) {
                 break;

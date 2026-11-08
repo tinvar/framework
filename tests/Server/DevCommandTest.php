@@ -174,7 +174,7 @@ it('opens a quick tunnel to the port serve listens on, tells serve its name, and
         expect(waitFor(static fn (): bool => is_file("{$log}.serve"), 20))->toBeTrue('serve started: ' . @file_get_contents("{$log}.err"));
         $serve = json_decode((string) file_get_contents("{$log}.serve"), true);
         \assert(\is_array($serve));
-        expect($serve['arguments'])->toBe(['--dev', "--app={$app}", '--port=6124', '--public-host=grade-habits-seller-arrange.trycloudflare.com'])
+        expect($serve['arguments'])->toBe(['--dev', "--app={$app}", '--port=6124', '--public-host=grade-habits-seller-arrange.trycloudflare.com', '--share'])
             ->and(trim((string) file_get_contents("{$log}.cloudflared")))->toBe('tunnel --no-autoupdate --grace-period 1s --url http://127.0.0.1:6124')
             // Nothing of dev's environment but what a process needs to run.
             ->and(trim((string) file_get_contents("{$log}.cloudflared.env")))->toBe('')
