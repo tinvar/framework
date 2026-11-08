@@ -60,9 +60,11 @@ function storeHolds(PdoConnection $connection): void
         ->and($store->forTenant('initech', ''))->toBe([]);
 
     $at = CarbonImmutable::createFromTimestampUTC(1_800_000_500);
-    expect($store->revoke('globex', $first->id, $at))->toBeFalse()
-        ->and($store->revoke('acme', $first->id, $at))->toBeTrue()
-        ->and($store->revoke('acme', $first->id, $at->addMinute()))->toBeFalse()
+    expect($store->revoke('globex', '', $first->id, $at))->toBeFalse()
+        // Held to the panel too, as the tenant's list is.
+        ->and($store->revoke('acme', 'admin', $first->id, $at))->toBeFalse()
+        ->and($store->revoke('acme', '', $first->id, $at))->toBeTrue()
+        ->and($store->revoke('acme', '', $first->id, $at->addMinute()))->toBeFalse()
         ->and($store->find($first->id)[0]->revokedAt?->getTimestamp())->toBe(1_800_000_500);
 
     $used = CarbonImmutable::createFromTimestampUTC(1_800_001_000);
@@ -78,6 +80,13 @@ function storeHolds(PdoConnection $connection): void
     expect($store->epoch('acme'))->toBe('2')
         ->and($store->epoch('globex'))->toBe('1')
         ->and($store->epoch('initech'))->toBe('0');
+
+    // Issuing is serialised per tenant: the work runs in a transaction,
+    // holding the tenant's epoch row, which it makes where there is none.
+    $inside = $store->exclusively('initech', static fn (): array => [$connection->inTransaction(), $store->epoch('initech')]);
+    expect($inside)->toBe([true, '0'])
+        ->and($connection->select("SELECT tenant FROM tenant_api_tokens_epochs WHERE tenant = 'initech'"))->toHaveCount(1)
+        ->and($store->epoch('acme'))->toBe('2');
 
     // No column holds anything but a digest of a secret.
     $rows = $connection->select('SELECT * FROM tenant_api_tokens');

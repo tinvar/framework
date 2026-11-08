@@ -64,10 +64,11 @@ final class Recording
      * `historyKey`, a minted frame's `token`s, and the same names in loader
      * data, query arguments, flashed input and the URL's query; and the
      * names the log's Redactor holds a credential under -- a DSN, a private
-     * or access key, a session id, a one-time code -- since a browser
+     * or access key, a session id, a one-time code, the `plaintext` of an
+     * API token just issued (ADR 0193) -- since a browser
      * extension reads what the toolbar does (docs/devtools-protocol.md).
      */
-    private const string SECRET_KEYS = '/token|nonce|csrf|xsrf|password|passwd|passphrase|secret|historykey|signature|cookie|authorization|bearer'
+    private const string SECRET_KEYS = '/token|nonce|csrf|xsrf|password|passwd|passphrase|plaintext|secret|historykey|signature|cookie|authorization|bearer'
         . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z|jwt|pwd|^pass\z|^auth\z/i';
 
     /**

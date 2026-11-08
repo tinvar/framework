@@ -37,14 +37,31 @@ interface TenantApiTokenStore
      */
     public function forTenant(string $tenant, string $panel): array;
 
-    /** Revokes $tenant's token $id at $at; false for none of its, or one revoked already. */
-    public function revoke(string $tenant, string $id, CarbonImmutable $at): bool;
+    /**
+     * Revokes $tenant's token $id issued in $panel, at $at; false for none
+     * of its there, or one revoked already. Held to the panel as the list
+     * is: a member of one panel revokes nothing another panel's list shows.
+     */
+    public function revoke(string $tenant, string $panel, string $id, CarbonImmutable $at): bool;
 
     /**
      * Records that token $id was used at $at, unless it was recorded used
      * after $since already.
      */
     public function touch(string $id, CarbonImmutable $at, CarbonImmutable $since): void;
+
+    /**
+     * Runs $work holding $tenant's token issuing to itself: in a
+     * transaction (a savepoint inside one open) that holds the tenant's
+     * epoch row, made where there is none, until it commits -- so two
+     * tokens issued at once are counted one after the other, and neither
+     * passes the most a tenant may hold. advance() waits for it too.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function exclusively(string $tenant, \Closure $work): mixed;
 
     /** $tenant's token epoch now; '0' before it ever moved. */
     public function epoch(string $tenant): string;

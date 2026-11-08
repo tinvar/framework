@@ -19,6 +19,9 @@ final class ArrayTenantApiTokens implements TenantApiTokenStore
     /** @var array<string, int> by tenant */
     public array $epochs = [];
 
+    /** @var list<string> the tenants exclusively() is running for now, innermost last */
+    public array $held = [];
+
     /** Called each time an epoch is read: what a test watches the order of reads by. */
     public ?\Closure $onEpoch = null;
 
@@ -46,10 +49,10 @@ final class ArrayTenantApiTokens implements TenantApiTokenStore
         return $held;
     }
 
-    public function revoke(string $tenant, string $id, CarbonImmutable $at): bool
+    public function revoke(string $tenant, string $panel, string $id, CarbonImmutable $at): bool
     {
         [$token, $digest] = $this->tokens[$id] ?? [null, ''];
-        if ($token === null || $token->tenant !== $tenant || $token->revokedAt !== null) {
+        if ($token === null || $token->tenant !== $tenant || $token->panel !== $panel || $token->revokedAt !== null) {
             return false;
         }
         $this->tokens[$id] = [$token->withRevokedAt($at), $digest];
@@ -64,6 +67,16 @@ final class ArrayTenantApiTokens implements TenantApiTokenStore
             return;
         }
         $this->tokens[$id] = [$token->withLastUsedAt($at), $digest];
+    }
+
+    public function exclusively(string $tenant, \Closure $work): mixed
+    {
+        $this->held[] = $tenant;
+        try {
+            return $work();
+        } finally {
+            array_pop($this->held);
+        }
     }
 
     public function epoch(string $tenant): string

@@ -107,12 +107,31 @@ final readonly class DatabaseTenantApiTokens implements TenantApiTokenStore
         ));
     }
 
-    public function revoke(string $tenant, string $id, CarbonImmutable $at): bool
+    public function revoke(string $tenant, string $panel, string $id, CarbonImmutable $at): bool
     {
         return $this->connection->execute(
-            "UPDATE {$this->table} SET revoked_at = ? WHERE tenant = ? AND id = ? AND revoked_at IS NULL",
-            [$this->moments->format($at), $tenant, $id],
+            "UPDATE {$this->table} SET revoked_at = ? WHERE tenant = ? AND panel = ? AND id = ? AND revoked_at IS NULL",
+            [$this->moments->format($at), $tenant, $panel, $id],
         ) > 0;
+    }
+
+    /**
+     * The tenant's epoch row, made where there is none and written to as it
+     * stands: a write takes the row's lock on Postgres and MySQL, and the
+     * database's on SQLite, held until the transaction commits.
+     */
+    public function exclusively(string $tenant, \Closure $work): mixed
+    {
+        return $this->connection->transaction(function () use ($tenant, $work): mixed {
+            $this->connection->execute(
+                $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql'
+                    ? "INSERT INTO {$this->epochs} (tenant, epoch) VALUES (?, 0) ON DUPLICATE KEY UPDATE epoch = epoch"
+                    : "INSERT INTO {$this->epochs} (tenant, epoch) VALUES (?, 0) ON CONFLICT (tenant) DO UPDATE SET epoch = {$this->epochs}.epoch",
+                [$tenant],
+            );
+
+            return $work();
+        });
     }
 
     public function touch(string $id, CarbonImmutable $at, CarbonImmutable $since): void

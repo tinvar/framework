@@ -631,6 +631,32 @@ describe('ApiCalls', function () {
     });
 });
 
+describe('TenantApiTokens', function () {
+    it('revokes a token only in the panel it was issued in, as it lists them', function () {
+        $h = new Harness();
+        $tokens = new TenantApiTokens(new ArrayTenantApiTokens(), static fn (string $t): bool => true, new Holders($h->users), $h->auth, $h->orm, ['' => ['racks:read']], $h->panels);
+        $id = $h->as('ada', fn () => $h->orm->actAs('acme', fn () => $tokens->issue('X', ['racks:read'], CarbonImmutable::now('UTC')->addDay())))->token->id;
+
+        expect($h->as('ada', fn () => $h->orm->actAs('acme', fn () => $h->panels->within('admin', fn (): bool => $tokens->revoke($id)))))->toBeFalse()
+            ->and($h->as('ada', fn () => $h->orm->actAs('acme', fn (): bool => $tokens->revoke($id))))->toBeTrue();
+    });
+
+    it('counts and keeps a new token holding its tenant, so two at once cannot pass the most it may hold', function () {
+        $h = new Harness();
+        $store = new ArrayTenantApiTokens();
+        $seen = [];
+        $store->onEpoch = static function (string $tenant) use ($store, &$seen): void {
+            $seen[] = $store->held;
+        };
+        $tokens = new TenantApiTokens($store, static fn (string $t): bool => true, new Holders($h->users), $h->auth, $h->orm, ['' => ['racks:read']]);
+        $h->as('ada', fn () => $h->orm->actAs('acme', fn () => $tokens->issue('X', ['racks:read'], CarbonImmutable::now('UTC')->addDay())));
+
+        expect($seen)->toBe([['acme']])
+            ->and($store->held)->toBe([])
+            ->and($store->tokens)->toHaveCount(1);
+    });
+});
+
 describe('PolicyGate', function () {
     it('asks a policy about a tenant\'s token only where the ability names the actor, and says no otherwise', function () {
         $auth = new AuthContext();

@@ -159,40 +159,48 @@ final readonly class TenantApiTokens
             throw new ApiTokenRefused(ApiTokenChoice::Expiry, "A token lasts at most {$this->maxLifetimeDays} days here: choose an expiry within that.");
         }
 
-        // The epoch first, then the caller's check again: a removal that
-        // moves the epoch, committing between the two, is seen by the check;
-        // one committing after it ends the token made on the epoch before.
-        $tokenEpoch = $this->store->epoch($tenant);
-        if ($allowed !== null && $allowed() !== true) {
-            throw new ApiTokenRefused(ApiTokenChoice::Caller, self::NOT_ALLOWED, 403);
-        }
-
+        $host = ($this->hosts ?? new CallHosts())->issuing([], $host);
         $panel = $this->panels?->currentOrNull() ?? '';
-        $held = array_filter(
-            $this->store->forTenant($tenant, $panel),
-            static fn (TenantApiToken $t): bool => $t->statusAt($now, $tokenEpoch) === TenantApiTokenStatus::Active,
-        );
-        if (\count($held) >= $this->maxPerTenant) {
-            throw new ApiTokenRefused(ApiTokenChoice::Count, "This organization holds {$this->maxPerTenant} tokens, the most it may: revoke one it no longer uses first.");
-        }
 
-        $id = str_replace('-', '', Uuid::v7());
-        [$plaintext, $digest] = ApiTokenSecret::issue($id, ApiTokenKind::Tenant);
-        $token = new TenantApiToken(
-            id: $id,
-            name: $name,
-            tenant: $tenant,
-            panel: $panel,
-            host: ($this->hosts ?? new CallHosts())->issuing([], $host),
-            scopes: $scopes,
-            epoch: $tokenEpoch,
-            createdBy: $user->authIdentifier(),
-            createdAt: $now,
-            expiresAt: $expiresAt?->setTimezone('UTC'),
-        );
-        $this->store->insert($token, $digest);
+        // Counted and kept holding the tenant (exclusively()): two made at
+        // once are counted one after the other, and the second sees the
+        // first, so neither passes the most a tenant may hold.
+        return $this->store->exclusively($tenant, function () use ($tenant, $panel, $host, $name, $scopes, $now, $expiresAt, $allowed, $user): IssuedTenantApiToken {
+            // The epoch first, then the caller's check again: a removal that
+            // moves the epoch, committing between the two, is seen by the
+            // check; one committing after it ends the token made on the
+            // epoch before.
+            $tokenEpoch = $this->store->epoch($tenant);
+            if ($allowed !== null && $allowed() !== true) {
+                throw new ApiTokenRefused(ApiTokenChoice::Caller, self::NOT_ALLOWED, 403);
+            }
 
-        return new IssuedTenantApiToken($token, $plaintext);
+            $held = array_filter(
+                $this->store->forTenant($tenant, $panel),
+                static fn (TenantApiToken $t): bool => $t->statusAt($now, $tokenEpoch) === TenantApiTokenStatus::Active,
+            );
+            if (\count($held) >= $this->maxPerTenant) {
+                throw new ApiTokenRefused(ApiTokenChoice::Count, "This organization holds {$this->maxPerTenant} tokens, the most it may: revoke one it no longer uses first.");
+            }
+
+            $id = str_replace('-', '', Uuid::v7());
+            [$plaintext, $digest] = ApiTokenSecret::issue($id, ApiTokenKind::Tenant);
+            $token = new TenantApiToken(
+                id: $id,
+                name: $name,
+                tenant: $tenant,
+                panel: $panel,
+                host: $host,
+                scopes: $scopes,
+                epoch: $tokenEpoch,
+                createdBy: $user->authIdentifier(),
+                createdAt: $now,
+                expiresAt: $expiresAt?->setTimezone('UTC'),
+            );
+            $this->store->insert($token, $digest);
+
+            return new IssuedTenantApiToken($token, $plaintext);
+        });
     }
 
     /**
@@ -243,7 +251,7 @@ final readonly class TenantApiTokens
     {
         $tenant = $this->managedTenant();
 
-        return $tenant !== null && $this->store->revoke($tenant, $id, $this->now());
+        return $tenant !== null && $this->store->revoke($tenant, $this->panels?->currentOrNull() ?? '', $id, $this->now());
     }
 
     /**

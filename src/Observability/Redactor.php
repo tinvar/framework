@@ -47,7 +47,7 @@ final class Redactor
      * name. Broad on purpose -- `auth` takes `author` with it -- since a key
      * left out is a secret written.
      */
-    private const string KEYS = 'passw|passphrase|^pass$|_pass$|secret|token|api.?key|app.?key|private.?key|access.?key'
+    private const string KEYS = 'passw|passphrase|^pass$|_pass$|secret|token|plaintext|api.?key|app.?key|private.?key|access.?key'
         . '|auth|cookie|session|csrf|xsrf|signature|credential|dsn|otp|cvv|cvc|iban|ssn|e.?mail|phone';
 
     /**
@@ -94,9 +94,13 @@ final class Redactor
         '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
         // The framework's signed tokens (SignedToken): route, fragment, live.
         '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
-        // An API token (ADR 0159), wherever it is quoted -- a body, a URL a
-        // script put it in by mistake -- not only after "Bearer".
-        '/\btvr_[0-9a-f]{32}_[0-9A-Za-z]{43}/' => '[api-token]',
+        // An API token of any kind -- a user's `tvr_` (ADR 0159), a
+        // tenant's `tvt_` (ADR 0193), and any `tv?_` kind after them --
+        // wherever it is quoted: a body, a URL a script put it in by
+        // mistake, not only after "Bearer". Every ApiTokenKind is held to
+        // this by a test; the api module sits above this one, so the
+        // pattern cannot be read from the enum here.
+        '/\btv[a-z]_[0-9a-f]{32}_[0-9A-Za-z]{43}/' => '[api-token]',
     ];
 
     private readonly string $keys;
