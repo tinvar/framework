@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Accounts;
 
+use Carbon\CarbonImmutable;
+use Tinvar\Accounts\Impersonation\Impersonation;
+use Tinvar\Accounts\Impersonation\Impersonations;
 use Tinvar\Http\HostName;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Connection;
@@ -59,6 +62,13 @@ use Tinvar\Support\Signer;
  * deletes the rows it sees; a sign-in checked before it whose row came
  * after is one it could not see, and signs nobody in from its next request
  * on, as if deleted (ADR 0165).
+ *
+ * And a session may be an impersonation (ADR 0194): staff acting as one of
+ * the app's users, their own session parked under a key no cookie names
+ * until they stop (impersonate(), unpark()). Such a row names its
+ * impersonation, and is read with it on every request: once it has run
+ * out, its user's auth epoch has moved, or the parked session has gone,
+ * it signs nobody in, and is ended with what it parked.
  *
  * Generalized from the example shop's, which signs its customers in
  * through it (ADR 0162).
@@ -232,6 +242,35 @@ final readonly class Sessions
         });
     }
 
+    /**
+     * Adds `impersonation` to a sessions table, for an app that lets its
+     * staff impersonate its users (ADR 0194): the impersonation a session is,
+     * its row's id in the impersonations table; null for every other. A
+     * table that has it is left as it is. define() makes none, so an app's
+     * accounts migration makes what it always made, and one that never
+     * impersonates needs none: open() reads the row whole.
+     */
+    public static function addImpersonation(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'impersonation')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->string('impersonation', 64)->nullable();
+        });
+    }
+
+    /** Takes `impersonation` off the sessions table again, for a migration's down(); a table without it is left as it is. */
+    public static function dropImpersonation(Schema $schema): void
+    {
+        if (!$schema->hasColumn('sessions', 'impersonation')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->dropColumn('impersonation');
+        });
+    }
+
     public function cookie(): SessionCookie
     {
         return $this->cookie;
@@ -315,6 +354,20 @@ final readonly class Sessions
             return new SessionState($id, $realm, pending: $user);
         }
 
+        // An impersonation, held to what it was started under on every
+        // request: ended -- run out, its user's epoch moved, the parked
+        // session gone -- it is ended here, with what it parked.
+        $impersonation = null;
+        $named = $row['impersonation'] ?? null;
+        if (\is_string($named) && $named !== '') {
+            $impersonation = $this->impersonationOf($named, $row, $realm, self::epoch($row['auth_epoch'] ?? null), $now);
+            if ($impersonation === null) {
+                $this->endImpersonation($id, $named, (string) $row['user_id']);
+
+                return $this->ended($cookie, $id, $realm);
+            }
+        }
+
         // Not on a prefetch: a pointer resting on a link is not someone
         // using the session, and "prefetch requests skip side effects".
         if (!$request->isPrefetch() && (int) $row['last_seen_at'] <= $now - self::TOUCH_EVERY) {
@@ -333,7 +386,211 @@ final readonly class Sessions
             credentialEpoch: $credentialEpoch,
             tenant: \is_string($tenant) && $tenant !== '' ? $tenant : null,
             factors: $this->factorsOf($row, $id, $realm, $user->authIdentifier()),
+            impersonation: $impersonation,
         );
+    }
+
+    /**
+     * The impersonation a signed-in row names, while it stands: its row
+     * there, for this row's user on this host, arrived, unexpired, at the
+     * auth epoch it began at, and the impersonator's parked session still
+     * there and theirs. Null otherwise.
+     *
+     * @param array<string, mixed> $session
+     */
+    private function impersonationOf(string $id, array $session, string $realm, string $epoch, int $now): ?Impersonation
+    {
+        $row = $this->connection->select(
+            'SELECT i.*, p.user_id AS parked_user, p.realm AS parked_realm, p.expires_at AS parked_expires FROM ' . Impersonations::TABLE
+            . ' i LEFT JOIN sessions p ON p.id = i.parked WHERE i.id = ?',
+            [$id],
+        )[0] ?? null;
+        if ($row === null || !\is_string($row['parked'] ?? null) || !is_numeric($row['arrived_at'] ?? null)
+            || (string) $row['user_id'] !== (string) $session['user_id'] || (string) $row['realm'] !== $realm
+            || (int) $row['expires_at'] <= $now || self::epoch($row['epoch'] ?? null) !== $epoch
+            || (string) ($row['parked_user'] ?? '') !== (string) $row['impersonator_id']
+            || (string) ($row['parked_realm'] ?? '') !== $realm || (int) ($row['parked_expires'] ?? 0) <= $now) {
+            return null;
+        }
+
+        return new Impersonation($id, (string) $row['impersonator_id'], CarbonImmutable::createFromTimestamp((int) $row['expires_at']), (string) $row['reason']);
+    }
+
+    /**
+     * Ends an impersonation open() found over, in one durable transaction:
+     * the session, its row and the session it parked, and -- once, by
+     * whichever request deletes its row -- its user's auth epoch moved, so
+     * nothing minted while they were acted as counts after.
+     */
+    private function endImpersonation(#[\SensitiveParameter] string $id, string $impersonation, string $user): void
+    {
+        $connection = $this->connection;
+        $epochs = $this->epochs;
+        $connection->durableTransaction(static function () use ($connection, $epochs, $id, $impersonation, $user): void {
+            $connection->execute('DELETE FROM sessions WHERE id = ? AND impersonation = ?', [self::hash($id), $impersonation]);
+            self::forgetImpersonation($connection, $impersonation, $user, $epochs);
+        });
+    }
+
+    /**
+     * Deletes an impersonation's row and the session it parked, inside the
+     * caller's transaction, and moves its user's epoch -- where this call
+     * deleted the row, so two requests ending it move it once.
+     */
+    private static function forgetImpersonation(Connection $connection, string $impersonation, string $user, ?AuthEpochs $epochs): void
+    {
+        $parked = $connection->select('SELECT parked FROM ' . Impersonations::TABLE . ' WHERE id = ?', [$impersonation])[0]['parked'] ?? null;
+        if (\is_string($parked) && $parked !== '') {
+            $connection->execute('DELETE FROM sessions WHERE id = ?', [$parked]);
+        }
+        if ($connection->execute('DELETE FROM ' . Impersonations::TABLE . ' WHERE id = ?', [$impersonation]) === 1) {
+            $epochs?->bump($user);
+        }
+    }
+
+    /**
+     * Turns the session, signed in as $impersonator, into $target's, as the
+     * impersonation $impersonation, inside the caller's transaction
+     * (Impersonations, ADR 0194), and returns what the caller needs:
+     *
+     * - the session as it was is parked under a new key, `parked`: a random
+     *   one, which no cookie's id hashes to, so nothing reaches it until
+     *   unpark() makes it a session again -- with its credentials, factors,
+     *   tenant, handoff and expiry, and no confirmation;
+     * - a new session for $target, under a new id, `cookie`: held to their
+     *   credentials as they stand now, so a revocation of theirs ends it; with
+     *   what the impersonator's own sign-in proved, `factors`, and nothing of
+     *   $target's; no tenant chosen; and ending, at the latest, when the
+     *   parked one would have, `expires`.
+     *
+     * No epoch moves here: the caller moves $target's, in the same
+     * transaction. Null, with nothing made, where the session has ended
+     * since the request opened it, or is an impersonation itself.
+     *
+     * @return array{cookie: string, parked: string, expires: int, factors: SessionFactors}|null
+     */
+    public function impersonate(SessionState $state, AccountUser $impersonator, AccountUser $target, string $impersonation): ?array
+    {
+        if (!$this->connection->inTransaction()) {
+            throw new \LogicException('A session is turned into an impersonation inside the transaction that records it.');
+        }
+        if ($state->id === '' || $state->user()?->authIdentifier() !== $impersonator->authIdentifier()) {
+            return null;
+        }
+        $now = $this->cookie->now();
+        $row = $this->connection->select(
+            'SELECT * FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
+            [self::hash($state->id), $state->realm, $impersonator->authIdentifier(), SessionStage::SignedIn->value, $now],
+        )[0] ?? null;
+        $named = $row['impersonation'] ?? null;
+        if ($row === null || !\is_string($row['credentials'] ?? null) || (\is_string($named) && $named !== '')) {
+            return null;
+        }
+        if ($this->connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]) !== 1) {
+            return null;
+        }
+
+        $factors = $this->factorsOf($row, $state->id, $state->realm, $impersonator->authIdentifier());
+        $expires = (int) $row['expires_at'];
+        $parked = bin2hex(random_bytes(32));
+        $tenant = $row['tenant'] ?? null;
+        $redemption = $row['handoff_redemption'] ?? null;
+        self::insert($this->connection, [
+            'id' => $parked,
+            'user_id' => $impersonator->authIdentifier(),
+            'realm' => $state->realm,
+            'stage' => SessionStage::SignedIn->value,
+            'created_at' => (int) $row['created_at'],
+            'last_seen_at' => $now,
+            'expires_at' => $expires,
+            'credentials' => $row['credentials'],
+            'factors' => self::sealFactorsWith($this->factorSeals, $factors, $parked, $state->realm, $impersonator->authIdentifier(), hashed: true),
+            'tenant' => \is_string($tenant) && $tenant !== '' ? $tenant : null,
+            'handoff_redemption' => \is_string($redemption) && $redemption !== '' ? $redemption : null,
+        ]);
+
+        $cookie = $this->cookie->issue(signedIn: true, until: $expires);
+        $id = (string) $this->cookie->id($cookie);
+        self::insert($this->connection, [
+            'id' => self::hash($id),
+            'user_id' => $target->authIdentifier(),
+            'realm' => $state->realm,
+            'stage' => SessionStage::SignedIn->value,
+            'created_at' => $now,
+            'last_seen_at' => $now,
+            'expires_at' => $expires,
+            'credentials' => $this->sealFor($target, $this->credentials($target)),
+            'factors' => $this->sealFactors($factors, $id, $state->realm, $target->authIdentifier()),
+            'impersonation' => $impersonation,
+        ]);
+
+        return ['cookie' => $cookie, 'parked' => $parked, 'expires' => $expires, 'factors' => $factors];
+    }
+
+    /**
+     * Ends the impersonation the session is, inside the caller's transaction
+     * (Impersonations::stop()): deletes its row here, and false where another
+     * request ended it first.
+     */
+    public function endImpersonated(SessionState $state, string $impersonation): bool
+    {
+        if (!$this->connection->inTransaction()) {
+            throw new \LogicException('An impersonation is ended inside the transaction that records it.');
+        }
+
+        return $state->id !== ''
+            && $this->connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ? AND impersonation = ?', [self::hash($state->id), $state->realm, $impersonation]) === 1;
+    }
+
+    /**
+     * The impersonator's session impersonate() parked under $parked, made a
+     * session again under a new id, inside the caller's transaction: the
+     * same user, realm, credentials, factors, tenant, handoff and expiry, and
+     * no confirmation. Null, with nothing made, where it has gone -- a sign-
+     * out everywhere of theirs, its expiry -- or is not $impersonator's on
+     * this host.
+     *
+     * @return array{cookie: string, user: AccountUser, tenant: ?string, factors: SessionFactors}|null
+     */
+    public function unpark(string $parked, string $impersonator, string $realm): ?array
+    {
+        if (!$this->connection->inTransaction()) {
+            throw new \LogicException('A parked session is taken back inside the transaction that ends the impersonation.');
+        }
+        $now = $this->cookie->now();
+        $row = $parked === '' ? null : $this->connection->select(
+            'SELECT * FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
+            [$parked, $realm, $impersonator, SessionStage::SignedIn->value, $now],
+        )[0] ?? null;
+        $user = $row === null ? null : $this->users->find($impersonator);
+        if ($row === null || $user === null || !\is_string($row['credentials'] ?? null)
+            || $this->connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [$parked, $realm]) !== 1) {
+            return null;
+        }
+
+        $sealed = $row['factors'] ?? null;
+        $factors = $this->factorsOfKey(\is_string($sealed) ? $sealed : null, $parked, $realm, $impersonator);
+        $expires = (int) $row['expires_at'];
+        $cookie = $this->cookie->issue(signedIn: true, until: $expires);
+        $id = (string) $this->cookie->id($cookie);
+        $tenant = $row['tenant'] ?? null;
+        $tenant = \is_string($tenant) && $tenant !== '' ? $tenant : null;
+        $redemption = $row['handoff_redemption'] ?? null;
+        self::insert($this->connection, [
+            'id' => self::hash($id),
+            'user_id' => $impersonator,
+            'realm' => $realm,
+            'stage' => SessionStage::SignedIn->value,
+            'created_at' => (int) $row['created_at'],
+            'last_seen_at' => $now,
+            'expires_at' => $expires,
+            'credentials' => $row['credentials'],
+            'factors' => $this->sealFactors($factors, $id, $realm, $impersonator),
+            'tenant' => $tenant,
+            'handoff_redemption' => \is_string($redemption) && $redemption !== '' ? $redemption : null,
+        ]);
+
+        return ['cookie' => $cookie, 'user' => $user, 'tenant' => $tenant, 'factors' => $factors];
     }
 
     /**
@@ -611,6 +868,7 @@ final readonly class Sessions
             $cookie = $cookies->issue(signedIn: true, until: $expires);
             $id = (string) $cookies->id($cookie);
             $redemption = $row['handoff_redemption'] ?? null;
+            $impersonation = $row['impersonation'] ?? null;
             $kept = $row['tenant'] ?? null;
             $tenant ??= \is_string($kept) && $kept !== '' ? $kept : null;
             // What the row proved, as its seal says -- none where it says
@@ -638,6 +896,9 @@ final readonly class Sessions
                 'factors' => $sealFactors($factors, $id, $state->realm, $user->authIdentifier()),
                 'tenant' => $tenant,
                 'handoff_redemption' => \is_string($redemption) && $redemption !== '' ? $redemption : null,
+                // An impersonation stays one, whatever it switches to: its
+                // impersonator, time box and audit trail go with it.
+                'impersonation' => \is_string($impersonation) && $impersonation !== '' ? $impersonation : null,
                 // A switch carries no confirmation; a step up is one.
                 'confirmed_at' => $add === null ? null : $now,
             ]);
@@ -649,7 +910,7 @@ final readonly class Sessions
         }
         [$cookie, $id, $tenant, $factors] = $made;
 
-        $state->replaceWith($cookie, $user, tenant: $tenant, factors: $factors);
+        $state->replaceWith($cookie, $user, tenant: $tenant, factors: $factors, impersonation: $state->impersonation());
         if ($add !== null) {
             $state->confirmed($now);
         }
@@ -776,6 +1037,14 @@ final readonly class Sessions
             if ($state->id !== '') {
                 $connection->execute('DELETE FROM sessions WHERE id = ? AND realm = ?', [self::hash($state->id), $state->realm]);
             }
+            // An impersonation left by a sign-out or a sign-in as someone
+            // else ends, and the session it parked with it (ADR 0194); the
+            // epoch of whoever is leaving moves below, as for anyone.
+            $left = $state->impersonation();
+            $acted = $state->user();
+            if ($left !== null && $acted !== null) {
+                self::forgetImpersonation($connection, $left->id, $acted->authIdentifier(), null);
+            }
 
             $leaving = $state->user();
             $same = $leaving !== null && $user !== null && $user->authIdentifier() === $leaving->authIdentifier();
@@ -846,6 +1115,13 @@ final readonly class Sessions
     private function factorsOf(array $row, #[\SensitiveParameter] string $id, string $realm, string $user): SessionFactors
     {
         $sealed = $row['factors'] ?? null;
+
+        return $this->factorsOfKey(\is_string($sealed) ? $sealed : null, self::hash($id), $realm, $user);
+    }
+
+    /** factorsOf(), for the row keyed $key: a session's hashed id, or a parked one's key. */
+    private function factorsOfKey(?string $sealed, string $key, string $realm, string $user): SessionFactors
+    {
         $dot = \is_string($sealed) ? strrpos($sealed, '.') : false;
         if (!\is_string($sealed) || $dot === false) {
             return SessionFactors::none();
@@ -855,7 +1131,7 @@ final readonly class Sessions
 
         // Compared as written, so an encoding the decode reads differently
         // -- a name it passes over, an order it puts right -- is no match.
-        return $factors->encode() === $encoded && hash_equals($this->sealFactors($factors, $id, $realm, $user), $sealed)
+        return $factors->encode() === $encoded && hash_equals(self::sealFactorsWith($this->factorSeals, $factors, $key, $realm, $user, hashed: true), $sealed)
             ? $factors
             : SessionFactors::none();
     }
@@ -866,11 +1142,12 @@ final readonly class Sessions
         return self::sealFactorsWith($this->factorSeals, $factors, $id, $realm, $user);
     }
 
-    private static function sealFactorsWith(Signer $signer, SessionFactors $factors, #[\SensitiveParameter] string $id, string $realm, string $user): string
+    /** @param bool $hashed whether $id is the row's key already: a hashed id, or a parked session's key */
+    private static function sealFactorsWith(Signer $signer, SessionFactors $factors, #[\SensitiveParameter] string $id, string $realm, string $user, bool $hashed = false): string
     {
         $encoded = $factors->encode();
 
-        return $encoded . '.' . Signer::encode($signer->sign(json_encode([self::hash($id), $realm, $user, $encoded], JSON_THROW_ON_ERROR)));
+        return $encoded . '.' . Signer::encode($signer->sign(json_encode([$hashed ? $id : self::hash($id), $realm, $user, $encoded], JSON_THROW_ON_ERROR)));
     }
 
     /**

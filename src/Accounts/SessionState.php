@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Accounts;
 
+use Tinvar\Accounts\Impersonation\Impersonation;
 use Tinvar\Http\Request;
 
 /**
@@ -35,6 +36,8 @@ final class SessionState
      * @param string|null $tenant the tenant its user switched it to (Sessions::switchTenant());
      *        null signed out, and until they switch
      * @param SessionFactors|null $factors what its sign-in proved (ADR 0184); none unless given
+     * @param Impersonation|null $impersonation who is acting as its user, and until when, for a
+     *        session staff started impersonating them in (ADR 0194); null for every other
      */
     public function __construct(
         #[\SensitiveParameter]
@@ -47,6 +50,7 @@ final class SessionState
         private ?string $credentialEpoch = null,
         private ?string $tenant = null,
         private ?SessionFactors $factors = null,
+        private ?Impersonation $impersonation = null,
     ) {}
 
     public static function of(Request $request): self
@@ -115,6 +119,27 @@ final class SessionState
         return $this->user === null ? SessionFactors::none() : ($this->factors ?? SessionFactors::none());
     }
 
+    /**
+     * The impersonation this session is, while staff act as its user (ADR
+     * 0194): who, why, and until when. Null for every other session, signed
+     * in or not.
+     */
+    public function impersonation(): ?Impersonation
+    {
+        return $this->user === null ? null : $this->impersonation;
+    }
+
+    /**
+     * The id of who is acting as the session's user, while staff impersonate
+     * them: what StartSession hands AuthContext::login(), so the audit log,
+     * the job dispatcher and whatever must refuse an impersonated request
+     * read it. Null for every other session.
+     */
+    public function impersonator(): ?string
+    {
+        return $this->impersonation()?->impersonator;
+    }
+
     /** Called by Sessions when the owner proves it is them. */
     public function confirmed(int $at): void
     {
@@ -124,9 +149,10 @@ final class SessionState
     /**
      * Called by Sessions when it rotates the id; the middleware sets the
      * cookie. $tenant is the new session's: null for all but a switch and a
-     * step up; $factors what the new session's sign-in proved.
+     * step up; $factors what the new session's sign-in proved; $impersonation
+     * the new session's, for one an impersonation started or carried over.
      */
-    public function replaceWith(#[\SensitiveParameter] string $cookie, ?AccountUser $user, ?AccountUser $pending = null, ?string $tenant = null, ?SessionFactors $factors = null): void
+    public function replaceWith(#[\SensitiveParameter] string $cookie, ?AccountUser $user, ?AccountUser $pending = null, ?string $tenant = null, ?SessionFactors $factors = null, ?Impersonation $impersonation = null): void
     {
         $this->replacement = $cookie;
         $this->user = $user;
@@ -136,6 +162,7 @@ final class SessionState
         $this->credentialEpoch = null;
         $this->tenant = $tenant;
         $this->factors = $factors;
+        $this->impersonation = $impersonation;
     }
 
     /** The cookie the response must set, or null if the session was not rotated. */

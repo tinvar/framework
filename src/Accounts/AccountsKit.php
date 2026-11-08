@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Accounts;
 
+use Tinvar\Accounts\Impersonation\ImpersonationConfig;
+use Tinvar\Accounts\Impersonation\Impersonations;
 use Tinvar\Accounts\Passkeys\PasskeyChallenges;
 use Tinvar\Accounts\Passkeys\PasskeyStore;
 use Tinvar\Accounts\Passkeys\RelyingParty;
@@ -12,6 +14,7 @@ use Tinvar\Api\TokenHolderLookup;
 use Tinvar\Audit\AuditLog;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\UserLookup;
 use Tinvar\Container\Container;
 use Tinvar\Http\CsrfTokens;
@@ -86,6 +89,12 @@ final readonly class AccountsKit
     public AccountPaths $paths;
 
     /**
+     * Staff acting as the app's users (ADR 0194), where the app lets them:
+     * null unless the kit was given `impersonation:`.
+     */
+    public ?Impersonations $impersonations;
+
+    /**
      * @param ThrottleStore $throttles where sign-in guesses are counted: one a flood of
      *        other keys cannot clear, so never APCu (SignInThrottle refuses it)
      * @param string|null $origin the https origin links are built on and passkeys are for
@@ -113,6 +122,13 @@ final readonly class AccountsKit
      * @param Orm|null $orm the application's: StartSession runs each request as the tenant
      *        its session was switched to through it (Sessions::switchTenant(), ADR 0181), and
      *        refuses a session holding one where it has no tenancy registered
+     * @param ImpersonationConfig|null $impersonation whether, and how, the app's staff may act as
+     *        its users (ADR 0194): who may act as whom, from which panel, for how long; none
+     *        unless given. Needs the `impersonation` column on sessions
+     *        (Sessions::addImpersonation()) and the `impersonations` table
+     *        (Impersonations::define()), which migrate() leaves out
+     * @param PanelContext|null $panels the Kernel's, which an impersonation is started in the
+     *        panel of: needed with $impersonation, and unused without it
      */
     public function __construct(
         Connection $connection,
@@ -136,6 +152,8 @@ final readonly class AccountsKit
         ?\Closure $keepHash = null,
         ?AuditLog $audit = null,
         ?Orm $orm = null,
+        ?ImpersonationConfig $impersonation = null,
+        ?PanelContext $panels = null,
     ) {
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
@@ -153,6 +171,22 @@ final readonly class AccountsKit
         $this->startSession = new StartSession($this->sessions, $auth, $csrf, $orm);
         $this->requireSignIn = new RequireSignIn($auth, $paths, $realms);
         $this->requireMultiFactor = new RequireMultiFactor($auth, $paths, $this->requireSignIn);
+        if ($impersonation !== null && $panels === null) {
+            throw new \LogicException('Impersonation is started from a panel, and the kit was given no PanelContext to ask which: give AccountsKit the Kernel\'s (panels:).');
+        }
+        $this->impersonations = $impersonation === null ? null : new Impersonations(
+            connection: $connection,
+            sessions: $this->sessions,
+            users: $users,
+            epochs: $this->epochs,
+            auth: $auth,
+            panels: $panels,
+            config: $impersonation,
+            paths: $paths,
+            key: $key,
+            realms: $realms,
+            audit: $audit,
+        );
 
         $this->accounts = new Accounts(
             connection: $connection,
@@ -233,6 +267,9 @@ final readonly class AccountsKit
         }
         if (!$container->registered(UserLookup::class)) {
             $container->instance(UserLookup::class, $this->lookup);
+        }
+        if ($this->impersonations !== null) {
+            $container->instance(Impersonations::class, $this->impersonations);
         }
 
         return $container

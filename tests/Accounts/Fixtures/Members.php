@@ -311,6 +311,7 @@ final class MemberApp
     public readonly ArrayTransport $mail;
     public readonly Orm $orm;
     public readonly AuthContext $auth;
+    public readonly \Tinvar\Auth\PanelContext $panels;
     public int $now;
 
     public const string KEY = 'accounts-kit-test-key-of-32-bytes-long!!';
@@ -320,10 +321,14 @@ final class MemberApp
      * @param bool $audit whether the kit is given an audit log, its tables made here
      * @param \Tinvar\Orm\TenantSubtrees|null $tenancy registered with the Orm, so a session's
      *        tenant scopes what its request reads
+     * @param \Tinvar\Accounts\Impersonation\ImpersonationConfig|null $impersonation whether, and how, its
+     *        staff may act as its users (ADR 0194)
+     * @param \Tinvar\Identity\Realms|null $realms the app's hosts, where it has more than one
      */
-    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null, bool $audit = false, ?\Tinvar\Orm\TenantSubtrees $tenancy = null)
+    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null, bool $audit = false, ?\Tinvar\Orm\TenantSubtrees $tenancy = null, ?\Tinvar\Accounts\Impersonation\ImpersonationConfig $impersonation = null, ?\Tinvar\Identity\Realms $realms = null, bool $panelContext = true)
     {
         $this->now = time();
+        $this->panels = new \Tinvar\Auth\PanelContext();
         $this->orm = new Orm($connection, new IdentityMap($connection->name()), $tenancy);
         $this->auth = new AuthContext();
         $this->queue = new ArrayQueue();
@@ -349,6 +354,9 @@ final class MemberApp
             keepHash: $keepHash,
             audit: $audit ? new \Tinvar\Audit\AuditLog($this->orm, $this->auth, self::KEY) : null,
             orm: $this->orm,
+            realms: $realms,
+            impersonation: $impersonation,
+            panels: $panelContext ? $this->panels : null,
         );
     }
 

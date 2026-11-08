@@ -47,7 +47,9 @@ final readonly class StartSession implements Middleware
     public function handle(Request $request, \Closure $next): Response
     {
         $state = $this->sessions->open($request);
-        $this->auth->login($state->user(), $state->epoch());
+        // With who is acting as the user, while staff impersonate them (ADR
+        // 0194): the audit log, the job dispatcher and ApiTokens read it.
+        $this->auth->login($state->user(), $state->epoch(), impersonator: $state->impersonator());
 
         $inner = $request->withAttribute(SessionState::ATTRIBUTE, $state);
         $tenant = $state->tenant();

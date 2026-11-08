@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Accounts;
 
 use Carbon\CarbonImmutable;
+use Tinvar\Accounts\Impersonation\ImpersonationRefusal;
+use Tinvar\Accounts\Impersonation\ImpersonationRefused;
 use Tinvar\Accounts\Passkeys\Base64Url;
 use Tinvar\Accounts\Passkeys\Passkey;
 use Tinvar\Accounts\Passkeys\PasskeyChallenges;
@@ -85,6 +87,9 @@ use Tinvar\Validation\ValidationException;
  *   outlives it, or take away the owner's, and a passkey added or removed,
  *   or an API token made, is told to the owner by email -- where the app
  *   has an https origin; with none, no account email is sent (ADR 0162).
+ * - **Nobody changes how an account signs in while impersonating it** (ADR
+ *   0194): every change above, a confirmation and an API token are refused
+ *   to a session staff are acting as the account in.
  * - **What happened is in the audit log**, where the app keeps one (ADR
  *   0156, 0162): every sign-in, failed and not, every sign-out, and every
  *   change to how an account signs in, about that account.
@@ -380,6 +385,7 @@ final class Accounts
 
     public function signOutEverywhere(Request $http): void
     {
+        $this->assertNotImpersonating($http);
         $state = SessionState::of($http);
         if ($state->user() !== null) {
             $this->record(SecurityEvent::SignedOutEverywhere, $state->user());
@@ -464,6 +470,7 @@ final class Accounts
      */
     public function changePassword(Request $http, AccountUser $user, #[\SensitiveParameter] string $current, #[\SensitiveParameter] string $new): void
     {
+        $this->assertNotImpersonating($http);
         $this->confirmPassword($http, $user, $current, 'currentPassword');
         $hash = $this->passwords->hash($new);
         $checked = $this->connection->durableTransaction(function () use ($http, $user, $hash): Credentials {
@@ -501,6 +508,7 @@ final class Accounts
      */
     public function requestEmailChange(Request $http, AccountUser $user, string $email, #[\SensitiveParameter] string $password): void
     {
+        $this->assertNotImpersonating($http);
         $email = Emails::normalize($email);
         if ($email === $user->accountEmail()) {
             throw new ValidationException(['email' => [self::SAME_ADDRESS]]);
@@ -544,6 +552,7 @@ final class Accounts
      */
     public function confirmEmailChange(Request $http, string $token): AccountUser
     {
+        $this->assertNotImpersonating($http);
         [$user, $old, $checked] = $this->connection->durableTransaction(function () use ($token): array {
             $link = $this->links->consume($token, EmailLinks::CHANGE_EMAIL);
             $user = $link === null ? null : $this->users->find($link->user);
@@ -592,6 +601,7 @@ final class Accounts
     /** Confirms the session with the account's password, counted as a sign-in's guess. */
     public function confirmWithPassword(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
+        $this->assertNotImpersonating($http);
         $this->confirmPassword($http, $user, $password, 'currentPassword');
     }
 
@@ -606,6 +616,7 @@ final class Accounts
      */
     public function confirmWithCode(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): void
     {
+        $this->assertNotImpersonating($http);
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
         $compact = (string) preg_replace('/\s+/', '', $code);
         if (preg_match('/^\d{' . Totp::DIGITS . '}\z/', $compact) !== 1 || !$this->twoFactor->verify($user->authIdentifier(), $compact)) {
@@ -624,6 +635,7 @@ final class Accounts
      */
     public function passkeyConfirmationOptions(Request $http, AccountUser $user): array
     {
+        $this->assertNotImpersonating($http);
         $party = $this->assertRelyingPartyHost($http);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::CONFIRM, $user->authIdentifier());
 
@@ -646,6 +658,7 @@ final class Accounts
      */
     public function confirmWithPasskey(Request $http, AccountUser $user, string $credential): void
     {
+        $this->assertNotImpersonating($http);
         $this->verifyPasskey($http, $credential, PasskeyChallenges::CONFIRM, $user);
         $this->stepUp($http, $user, SignInFactor::Passkey, 'credential');
     }
@@ -683,6 +696,7 @@ final class Accounts
      */
     public function beginTwoFactor(Request $http, AccountUser $user): array
     {
+        $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
         $secret = $this->twoFactor->begin($user->authIdentifier());
@@ -712,6 +726,7 @@ final class Accounts
      */
     public function confirmTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): array
     {
+        $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
@@ -736,6 +751,7 @@ final class Accounts
      */
     public function disableTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
+        $this->assertNotImpersonating($http);
         $this->assertMayChangeFactors($http, $user);
         $this->confirmPassword($http, $user, $password, 'currentPassword');
         $checked = $this->connection->durableTransaction(function () use ($http, $user): Credentials {
@@ -761,6 +777,7 @@ final class Accounts
      */
     public function regenerateRecoveryCodes(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): array
     {
+        $this->assertNotImpersonating($http);
         $this->assertMayChangeFactors($http, $user);
         $this->confirmPassword($http, $user, $password, 'currentPassword');
         if (!$this->twoFactor->enabled($user->authIdentifier())) {
@@ -790,6 +807,7 @@ final class Accounts
      */
     public function passkeyRegistrationOptions(Request $http, AccountUser $user): array
     {
+        $this->assertNotImpersonating($http);
         $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
@@ -822,6 +840,7 @@ final class Accounts
      */
     public function registerPasskey(Request $http, AccountUser $user, string $credential, string $name): Passkey
     {
+        $this->assertNotImpersonating($http);
         $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
@@ -910,6 +929,7 @@ final class Accounts
      */
     public function removePasskey(Request $http, AccountUser $user, string $id): bool
     {
+        $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
         $name = null;
@@ -975,6 +995,7 @@ final class Accounts
      */
     public function issueApiToken(Request $http, AccountUser $user, ApiTokens $tokens, string $name, array $scopes, ?CarbonImmutable $expiresAt): IssuedApiToken
     {
+        $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         // As a caller who may not have one, shown above the form, rather than
         // SESSION_ENDED on `confirm`, which an app's form takes as asking for
@@ -1006,6 +1027,7 @@ final class Accounts
      */
     public function issueTenantApiToken(Request $http, AccountUser $user, TenantApiTokens $tokens, string $name, array $scopes, ?CarbonImmutable $expiresAt, ?\Closure $allowed = null): IssuedTenantApiToken
     {
+        $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $state = SessionState::of($http);
         $epoch = $state->user()?->authIdentifier() === $user->authIdentifier() ? $state->credentialEpoch() : null;
@@ -1250,6 +1272,24 @@ final class Accounts
         }
 
         throw new ValidationException(['confirm' => [self::CONFIRM_SECOND_FACTOR]]);
+    }
+
+    /**
+     * Anything that changes how the account signs in -- its password, its
+     * address, its second factors and passkeys, a confirmation that would
+     * let one, a sign-out everywhere, an API token -- refused while staff
+     * impersonate it (ADR 0194): the impersonation is theirs to act in, the
+     * account's ways in its owner's alone. Read from the session itself, so
+     * it holds whatever AuthContext was handed.
+     */
+    private function assertNotImpersonating(Request $http): void
+    {
+        $state = $http->attribute(SessionState::ATTRIBUTE);
+        if ((!$state instanceof SessionState || $state->impersonation() === null) && $this->auth?->impersonator() === null) {
+            return;
+        }
+
+        throw new ImpersonationRefused(ImpersonationRefusal::WhileImpersonating);
     }
 
     /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */

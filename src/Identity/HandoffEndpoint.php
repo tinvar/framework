@@ -301,6 +301,12 @@ final class HandoffEndpoint
             return self::private(($this->signIn)(self::pathAndQuery($request)));
         }
 
+        // An impersonation stays on the host it was made on (ADR 0194): a
+        // code would arrive elsewhere as the user's own session, with no
+        // impersonator, no time box and no audit trail.
+        if ($this->auth->impersonator() !== null) {
+            throw new HttpException(403, "The handoff to {$target->origin} is refused: a session impersonating its user is never handed to another host.", 'handoff_refused');
+        }
         [$refusal] = $this->admission($user, $target);
         if ($refusal !== null) {
             throw new HttpException(403, "The handoff to {$target->origin} is refused: {$refusal}.", 'handoff_refused');
@@ -436,6 +442,9 @@ final class HandoffEndpoint
         // Held again on a confirm: a membership taken away, or a user made
         // staff, while the screen was open.
         if ($decision === HandoffConsent::CONFIRM) {
+            if ($this->auth->impersonator() !== null) {
+                throw self::declined('a session impersonating its user is never handed to another host');
+            }
             [$refusal] = $this->admission($user, $target);
             if ($refusal !== null) {
                 throw self::declined($refusal);
