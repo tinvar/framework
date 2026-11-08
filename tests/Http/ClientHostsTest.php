@@ -100,3 +100,55 @@ it('tells a panel\'s page its own host\'s domain, and the storefront\'s it links
     expect(told(kernel(), 'staff-portal.example.net')['roots'])
         ->toBe(['root' => 'shop.test', 'portal' => 'staff-portal.example.net']);
 });
+
+/**
+ * The arguments of each `Frame::render(` call in $source, as written.
+ *
+ * @return list<string>
+ */
+function frameRenders(string $source): array
+{
+    $calls = [];
+    $offset = 0;
+    while (($at = strpos($source, 'Frame::render(', $offset)) !== false) {
+        $depth = 0;
+        $start = $at + \strlen('Frame::render');
+        for ($i = $start, $n = \strlen($source); $i < $n; $i++) {
+            $depth += match ($source[$i]) {
+                '(' => 1,
+                ')' => -1,
+                default => 0,
+            };
+            if ($depth === 0) {
+                break;
+            }
+        }
+        $calls[] = substr($source, $start, $i - $start + 1);
+        $offset = $i;
+    }
+
+    return $calls;
+}
+
+// ADR 0185: the skeleton's Kernel drew its pages with no hosts, so route()
+// in a server component wrote a bare path for a page on another host --
+// `/sign-in` on the public site for the dashboard host's page, a 404 --
+// and every app made from it did the same. Each application this repository
+// ships hands every render it draws what hostsFor() says; one routing on no
+// host is handed null, as before.
+it('hands every page render of each application shipped here the hosts its page may link to', function () {
+    $root = \dirname(__DIR__, 4);
+    $kernels = [
+        'packages/skeleton/app/Kernel.php',
+        'examples/shop/app/Kernel.php',
+        'examples/docs/app/Kernel.php',
+        'packages/tenancy/tests/Browser/app/Fixture.php',
+    ];
+    foreach ($kernels as $kernel) {
+        $renders = frameRenders((string) file_get_contents("{$root}/{$kernel}"));
+        expect($renders)->not->toBe([], "{$kernel} draws no page");
+        foreach ($renders as $arguments) {
+            expect(preg_match('/\bhosts:\s*\$this->http->hostsFor\(\$request, \$loaded\)/', $arguments))->toBe(1, "{$kernel} renders a page without its hosts");
+        }
+    }
+});
