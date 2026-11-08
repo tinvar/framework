@@ -99,6 +99,9 @@ final class AuditLog implements ModelChanges, ActionObserver
     /** @var array<string, AuditedAction|false> each action method's declaration, once read */
     private array $declared = [];
 
+    /** How many asSystem() calls are open: while any is, an entry is the platform's own. */
+    private int $system = 0;
+
     /**
      * @param string $key the application key: the chain's MACs are made with a key derived from it
      * @param PanelContext|null $panels which panel an entry was made in
@@ -254,11 +257,38 @@ final class AuditLog implements ModelChanges, ActionObserver
     {
         $this->requests = [];
         $this->actions = [];
+        $this->system = 0;
+    }
+
+    /**
+     * $work, with every entry it makes the platform's own: a system actor,
+     * and no request, action or panel -- whatever request, user, action or
+     * panel is in hand. For an entry about something the request in hand
+     * did not do to the tenant whose log it lands in: tinvar/tenancy's lapse
+     * of one tenant's custom domain, found by another tenant's proof (ADR
+     * 0198), would otherwise file that other tenant's user, host, address,
+     * request id, action and panel in the first tenant's log.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function asSystem(\Closure $work): mixed
+    {
+        $this->system++;
+        try {
+            return $work();
+        } finally {
+            $this->system--;
+        }
     }
 
     /** Who an entry made now would name. */
     public function actor(): Actor
     {
+        if ($this->system > 0) {
+            return new Actor(ActorKind::System);
+        }
         $user = $this->auth->user();
         if ($user instanceof Service) {
             // With who was acting as the member its token was for, where
@@ -553,7 +583,8 @@ final class AuditLog implements ModelChanges, ActionObserver
         }
 
         $actor = $this->actor();
-        $request = $this->requests === [] ? null : $this->requests[array_key_last($this->requests)];
+        $system = $this->system > 0;
+        $request = $system || $this->requests === [] ? null : $this->requests[array_key_last($this->requests)];
         $now = $this->now();
         $row = [
             'id' => Uuid::v7(),
@@ -569,8 +600,8 @@ final class AuditLog implements ModelChanges, ActionObserver
             'job' => $actor->job === null ? null : self::cut($actor->job, AuditTable::NAME),
             'job_id' => $actor->jobId === null ? null : self::cut($actor->jobId, 64),
             'started_by' => $actor->startedBy === null ? null : self::cut($actor->startedBy, AuditTable::NAME),
-            'action' => $this->actions === [] ? null : self::cut($this->actions[array_key_last($this->actions)], AuditTable::NAME),
-            'panel' => self::cutOrNull($this->panels?->currentOrNull(), 64),
+            'action' => $system || $this->actions === [] ? null : self::cut($this->actions[array_key_last($this->actions)], AuditTable::NAME),
+            'panel' => $system ? null : self::cutOrNull($this->panels?->currentOrNull(), 64),
             'host' => self::cutOrNull($request?->host, 255),
             'request_id' => self::cutOrNull($request?->requestId, 64),
             'ip' => self::cutOrNull($request?->ip, 45),

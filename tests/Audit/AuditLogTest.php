@@ -646,3 +646,35 @@ it('verifies a log another worker writes to, or prunes, while it is walked', fun
     $connection->execute("INSERT INTO audit_entries SELECT id || 'x', tenant, sequence + 10, occurred_at, event, subject_type, subject_id, actor_type, actor_id, impersonator_id, job, job_id, started_by, api_token_id, action, panel, host, request_id, ip, changes, data, previous_hash, hash FROM audit_entries WHERE tenant = 'acme' AND sequence = 4");
     expect($audit->verify('acme')->problem)->toBe('Entry 5 is past the head.');
 });
+
+it('files an entry made as the system with no request, action or panel, whatever is in hand (ADR 0198)', function () {
+    $connection = new PdoConnection(new \PDO('sqlite::memory:'));
+    AuditTable::define(new Schema($connection, Dialect::for($connection)));
+    $orm = new Orm($connection, new IdentityMap('audit-system'), new Tenants());
+    $auth = new AuthContext();
+    $panels = new \Tinvar\Auth\PanelContext();
+    $audit = new AuditLog($orm, $auth, KEY, panels: $panels, proxies: TrustedProxies::of(['10.0.0.0/8'], null, PROXY_SECRET));
+    $auth->login(new Person('u-1'));
+    $depth = $audit->enterRequest(new Request('POST', '/_action/x', ['host' => 'globex.test'], remoteAddress: '203.0.113.9'), 'req-globex');
+
+    $panels->within('customer', static function () use ($orm, $audit): void {
+        $orm->actAs('acme', static function () use ($audit): void {
+            $audit->asSystem(static fn () => $audit->event('tenant.domain_lapsed', data: ['host' => 'shop.acme.test']));
+            $audit->event('tenant.renamed');
+        });
+    });
+    $audit->leaveRequest($depth);
+
+    $entries = $orm->actAs('acme', static fn (): array => $audit->trail()->recent());
+    $system = array_values(array_filter($entries, static fn ($e): bool => $e->event === 'tenant.domain_lapsed'))[0];
+    $named = array_values(array_filter($entries, static fn ($e): bool => $e->event === 'tenant.renamed'))[0];
+    expect($system->actor->kind)->toBe(ActorKind::System)
+        ->and($system->actor->id)->toBeNull()
+        ->and($system->request)->toBeNull()
+        ->and($system->panel)->toBeNull()
+        ->and($system->action)->toBeNull()
+        // And only inside it: the next entry is the request's again.
+        ->and($named->actor->id)->toBe('u-1')
+        ->and($named->request?->host)->toBe('globex.test')
+        ->and($named->panel)->toBe('customer');
+});
