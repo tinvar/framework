@@ -98,7 +98,7 @@ final class ExceptionHandler
         $status = $classified instanceof HttpException ? $classified->status : 500;
         $code = $classified instanceof HttpException && $classified->code_ !== '' ? $classified->code_ : self::codeFor($status);
 
-        return new HttpError($status, $code, self::reason($status), self::digest($e));
+        return new HttpError($status, $code, self::reason($status), self::digest($e), $classified instanceof HttpException ? $classified->headers : []);
     }
 
     /**

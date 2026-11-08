@@ -31,12 +31,30 @@ final readonly class HttpError
         500 => 'Something went wrong.',
     ];
 
+    /**
+     * @param array<string, string> $headers what the refusal must be sent
+     *        with -- a 429's Retry-After and X-RateLimit-*, a 401's
+     *        WWW-Authenticate -- as the framework's own answer sends them
+     */
     public function __construct(
         public int $status,
         public string $code,
         public string $reason,
         public string $digest,
+        public array $headers = [],
     ) {}
+
+    /** The seconds a 429 says to wait, from its Retry-After; null where it says none. */
+    public function retryAfter(): ?int
+    {
+        foreach ($this->headers as $name => $value) {
+            if (strtolower($name) === 'retry-after' && preg_match('/^\d+\z/', $value) === 1) {
+                return (int) $value;
+            }
+        }
+
+        return null;
+    }
 
     /**
      * The error a refusal says that was returned rather than thrown: nothing

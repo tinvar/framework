@@ -121,6 +121,7 @@ use Tinvar\Endpoints\EndpointHandler;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Endpoints\EndpointRunner;
 use Tinvar\Uploads\UploadTickets;
+use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 use Tinvar\Webhooks\WebhookEndpoint;
 
@@ -1436,6 +1437,7 @@ final class Kernel
             maxJsonDepth: $maxJsonDepth,
             throttle: $throttle,
             endpointsLimit: $limits['endpoints'] ?? 0,
+            resolver: $resolver,
             tokenSignIn: $tokenSignIn,
             tokenHold: $tokenSignIn === null ? null : static fn (CompiledEndpoint $e): HoldApiToken => new HoldApiToken($e->scopes, $orm, $panels),
         );
@@ -2938,6 +2940,45 @@ final class Kernel
      * @param array<string, string> $parameters
      */
     private function runEndpoint(EndpointHandler $handler, CompiledEndpoint $endpoint, array $parameters, Request $request, string $rawBody): Response
+    {
+        // An endpoint that names a RefusalWriter (ADR 0188) has its refusals
+        // written as its clients read them -- a throttle's 429 from either
+        // pass, authentication's 401, a 404 from inside it -- logged under
+        // the digest the writer is handed, as the framework's own would be.
+        // A 500, or a failed validation's field errors, stays the framework's.
+        $writer = $handler->refusalWriter($endpoint);
+        if ($writer === null) {
+            return $this->runEndpointStack($handler, $endpoint, $parameters, $request, $rawBody);
+        }
+        try {
+            return $this->runEndpointStack($handler, $endpoint, $parameters, $request, $rawBody);
+        } catch (\Throwable $e) {
+            if ($e instanceof ValidationException) {
+                throw $e;
+            }
+            $error = $this->exceptions->errorFor($e);
+            if ($error->status >= 500) {
+                throw $e;
+            }
+            $this->exceptions->report($e, $error->digest);
+            $written = $writer->write($error, $request);
+            foreach ($error->headers as $name => $value) {
+                if ($written->header($name) === null) {
+                    $written = $written->withHeader($name, $value);
+                }
+            }
+
+            return $written;
+        }
+    }
+
+    /**
+     * The endpoint's stack -- the sessionless one or an action's, its
+     * budget's where it declares one (ADR 0187) -- around the handler.
+     *
+     * @param array<string, string> $parameters
+     */
+    private function runEndpointStack(EndpointHandler $handler, CompiledEndpoint $endpoint, array $parameters, Request $request, string $rawBody): Response
     {
         $budget = $endpoint->budget?->name;
         if ($endpoint->sessionless) {

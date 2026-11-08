@@ -16,6 +16,7 @@ use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\RequiresScope;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\EndpointBudget;
+use Tinvar\Attributes\Refusals;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\WithoutSession;
 use Tinvar\Auth\BuildRules;
@@ -353,6 +354,10 @@ final class EndpointRegistry
             PanelBinding::of($panels);
             $throttle = Throttle::declaredOn($class, $method->getName());
             $budget = EndpointBudget::declaredOn($class, $method->getName());
+            $refusals = Refusals::declaredOn($class, $method->getName())?->writer;
+            if ($refusals !== null && !is_subclass_of($refusals, \Tinvar\Http\RefusalWriter::class)) {
+                throw new \InvalidArgumentException("#[Refusals] names {$refusals}, which is not a Tinvar\\Http\\RefusalWriter.");
+            }
             $cors = Cors::declaredOn($class, $method->getName());
         } catch (\LogicException|\InvalidArgumentException $e) {
             throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
@@ -406,6 +411,7 @@ final class EndpointRegistry
             scopes: $scopes,
             rawBody: $rawBody,
             budget: $budget,
+            refusals: $refusals,
         );
     }
 

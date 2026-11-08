@@ -14,6 +14,7 @@ use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\EndpointBudget;
+use Tinvar\Attributes\Refusals;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\BuildRules;
@@ -115,11 +116,11 @@ final class ActionRegistry
             // On the class, its ancestors' and its traits' count too: they
             // limit and open nothing here either.
             if ($method->getAttributes(Throttle::class) !== [] || $method->getAttributes(Cors::class) !== []
-                || $method->getAttributes(EndpointBudget::class) !== []
+                || $method->getAttributes(EndpointBudget::class) !== [] || $method->getAttributes(Refusals::class) !== []
                 || ClassAttributes::of($reflection, Throttle::class) !== [] || ClassAttributes::of($reflection, Cors::class) !== []
-                || ClassAttributes::of($reflection, EndpointBudget::class) !== []) {
+                || ClassAttributes::of($reflection, EndpointBudget::class) !== [] || ClassAttributes::of($reflection, Refusals::class) !== []) {
                 throw new ActionException(
-                    "{$class}::{$method->getName()}() is an action under #[Throttle], #[EndpointBudget] or #[Cors], which only an endpoint reads. "
+                    "{$class}::{$method->getName()}() is an action under #[Throttle], #[EndpointBudget], #[Refusals] or #[Cors], which only an endpoint reads. "
                     . 'An action spends throttle:actions and is called from this origin alone.',
                 );
             }

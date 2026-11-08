@@ -13,6 +13,7 @@ use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
+use Tinvar\Http\RefusalWriter;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
@@ -67,6 +68,9 @@ final class EndpointHandler
         // `throttle:endpoints` a minute, for the account pass a sessionless
         // endpoint's stack could not run; 0 for none.
         private readonly int $endpointsLimit = 0,
+        // Builds an endpoint's #[Refusals] writer (ADR 0188); none, and no
+        // endpoint may name one.
+        private readonly ?\Closure $resolver = null,
         // An endpoint that takes API tokens (#[RequiresScope], ADR 0159):
         // the middleware that signs a token's user in, run where a
         // sessionless endpoint's own middleware would sign its caller in;
@@ -285,6 +289,23 @@ final class EndpointHandler
         }
 
         return [new ThrottleRequests($this->throttle, $endpoint->throttle->counter(), $endpoint->throttle->perMinute, byAddress: $byAddress)];
+    }
+
+    /** The RefusalWriter the endpoint names (ADR 0188), built; null where it names none. */
+    public function refusalWriter(CompiledEndpoint $endpoint): ?RefusalWriter
+    {
+        if ($endpoint->refusals === null) {
+            return null;
+        }
+        if ($this->resolver === null) {
+            throw new \LogicException("{$endpoint->where()} names #[Refusals], and the endpoint handler was given nothing to build {$endpoint->refusals} with.");
+        }
+        $writer = ($this->resolver)($endpoint->refusals);
+        if (!$writer instanceof RefusalWriter) {
+            throw new \LogicException("The resolver built {$endpoint->refusals} as " . get_debug_type($writer) . ', not a RefusalWriter.');
+        }
+
+        return $writer;
     }
 
     /**

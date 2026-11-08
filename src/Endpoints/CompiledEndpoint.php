@@ -85,6 +85,8 @@ final readonly class CompiledEndpoint
         // #[EndpointBudget]: the shared budget it spends in place of
         // `throttle:endpoints` (ADR 0187); null for that one.
         public ?\Tinvar\Attributes\EndpointBudget $budget = null,
+        // #[Refusals]: the RefusalWriter that writes its refusals (ADR 0188); null for the framework's shape.
+        public ?string $refusals = null,
     ) {}
 
     /** Whether an API token is what signs its caller in (ADR 0159). */
