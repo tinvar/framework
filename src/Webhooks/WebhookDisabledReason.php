@@ -13,11 +13,15 @@ enum WebhookDisabledReason: string
     /** The receiver answered 410: it asked to be sent nothing more. */
     case ReceiverGone = 'receiver_gone';
 
+    /** Resumed after it was disabled, and a delivery failed before one arrived. */
+    case FailedAfterResume = 'failed_after_resume';
+
     public function describe(): string
     {
         return match ($this) {
             self::ConsecutiveFailures => 'Too many deliveries in a row failed.',
             self::ReceiverGone => 'The receiver answered 410 Gone: it asked to be sent nothing more.',
+            self::FailedAfterResume => 'It was resumed after being disabled, and the next delivery failed too.',
         };
     }
 }

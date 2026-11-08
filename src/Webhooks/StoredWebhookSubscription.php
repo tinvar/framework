@@ -31,6 +31,8 @@ final readonly class StoredWebhookSubscription
         public ?string $lastFailure,
         public ?WebhookDisabledReason $disabledReason,
         public ?CarbonImmutable $disabledAt,
+        /** Resumed after it was disabled, and no delivery has arrived since: the next to fail disables it again. */
+        public bool $probation,
         /** Who made it: an account's identifier. */
         public string $createdBy,
         public CarbonImmutable $createdAt,

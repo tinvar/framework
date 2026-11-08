@@ -20,7 +20,8 @@ use Tinvar\Outbound\Target;
  * A stored subscription (DatabaseWebhookSubscriptions, ADR 0197) may also
  * be paused -- `active` false, so a delivery due to it is ended rather than
  * sent -- and, while its secret is rotated, carry the secret it replaces,
- * which signs beside the new one until the overlap ends.
+ * which signs the header every receiver reads until the overlap ends, the
+ * new one beside it in a header of its own.
  */
 final readonly class WebhookSubscription implements \JsonSerializable
 {
@@ -45,14 +46,19 @@ final readonly class WebhookSubscription implements \JsonSerializable
     }
 
     /**
-     * The secrets a delivery is signed with: this one, then the one it
-     * replaces while both sign.
-     *
-     * @return non-empty-list<string>
+     * The secret the signature header every receiver reads is made with:
+     * while a rotation overlaps, the one being replaced, which a receiver
+     * of any version still holds (ADR 0197); this one otherwise.
      */
-    public function signingSecrets(): array
+    public function signingSecret(): string
     {
-        return $this->previousSecret === null || $this->previousSecret === $this->secret ? [$this->secret] : [$this->secret, $this->previousSecret];
+        return $this->previousSecret ?? $this->secret;
+    }
+
+    /** The new secret, signing beside the old in its own header while a rotation overlaps; null otherwise. */
+    public function nextSecret(): ?string
+    {
+        return $this->previousSecret === null || $this->previousSecret === $this->secret ? null : $this->secret;
     }
 
     /** @return array<string, string|bool> */

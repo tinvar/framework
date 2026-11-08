@@ -26,13 +26,20 @@ use Tinvar\Outbound\Target;
  *   now -- is public: the policy with `allow` closed (publicOnly()), as a
  *   delivery is sent, so no private range the application opened for its
  *   own services is a tenant's to name. A name that does not resolve is
- *   refused too: fail closed.
+ *   refused too, fail closed, in the same words.
  *
  * Passing here is not trusted later: DNS can change, so each delivery is
  * vetted again where it is sent (PinnedHttp, `publicOnly`).
  */
 final readonly class WebhookUrlCheck
 {
+    /**
+     * The one answer for a host that will not do -- resolving to an address
+     * a delivery may not reach, or not resolving at all -- so which it was,
+     * and so what a name means inside the network, is not told.
+     */
+    public const string HOST_REFUSED = 'Webhooks are not sent to that host: give one on the public internet.';
+
     /** The longest URL kept. */
     public const int MAX_LENGTH = 2048;
 
@@ -51,8 +58,8 @@ final readonly class WebhookUrlCheck
 
     /**
      * Why $url will not do, as words a tenant may be shown, or null when it
-     * will. Which kind of address a name resolved to is not said: that is
-     * the network's to know.
+     * will. Whether a name resolved inside the network, or at all, is not
+     * said (HOST_REFUSED): that is the network's to know.
      */
     public function refusal(string $url): ?string
     {
@@ -75,11 +82,9 @@ final readonly class WebhookUrlCheck
         try {
             $this->policy->publicOnly()->vet($target, $this->resolver, $this->timeout);
         } catch (OutboundRefused $e) {
-            return $e->reason === 'port'
-                ? "Webhooks are not sent to port {$target->port}."
-                : 'Webhooks are not sent to that address: give one on the public internet.';
+            return $e->reason === 'port' ? "Webhooks are not sent to port {$target->port}." : self::HOST_REFUSED;
         } catch (OutboundFailed) {
-            return "{$target->host} does not resolve: give a host that does.";
+            return self::HOST_REFUSED;
         }
 
         return null;

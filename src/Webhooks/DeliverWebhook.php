@@ -7,6 +7,7 @@ namespace Tinvar\Webhooks;
 use Tinvar\Attributes\Queue;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobRefused;
+use Tinvar\Jobs\Rate;
 use Tinvar\Orm\Orm;
 use Tinvar\Outbound\OutboundFailed;
 use Tinvar\Outbound\OutboundHttp;
@@ -38,10 +39,17 @@ use Tinvar\Outbound\Target;
  * ends the delivery at once, since trying again changes none of those.
  *
  * A subscription that is paused (WebhookSubscription::$active) ends the
- * delivery unsent. One signs with each secret it holds -- two while its
- * secret is rotated (ADR 0197). And where the subscriptions keep count
- * (CountsDeliveryFailures), each delivery is counted as it ends, so one
- * that keeps failing is disabled.
+ * delivery unsent. While its secret is rotated (ADR 0197) the signature
+ * header is made with the secret being replaced, exactly as it always was,
+ * and the new secret's goes beside it in WebhookSignature::NEXT_HEADER. And
+ * where the subscriptions keep count (CountsDeliveryFailures), each delivery
+ * is counted as it ends -- a refusal or a 410 here, a last try that failed
+ * in failed(), which the worker calls once it gives up on the job, however
+ * the try ended -- so one that keeps failing is disabled.
+ *
+ * Every tenant's deliveries share the `webhooks` queue: give it
+ * tenantRate() among the console's rates, so one tenant's flood waits on
+ * its own starts and never on another's.
  */
 #[Queue(self::QUEUE, tries: self::TRIES, backoff: [30, 120, 600, 1800, 3600], timeout: 30)]
 final readonly class DeliverWebhook implements Job
@@ -50,6 +58,9 @@ final readonly class DeliverWebhook implements Job
 
     /** Tries a delivery has before it ends undelivered. */
     public const int TRIES = 6;
+
+    /** Deliveries one tenant may start a minute, under tenantRate(). */
+    public const int TENANT_RUNS = 120;
 
     /** Seconds one try may take: well inside the job's own timeout. */
     public const float TIMEOUT = 10.0;
@@ -60,6 +71,16 @@ final readonly class DeliverWebhook implements Job
         public string $event,
         public string $body,
     ) {}
+
+    /**
+     * The rate the `webhooks` queue is held to per tenant (ADR 0118, 0197):
+     *
+     *     new Console(..., rates: [DeliverWebhook::QUEUE => DeliverWebhook::tenantRate()]);
+     */
+    public static function tenantRate(): Rate
+    {
+        return Rate::perTenant(runs: self::TENANT_RUNS, per: 60);
+    }
 
     public function handle(OutboundHttp $http, WebhookSubscriptions $subscriptions, DeliveryLog $log, Orm $orm): void
     {
@@ -101,14 +122,7 @@ final readonly class DeliverWebhook implements Job
                 $subscription->url,
                 [
                     'content-type' => 'application/json',
-                    WebhookSignature::HEADER => WebhookSignature::headerForEach(
-                        $subscription->signingSecrets(),
-                        time(),
-                        $this->delivery,
-                        'POST',
-                        $target->requestTarget(),
-                        $this->body,
-                    ),
+                    ...$this->signatures($subscription, $target->requestTarget(), time()),
                 ],
                 $this->body,
                 timeout: self::TIMEOUT,
@@ -128,9 +142,6 @@ final readonly class DeliverWebhook implements Job
             throw new JobRefused('destination_refused', "Webhook delivery {$this->delivery} is refused: {$e->getMessage()}", $e);
         } catch (OutboundFailed $e) {
             $record(DeliveryAttempt::FAILED, $e->status, $e->reason, $e->milliseconds);
-            if ($attempt >= self::TRIES) {
-                $counts?->deliveryFailed($this->subscription, $e->reason);
-            }
 
             throw $e;
         }
@@ -159,10 +170,44 @@ final readonly class DeliverWebhook implements Job
         }
 
         $record(DeliveryAttempt::FAILED, $response->status, 'status', $response->milliseconds);
-        if ($attempt >= self::TRIES) {
-            $counts?->deliveryFailed($this->subscription, "status_{$response->status}");
-        }
 
         throw new \RuntimeException("Webhook delivery {$this->delivery} ({$this->event}) was answered {$response->status}.");
+    }
+
+    /**
+     * The worker's last word, once its last try failed -- however it ended,
+     * a try lost before it was logged among them: the delivery is counted
+     * as undelivered, with what its last logged try met.
+     */
+    public function failed(WebhookSubscriptions $subscriptions, DeliveryLog $log, \Throwable $error): void
+    {
+        if (!$subscriptions instanceof CountsDeliveryFailures) {
+            return;
+        }
+        $tries = $log->attempts($this->delivery);
+        $last = $tries === [] ? null : $tries[\count($tries) - 1];
+        $failure = match (true) {
+            $last === null => 'failed',
+            $last->reason === 'status' && $last->status !== null => "status_{$last->status}",
+            default => $last->reason ?? 'failed',
+        };
+        $subscriptions->deliveryFailed($this->subscription, $failure);
+    }
+
+    /**
+     * The signature header, made with the secret every receiver holds, and
+     * while a rotation overlaps the new secret's beside it.
+     *
+     * @return array<string, string>
+     */
+    private function signatures(WebhookSubscription $subscription, string $target, int $at): array
+    {
+        $headers = [WebhookSignature::HEADER => WebhookSignature::header($subscription->signingSecret(), $at, $this->delivery, 'POST', $target, $this->body)];
+        $next = $subscription->nextSecret();
+        if ($next !== null) {
+            $headers[WebhookSignature::NEXT_HEADER] = WebhookSignature::header($next, $at, $this->delivery, 'POST', $target, $this->body);
+        }
+
+        return $headers;
     }
 }

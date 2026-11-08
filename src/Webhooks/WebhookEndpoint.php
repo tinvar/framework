@@ -233,22 +233,30 @@ final class WebhookEndpoint
             throw new HttpException(404, "{$class} is not set up for this tenant.", 'not_found');
         }
 
-        $signature = WebhookSignature::parseEach($request->header(WebhookSignature::HEADER));
-        if ($signature === null) {
+        // The signature, and -- from a sender rotating its secret (ADR 0197)
+        // -- the new secret's beside it: either verifying will do. Both are
+        // computed and compared, so the time taken says nothing of which.
+        $verified = null;
+        $readable = false;
+        foreach ([WebhookSignature::HEADER, WebhookSignature::NEXT_HEADER] as $header) {
+            $signature = WebhookSignature::parse($request->header($header));
+            if ($signature === null) {
+                continue;
+            }
+            $readable = true;
+            [$signedAt, $signedNonce, $mac] = $signature;
+            $expected = WebhookSignature::mac($secret, $signedAt, $signedNonce, $request->method, self::target($request), $rawBody);
+            if (hash_equals($expected, $mac) && $verified === null) {
+                $verified = [$signedAt, $signedNonce];
+            }
+        }
+        if (!$readable) {
             throw self::unsigned('The delivery carries no signature this endpoint can read.');
         }
-        [$timestamp, $nonce, $macs] = $signature;
-        $expected = WebhookSignature::mac($secret, $timestamp, $nonce, $request->method, self::target($request), $rawBody);
-        // One MAC for each secret a sender rotating its own signs with (ADR
-        // 0197): ours need verify one of them. Every one is compared, so the
-        // time taken says nothing of which.
-        $verified = false;
-        foreach ($macs as $mac) {
-            $verified = hash_equals($expected, $mac) || $verified;
-        }
-        if (!$verified) {
+        if ($verified === null) {
             throw self::unsigned('The delivery\'s signature does not verify.');
         }
+        [$timestamp, $nonce] = $verified;
 
         if (abs($now - $timestamp) > self::TOLERANCE) {
             throw self::unsigned('The delivery\'s timestamp is outside the tolerance: sent too long ago, or by a clock far off.');

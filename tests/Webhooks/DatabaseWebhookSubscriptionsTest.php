@@ -64,6 +64,9 @@ require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 const KEY = 'webhook-subscriptions-test-key-32-bytes!';
 
+/** The signature header as a receiver before ADR 0197 reads it: one MAC, nothing after. */
+const PRE_0197_HEADER = '/^t=([1-9]\\d{0,11}),n=([A-Za-z0-9_-]{16,128}),v1=([0-9a-f]{64})\\z/';
+
 /** Names as the test says they resolve: the receiver public, one name private, one nowhere. */
 function resolver(): StaticResolver
 {
@@ -149,9 +152,11 @@ function storeHolds(PdoConnection $connection): void
     // Rotated: a new secret, and the one it replaced signs too until the overlap ends.
     $rotated = $acme(fn () => $store->rotate($id));
     expect($rotated?->secret)->not->toBeNull()->not->toBe($made->secret)
-        ->and($acme(fn () => $store->find($id)?->signingSecrets()))->toBe([$rotated?->secret, $made->secret]);
+        ->and($acme(fn () => $store->find($id)?->signingSecret()))->toBe($made->secret)
+        ->and($acme(fn () => $store->find($id)?->nextSecret()))->toBe($rotated?->secret);
     Clock::$now = Clock::$now->addSeconds(3601);
-    expect($acme(fn () => $store->find($id)?->signingSecrets()))->toBe([$rotated?->secret]);
+    expect($acme(fn () => $store->find($id)?->signingSecret()))->toBe($rotated?->secret)
+        ->and($acme(fn () => $store->find($id)?->nextSecret()))->toBeNull();
 
     // Edited, paused and resumed.
     expect($acme(fn () => $store->update($id, 'https://other.test/hooks', ['order.shipped'], 'Moved')))->toBeTrue()
@@ -183,13 +188,31 @@ function storeHolds(PdoConnection $connection): void
         ->and($told->disabled[0]->id)->toBe($id)
         ->and($acme(fn () => $store->find($id)?->active))->toBeFalse();
 
-    // Resumed, the count and the reason forgotten; a 410 disables it at once.
+    // Resumed, the count and the reason forgotten -- but on probation: the
+    // first delivery to fail before one arrives disables it again at once,
+    // so a tenant cannot loop a dead receiver through resume after resume.
     expect($acme(fn () => $store->resume($id)))->toBeTrue()
         ->and($acme(fn () => $store->get($id)?->disabledReason))->toBeNull()
-        ->and($acme(fn () => $store->get($id)?->consecutiveFailures))->toBe(0);
+        ->and($acme(fn () => $store->get($id)?->consecutiveFailures))->toBe(0)
+        ->and($acme(fn () => $store->get($id)?->probation))->toBeTrue();
+    $acme(fn () => $store->deliveryFailed($id, 'timeout'));
+    expect($acme(fn () => $store->get($id)?->disabledReason))->toBe(WebhookDisabledReason::FailedAfterResume)
+        ->and($told->disabled)->toHaveCount(2);
+
+    // Resumed again, a delivery that arrives ends the probation.
+    $acme(fn () => $store->resume($id));
+    $acme(fn () => $store->deliveryArrived($id));
+    $acme(fn () => $store->deliveryFailed($id, 'timeout'));
+    expect($acme(fn () => $store->get($id)?->status))->toBe(WebhookSubscriptionStatus::Active)
+        ->and($acme(fn () => $store->get($id)?->probation))->toBeFalse();
+
+    // Paused and resumed by a member: no probation. A 410 disables it at once.
+    $acme(fn () => $store->pause($id));
+    $acme(fn () => $store->resume($id));
+    expect($acme(fn () => $store->get($id)?->probation))->toBeFalse();
     $acme(fn () => $store->deliveryFailed($id, 'receiver_gone', receiverGone: true));
     expect($acme(fn () => $store->get($id)?->disabledReason))->toBe(WebhookDisabledReason::ReceiverGone)
-        ->and($told->disabled)->toHaveCount(2);
+        ->and($told->disabled)->toHaveCount(3);
 
     // Deleted: found no more.
     expect($acme(fn () => $store->delete($id)))->toBeTrue()
@@ -266,12 +289,14 @@ it('holds a URL to OutboundHttp\'s rules, the host public, when it is set', func
         ->and($refusal('ftp://receiver.test/hooks'))->toBe('url: Give an https URL.')
         ->and($refusal('https://user:pw@receiver.test/hooks'))->toBe('url: Leave the user name and password out of the URL.')
         // Private, though the application opened 10/8 for its own services.
-        ->and($refusal('https://intranet.test/hooks'))->toStartWith('url: Webhooks are not sent to that address')
-        ->and($refusal('https://10.0.0.5/hooks'))->toStartWith('url: Webhooks are not sent to that address')
-        ->and($refusal('https://sneaky.test/hooks'))->toStartWith('url: Webhooks are not sent to that address')
-        ->and($refusal('https://169.254.169.254/latest'))->toStartWith('url: Webhooks are not sent to that address')
+        // One answer for every host that will not do -- resolving inside, or
+        // not at all -- so a tenant cannot map the network by which it gets.
+        ->and($refusal('https://intranet.test/hooks'))->toBe('url: ' . WebhookUrlCheck::HOST_REFUSED)
+        ->and($refusal('https://10.0.0.5/hooks'))->toBe('url: ' . WebhookUrlCheck::HOST_REFUSED)
+        ->and($refusal('https://sneaky.test/hooks'))->toBe('url: ' . WebhookUrlCheck::HOST_REFUSED)
+        ->and($refusal('https://169.254.169.254/latest'))->toBe('url: ' . WebhookUrlCheck::HOST_REFUSED)
+        ->and($refusal('https://nowhere.test/hooks'))->toBe('url: ' . WebhookUrlCheck::HOST_REFUSED)
         ->and($refusal('https://receiver.test:22/hooks'))->toBe('url: Webhooks are not sent to port 22.')
-        ->and($refusal('https://nowhere.test/hooks'))->toBe('url: nowhere.test does not resolve: give a host that does.')
         ->and($refusal('https://receiver.test/' . str_repeat('a', 2048)))->toStartWith('url: Give a URL of at most')
         ->and($refusal('https://receiver.test/hooks', []))->toBe('events: Choose at least one event to send.')
         ->and($refusal('https://receiver.test/hooks', ['Order Placed']))->toBe('events: Choose the events to send from those listed.')
@@ -367,7 +392,7 @@ final class Sender
     }
 }
 
-it('publishes an event to each active subscription that chose it, signed with both secrets while one rotates out', function () {
+it('publishes an event to each active subscription that chose it, signed so a receiver on any version holding either secret takes it while one rotates out', function () {
     $s = new Sender(static fn (): OutboundResponse => new OutboundResponse(204));
     $made = $s->acme(fn () => $s->subscriptions->create('https://receiver.test/hooks/orders?tenant=acme', ['order.placed'], '', 'm-1'));
     $paused = $s->acme(fn () => $s->subscriptions->create('https://other.test/hooks', ['order.placed'], '', 'm-1'));
@@ -383,9 +408,15 @@ it('publishes an event to each active subscription that chose it, signed with bo
     $s->workThrough();
 
     $request = $s->http->sent[0];
-    $signature = WebhookSignature::parseEach($request->headers[WebhookSignature::HEADER] ?? null);
+    $main = $request->headers[WebhookSignature::HEADER] ?? '';
+    $next = $request->headers[WebhookSignature::NEXT_HEADER] ?? '';
+    [$t, $n] = WebhookSignature::parse($main) ?? [0, ''];
+    $path = (string) parse_url($request->url, PHP_URL_PATH) . '?' . (string) parse_url($request->url, PHP_URL_QUERY);
     expect($s->http->sent)->toHaveCount(1)
-        ->and($signature[2] ?? [])->toHaveCount(2);
+        // The header every receiver reads, as it was before ADR 0197: one MAC, by the old secret.
+        ->and(preg_match(PRE_0197_HEADER, $main))->toBe(1)
+        ->and($main)->toBe(WebhookSignature::header($made->secret, $t, $n, 'POST', $path, $request->body))
+        ->and($next)->toBe(WebhookSignature::header($rotated->secret, $t, $n, 'POST', $path, $request->body));
 
     // A receiver holding the new secret, and one still holding the old, both take it.
     $url = parse_url($request->url);
@@ -405,7 +436,10 @@ it('publishes an event to each active subscription that chose it, signed with bo
     Clock::$now = Clock::$now->addHours(2);
     $s->acme(fn () => $s->webhooks->publish('order.placed', ['number' => 'PW-3'], $s->subscriptions));
     $s->workThrough();
-    expect(WebhookSignature::parseEach($s->http->sent[1]->headers[WebhookSignature::HEADER] ?? null)[2] ?? [])->toHaveCount(1);
+    $later = $s->http->sent[1];
+    [$t, $n] = WebhookSignature::parse($later->headers[WebhookSignature::HEADER] ?? null) ?? [0, ''];
+    expect($later->headers)->not->toHaveKey(WebhookSignature::NEXT_HEADER)
+        ->and($later->headers[WebhookSignature::HEADER] ?? '')->toBe(WebhookSignature::header($rotated->secret, $t, $n, 'POST', $path, $later->body));
 });
 
 it('ends unsent a delivery whose subscription was paused after it was queued', function () {
@@ -483,12 +517,87 @@ it('refuses a table name it would not write, and settings that make no sense', f
         ->and(fn () => new DatabaseWebhookSubscriptions($orm, $signer, overlapSeconds: 31 * 86_400))->toThrow(\InvalidArgumentException::class);
 });
 
-it('reads a header carrying two MACs, and no more', function () {
-    $header = WebhookSignature::headerForEach([str_repeat('a', 32), str_repeat('b', 32)], 1_800_000_000, 'nonce-of-sixteen-chars', 'POST', '/x', '{}');
-    $three = $header . ',v1=' . str_repeat('0', 64);
+it('counts a delivery whose last try failed where the queue gives up on it, though no try was logged', function () {
+    $s = new Sender(static fn (): OutboundResponse => new OutboundResponse(204));
+    $made = $s->acme(fn () => $s->subscriptions->create('https://receiver.test/hooks', ['order.placed'], '', 'm-1'));
+    $job = new DeliverWebhook($made->subscription->id, '0199f1c2-7a3e-7c41-9a55-2f0e8d7b1c11', 'order.placed', '{}');
 
-    expect(WebhookSignature::parseEach($header)[2])->toHaveCount(2)
-        ->and(WebhookSignature::parse($header)[2])->toBe(WebhookSignature::mac(str_repeat('a', 32), 1_800_000_000, 'nonce-of-sixteen-chars', 'POST', '/x', '{}'))
-        ->and(WebhookSignature::parseEach($three))->toBeNull()
-        ->and(fn () => WebhookSignature::headerForEach([], 1, 'nonce-of-sixteen-chars', 'POST', '/', ''))->toThrow(\InvalidArgumentException::class);
+    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, new \RuntimeException('lost')));
+    $s->log->record(new DeliveryAttempt($job->delivery, $made->subscription->id, 'order.placed', 'acme', 6, DeliveryAttempt::FAILED, 503, 'status', 40, 1));
+    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, new \RuntimeException('answered 503')));
+
+    expect($s->acme(fn () => $s->subscriptions->get($made->subscription->id)?->consecutiveFailures))->toBe(2)
+        ->and($s->acme(fn () => $s->subscriptions->get($made->subscription->id)?->lastFailure))->toBe('status_503');
+});
+
+it('holds a tenant\'s webhook deliveries to a rate of their own, so one cannot starve the queue', function () {
+    $rate = DeliverWebhook::tenantRate();
+
+    expect($rate->perTenant)->toBeTrue()
+        ->and($rate->runs)->toBe(DeliverWebhook::TENANT_RUNS)
+        ->and($rate->per)->toBe(60);
+});
+
+it('makes subscriptions one at a time per tenant, holding the tenant\'s row', function () {
+    Clock::$now = CarbonImmutable::parse('2026-11-08 12:00:00', 'UTC');
+    $connection = PdoConnection::sqlite(':memory:');
+    DatabaseWebhookSubscriptions::define(new Schema($connection, Dialect::for($connection)));
+    $orm = new Orm($connection, new IdentityMap('webhook-lock'), Tenancy::flat());
+    $store = store($orm);
+
+    $inside = $orm->actAs('initech', fn () => $store->exclusively(static fn (): bool => $connection->inTransaction()));
+    expect($inside)->toBeTrue()
+        ->and($connection->select("SELECT tenant_id FROM webhook_subscriptions_tenants WHERE tenant_id = 'initech'"))->toHaveCount(1);
+});
+
+/**
+ * A create on a second connection, while the first holds the tenant: it
+ * waits, and -- given a short lock timeout -- gives up rather than count
+ * past the first.
+ */
+function createWaits(string $driver): void
+{
+    Databases::inScratchSchema($driver, static function (\PDO $pdo, string $schema) use ($driver): void {
+        Clock::$now = CarbonImmutable::parse('2026-11-08 12:00:00', 'UTC');
+        $first = new PdoConnection($pdo, $driver);
+        DatabaseWebhookSubscriptions::define(new Schema($first, Dialect::for($first)));
+        $other = Databases::another($driver);
+        $other->exec($driver === 'pgsql' ? "SET search_path TO {$schema}" : "USE {$schema}");
+        $other->exec($driver === 'pgsql' ? "SET lock_timeout = '300ms'" : 'SET SESSION innodb_lock_wait_timeout = 1');
+        $second = new PdoConnection($other, $driver);
+        $a = new Orm($first, new IdentityMap('webhook-lock-a'), Tenancy::flat());
+        $b = new Orm($second, new IdentityMap('webhook-lock-b'), Tenancy::flat());
+        $storeA = store($a);
+        $storeB = store($b);
+
+        $waited = $a->actAs('acme', fn () => $storeA->exclusively(function () use ($b, $storeB): bool {
+            try {
+                $b->actAs('acme', fn () => $storeB->create('https://receiver.test/b', ['order.placed'], '', 'm-1'));
+
+                return false;
+            } catch (\PDOException) {
+                return true;
+            }
+        }));
+        // Another tenant is not held by acme's lock.
+        $globex = $b->actAs('globex', fn () => $storeB->create('https://receiver.test/g', ['order.placed'], '', 'm-9'));
+
+        expect($waited)->toBeTrue()
+            ->and($globex->subscription->tenant)->toBe('globex');
+    });
+}
+
+it('holds a second create for the tenant on Postgres until the first commits', function () {
+    createWaits('pgsql');
+})->group('pgsql')->skip(Databases::postgresMissing() !== null, Databases::postgresMissing() ?? '');
+
+it('holds a second create for the tenant on MySQL until the first commits', function () {
+    createWaits('mysql');
+})->group('mysql')->skip(Databases::mysqlMissing() !== null, Databases::mysqlMissing() ?? '');
+
+it('signs a header in the format every receiver reads, one MAC alone', function () {
+    $header = WebhookSignature::header(str_repeat('a', 32), 1_800_000_000, 'nonce-of-sixteen-chars', 'POST', '/x', '{}');
+
+    expect(preg_match(PRE_0197_HEADER, $header))->toBe(1)
+        ->and(WebhookSignature::parse($header . ',v1=' . str_repeat('0', 64)))->toBeNull();
 });

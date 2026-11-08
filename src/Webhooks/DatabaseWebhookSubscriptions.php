@@ -6,6 +6,7 @@ namespace Tinvar\Webhooks;
 
 use Carbon\CarbonImmutable;
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
@@ -44,7 +45,14 @@ use Tinvar\Support\Uuid;
  * after `disableAfter` undelivered in a row, or the receiver answering 410,
  * the subscription is disabled with the reason kept beside it, and the
  * notice told. Each step is one statement, so deliveries ending at once on
- * several workers neither lose a count nor disable it twice.
+ * several workers neither lose a count nor disable it twice. Resumed after
+ * it was disabled, it is on probation until a delivery arrives: the first
+ * to fail before then disables it again at once, so a dead receiver is not
+ * sent another fifteen deliveries with each resume.
+ *
+ * **Count.** A tenant holds at most `maxPerTenant`: create() counts and
+ * inserts holding the tenant's row in a second table (exclusively()), so
+ * creates at once are made one after another and none passes the count.
  */
 final readonly class DatabaseWebhookSubscriptions implements WebhookSubscriptions, WebhookSubscribers, CountsDeliveryFailures
 {
@@ -63,6 +71,8 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
     public const int MAX_EVENTS = 64;
 
     private Connection $connection;
+
+    private string $tenants;
 
     private TimestampStorage $moments;
 
@@ -92,11 +102,12 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
             throw new \InvalidArgumentException('A subscription is disabled after at least one failure, a rotated secret overlaps for up to 30 days, and a tenant may hold at least one.');
         }
         $this->connection = $orm->statements();
+        $this->tenants = "{$table}_tenants";
         $this->moments = TimestampStorage::for($this->connection);
         $this->clock = $clock ?? static fn (): CarbonImmutable => CarbonImmutable::now('UTC');
     }
 
-    /** The table, for the application's migration to make. */
+    /** The two tables -- the subscriptions, and a row a tenant to hold while one is made -- for the application's migration to make. */
     public static function define(Schema $schema, string $table = self::TABLE, bool $ifNotExists = false): void
     {
         self::assertTable($table);
@@ -115,10 +126,41 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
             $subscriptions->string('last_failure', 32)->nullable();
             $subscriptions->enum('disabled_reason', WebhookDisabledReason::class)->nullable();
             $subscriptions->timestamp('disabled_at')->nullable();
+            $subscriptions->integer('probation');
             $subscriptions->string('created_by');
             $subscriptions->timestamp('created_at');
             $subscriptions->timestamp('updated_at');
         }, $ifNotExists);
+
+        $schema->create("{$table}_tenants", static function (Table $tenants): void {
+            $tenants->tenant()->primary();
+        }, $ifNotExists);
+    }
+
+    /**
+     * Runs $work in a transaction holding the tenant in force's row, made
+     * where there is none and written to as it stands: a write takes the
+     * row's lock on Postgres and MySQL, and the database's on SQLite, until
+     * the outermost transaction commits.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function exclusively(\Closure $work): mixed
+    {
+        $tenant = $this->tenantInForce();
+
+        return $this->connection->transaction(function () use ($tenant, $work): mixed {
+            $this->connection->execute(
+                $this->connection instanceof NamesDriver && $this->connection->driver() === 'mysql'
+                    ? "INSERT INTO {$this->tenants} (tenant_id) VALUES (?) ON DUPLICATE KEY UPDATE tenant_id = tenant_id"
+                    : "INSERT INTO {$this->tenants} (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id",
+                [$tenant],
+            );
+
+            return $work();
+        });
     }
 
     public function find(string $subscription): ?WebhookSubscription
@@ -192,17 +234,20 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
         $events = self::events($events);
         $description = self::description($description);
         $this->assertUrl($url);
-        if ($this->count($tenant) >= $this->maxPerTenant) {
-            throw new WebhookSubscriptionRefused('limit', "An organization holds at most {$this->maxPerTenant} webhook subscriptions: delete one first.");
-        }
 
         $id = Uuid::v7();
-        $now = $this->moments->format($this->now());
-        $this->connection->execute(
-            "INSERT INTO {$this->table} (id, tenant_id, url, description, events, status, secret_version, previous_secret_until, consecutive_failures, last_failure, disabled_reason, disabled_at, created_by, created_at, updated_at) "
-            . 'VALUES (?, ?, ?, ?, ?, ?, 1, NULL, 0, NULL, NULL, NULL, ?, ?, ?)',
-            [$id, $tenant, $url, $description, self::json($events), WebhookSubscriptionStatus::Active->value, $createdBy, $now, $now],
-        );
+        // Counted and made holding the tenant: creates at once wait on one another.
+        $this->exclusively(function () use ($tenant, $id, $url, $description, $events, $createdBy): void {
+            if ($this->count($tenant) >= $this->maxPerTenant) {
+                throw new WebhookSubscriptionRefused('limit', "An organization holds at most {$this->maxPerTenant} webhook subscriptions: delete one first.");
+            }
+            $now = $this->moments->format($this->now());
+            $this->connection->execute(
+                "INSERT INTO {$this->table} (id, tenant_id, url, description, events, status, secret_version, previous_secret_until, consecutive_failures, last_failure, disabled_reason, disabled_at, probation, created_by, created_at, updated_at) "
+                . 'VALUES (?, ?, ?, ?, ?, ?, 1, NULL, 0, NULL, NULL, NULL, 0, ?, ?, ?)',
+                [$id, $tenant, $url, $description, self::json($events), WebhookSubscriptionStatus::Active->value, $createdBy, $now, $now],
+            );
+        });
         $stored = $this->get($id) ?? throw new \LogicException('The subscription just made is not found.');
 
         return new IssuedWebhookSecret($stored, $this->secret($tenant, $id, 1));
@@ -239,13 +284,22 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
 
     /**
      * Sends to a paused or disabled subscription again, its count of
-     * failures and its disabling forgotten. False when none was stopped.
+     * failures and its disabling forgotten -- one that was disabled on
+     * probation, until a delivery arrives. False when none was stopped.
      */
     public function resume(string $id): bool
     {
         return $this->connection->execute(
-            "UPDATE {$this->table} SET status = ?, consecutive_failures = 0, disabled_reason = NULL, disabled_at = NULL, updated_at = ? WHERE tenant_id = ? AND id = ? AND status <> ?",
-            [WebhookSubscriptionStatus::Active->value, $this->moments->format($this->now()), $this->tenantInForce(), $id, WebhookSubscriptionStatus::Active->value],
+            "UPDATE {$this->table} SET probation = CASE WHEN status = ? THEN 1 ELSE probation END, status = ?, consecutive_failures = 0, disabled_reason = NULL, disabled_at = NULL, updated_at = ? "
+            . 'WHERE tenant_id = ? AND id = ? AND status <> ?',
+            [
+                WebhookSubscriptionStatus::Disabled->value,
+                WebhookSubscriptionStatus::Active->value,
+                $this->moments->format($this->now()),
+                $this->tenantInForce(),
+                $id,
+                WebhookSubscriptionStatus::Active->value,
+            ],
         ) > 0;
     }
 
@@ -302,7 +356,7 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
             return;
         }
         $this->connection->execute(
-            "UPDATE {$this->table} SET consecutive_failures = 0 WHERE tenant_id = ? AND id = ? AND consecutive_failures <> 0",
+            "UPDATE {$this->table} SET consecutive_failures = 0, probation = 0 WHERE tenant_id = ? AND id = ? AND (consecutive_failures <> 0 OR probation <> 0)",
             [$tenant, $subscription],
         );
     }
@@ -319,21 +373,26 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
             [$failure === '' ? 'failed' : $failure, $tenant, $subscription],
         );
 
-        // One statement decides who disables it: of deliveries ending at
-        // once, the one whose update changed the row tells the notice.
-        $reason = $receiverGone ? WebhookDisabledReason::ReceiverGone : WebhookDisabledReason::ConsecutiveFailures;
+        // One statement decides who disables it, and why: of deliveries
+        // ending at once, the one whose update changed the row tells the
+        // notice. A 410 at once; on probation at once; else at the count.
+        $now = $this->moments->format($this->now());
         $disabled = $this->connection->execute(
-            "UPDATE {$this->table} SET status = ?, disabled_reason = ?, disabled_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ? AND status = ?"
-            . ($receiverGone ? '' : ' AND consecutive_failures >= ?'),
+            "UPDATE {$this->table} SET status = ?, disabled_reason = CASE WHEN ? = 1 THEN ? WHEN probation = 1 THEN ? ELSE ? END, disabled_at = ?, updated_at = ? "
+            . 'WHERE tenant_id = ? AND id = ? AND status = ? AND (? = 1 OR probation = 1 OR consecutive_failures >= ?)',
             [
                 WebhookSubscriptionStatus::Disabled->value,
-                $reason->value,
-                $this->moments->format($this->now()),
-                $this->moments->format($this->now()),
+                $receiverGone ? 1 : 0,
+                WebhookDisabledReason::ReceiverGone->value,
+                WebhookDisabledReason::FailedAfterResume->value,
+                WebhookDisabledReason::ConsecutiveFailures->value,
+                $now,
+                $now,
                 $tenant,
                 $subscription,
                 WebhookSubscriptionStatus::Active->value,
-                ...($receiverGone ? [] : [$this->disableAfter]),
+                $receiverGone ? 1 : 0,
+                $this->disableAfter,
             ],
         );
         if ($disabled > 0 && $this->notice !== null) {
@@ -446,6 +505,7 @@ final readonly class DatabaseWebhookSubscriptions implements WebhookSubscription
             lastFailure: isset($row['last_failure']) ? $string($row['last_failure']) : null,
             disabledReason: isset($row['disabled_reason']) ? WebhookDisabledReason::tryFrom($string($row['disabled_reason'])) : null,
             disabledAt: self::moment($row['disabled_at'] ?? null),
+            probation: $int($row['probation'] ?? 0) !== 0,
             createdBy: $string($row['created_by'] ?? ''),
             createdAt: self::moment($row['created_at'] ?? null) ?? CarbonImmutable::createFromTimestampUTC(0),
             updatedAt: self::moment($row['updated_at'] ?? null) ?? CarbonImmutable::createFromTimestampUTC(0),
