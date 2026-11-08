@@ -37,7 +37,9 @@ use Tinvar\Support\Str;
  *     or null for none; a query's value;
  *   - 401 for no token, or one that does not hold, with WWW-Authenticate;
  *   - 403 for a token lacking a scope (`insufficient_scope`, naming them),
- *     or presented outside its tenant or panel; or an #[Authorize] or
+ *     or presented outside its tenant or panel; a tenant's token where the
+ *     operation does not say #[AcceptsTenantTokens]
+ *     (`tenant_token_not_accepted`, ADR 0193); or an #[Authorize] or
  *     membership that said no (`forbidden`);
  *   - 404 for an operation no #[RequiresScope] exposes, or not on this
  *     host, or a model id that names nothing in scope;
@@ -97,7 +99,9 @@ final readonly class ApiEndpoint
         ];
 
         return new Pipeline($stack)->run($request, function (Request $passed) use ($name, $rawBody): Response {
-            $presented = SignInWithApiToken::presentedBy($passed) ?? throw new \LogicException('An API call ran with no token signed in.');
+            $presented = SignInWithApiToken::presentedBy($passed)
+                ?? SignInWithApiToken::tenantTokenPresentedBy($passed)
+                ?? throw new \LogicException('An API call ran with no token signed in.');
             $arguments = Limits::input($passed, $rawBody, $this->maxBodyBytes, $this->maxJsonDepth);
 
             return $this->respond($this->calls->call($presented, $name, $arguments, $passed), $name);
@@ -121,6 +125,8 @@ final readonly class ApiEndpoint
                 'host' => new HttpException(404, "{$name} is not answered on this host.", 'not_found'),
                 'insufficient_scope' => SignInWithApiToken::insufficientScope($this->calls->operations()[$name][1] ?? []),
                 'panel' => new HttpException(403, "An API token was presented for {$name}, in a panel it was not issued in.", 'api_token_panel'),
+                // An organization's token, where only a user's is taken (ADR 0193).
+                'tenant_token_not_accepted' => new HttpException(403, "{$name} takes a user's API token, and an organization's was presented.", 'tenant_token_not_accepted'),
                 default => new HttpException(403, "An API token was presented for {$name} in a tenant it was not issued in.", 'api_token_tenant'),
             },
             default => self::json(500, ['error' => [

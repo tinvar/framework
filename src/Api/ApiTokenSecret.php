@@ -7,11 +7,13 @@ namespace Tinvar\Api;
 use Tinvar\Http\Request;
 
 /**
- * What an API token is as text: `tvr_<id>_<secret>`, and how it is read
- * from a request (ADR 0159).
+ * What an API token is as text: `tvr_<id>_<secret>`, or `tvt_<id>_<secret>`
+ * for a tenant's (ADR 0193), and how it is read from a request (ADR 0159).
  *
- *   - `tvr_` marks it as Tinvar's, so a secret scanner -- GitHub's, a
- *     pre-commit hook -- can find one pushed by mistake: SCANNER_PATTERN.
+ *   - `tvr_` (a user's) or `tvt_` (a tenant's) marks it as Tinvar's, so a
+ *     secret scanner -- GitHub's, a pre-commit hook -- can find one pushed
+ *     by mistake: ApiTokenKind::scannerPattern(), SCANNER_PATTERN for a
+ *     user's. The prefix says which store it is looked up in, and no other.
  *   - `<id>` is the stored token's id, 32 lowercase hex digits: what the
  *     token is looked up by. It is no secret.
  *   - `<secret>` is 43 characters of base62, about 256 bits from
@@ -26,10 +28,10 @@ use Tinvar\Http\Request;
  */
 final class ApiTokenSecret
 {
-    /** What every token starts with. */
+    /** What every user's token starts with (ApiTokenKind::User). */
     public const string PREFIX = 'tvr_';
 
-    /** The regular expression a secret scanner finds a token by. */
+    /** The regular expression a secret scanner finds a user's token by (ApiTokenKind::scannerPattern()). */
     public const string SCANNER_PATTERN = 'tvr_[0-9a-f]{32}_[0-9A-Za-z]{43}';
 
     /** How long the secret part is. */
@@ -43,14 +45,14 @@ final class ApiTokenSecret
      *
      * @return array{string, string} the token, and the SHA-256 of its secret, in hex
      */
-    public static function issue(string $id): array
+    public static function issue(string $id, ApiTokenKind $kind = ApiTokenKind::User): array
     {
         if (preg_match('/^[0-9a-f]{32}\z/', $id) !== 1) {
             throw new \InvalidArgumentException('An API token\'s id is 32 lowercase hex digits.');
         }
         $secret = self::randomSecret();
 
-        return [self::PREFIX . $id . '_' . $secret, self::digest($secret)];
+        return [$kind->value . $id . '_' . $secret, self::digest($secret)];
     }
 
     /**
@@ -59,9 +61,9 @@ final class ApiTokenSecret
      *
      * @return array{string, string}|null
      */
-    public static function parse(#[\SensitiveParameter] string $token): ?array
+    public static function parse(#[\SensitiveParameter] string $token, ApiTokenKind $kind = ApiTokenKind::User): ?array
     {
-        if (preg_match('/^' . self::SCANNER_PATTERN . '\z/', $token) !== 1) {
+        if (preg_match('/^' . $kind->scannerPattern() . '\z/', $token) !== 1) {
             return null;
         }
 
@@ -89,10 +91,22 @@ final class ApiTokenSecret
         return $m[1];
     }
 
-    /** Whether a request presents an API token of Tinvar's, by its prefix: what a session's path refuses. */
+    /** Whether a request presents an API token of Tinvar's, of either kind, by its prefix: what a session's path refuses. */
     public static function presented(Request $request): bool
     {
-        return str_starts_with(self::bearerOf($request) ?? '', self::PREFIX);
+        return self::kindOf(self::bearerOf($request) ?? '') !== null;
+    }
+
+    /** Whose a presented token says it is, by its prefix; null for none of Tinvar's. */
+    public static function kindOf(#[\SensitiveParameter] string $token): ?ApiTokenKind
+    {
+        foreach (ApiTokenKind::cases() as $kind) {
+            if (str_starts_with($token, $kind->value)) {
+                return $kind;
+            }
+        }
+
+        return null;
     }
 
     /** 43 characters of base62, each drawn without bias. */

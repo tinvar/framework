@@ -13,7 +13,12 @@ enum ActorKind: string
     /** A signed-in user, in a request: the entry's actor id is theirs. */
     case User = 'user';
 
-    /** Another system signed in as itself (Tinvar\Services\Service): the id is its service name. */
+    /**
+     * Another system signed in as itself (Tinvar\Services\Service): the id
+     * is its service name. Or a tenant's API token acting for its tenant
+     * (ADR 0193): the id is `tenant-token:<id>`, and the entry names the
+     * token as its API token.
+     */
     case Service = 'service';
 
     /** A job on the queue: the id is the user it runs as, if any; the entry names the job and its starter. */

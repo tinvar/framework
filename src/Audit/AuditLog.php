@@ -11,6 +11,7 @@ use Tinvar\Attributes\AuditedAction;
 use Tinvar\Attributes\ClassAttributes;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
+use Tinvar\Auth\TenantTokenActor;
 use Tinvar\Http\Request;
 use Tinvar\Http\TrustedProxies;
 use Tinvar\Jobs\RunningJobs;
@@ -261,6 +262,12 @@ final class AuditLog implements ModelChanges, ActionObserver
         $user = $this->auth->user();
         if ($user instanceof Service) {
             return new Actor(ActorKind::Service, $user->serviceName());
+        }
+        // A tenant's API token acts for its tenant as a service would, as
+        // itself and never as the member who made it (ADR 0193): named by
+        // its id, `tenant-token:<id>`, which no service's name is.
+        if ($user instanceof TenantTokenActor && $this->jobs?->current() === null) {
+            return new Actor(ActorKind::Service, $user->authIdentifier(), apiToken: $user->id);
         }
 
         $job = $this->jobs?->current();

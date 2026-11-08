@@ -143,6 +143,19 @@ final class PolicyRegistry
         return $this->policies[$mostDerived[0]];
     }
 
+    /**
+     * The policy class that decides about $subject, as for() finds it,
+     * without building it: for what checks a policy's declarations when the
+     * application is built. Null for none.
+     *
+     * @param class-string $subject
+     * @return class-string|null
+     */
+    public function classFor(string $subject): ?string
+    {
+        return $this->policyClassFor($subject);
+    }
+
     /** Clears the instance cache. Called on the request and job teardown. */
     public function reset(): void
     {

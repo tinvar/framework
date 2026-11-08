@@ -19,6 +19,8 @@ use Tinvar\Api\ApiTokenChoice;
 use Tinvar\Api\ApiTokenRefused;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\IssuedApiToken;
+use Tinvar\Api\IssuedTenantApiToken;
+use Tinvar\Api\TenantApiTokens;
 use Tinvar\Audit\AuditLog;
 use Tinvar\Audit\SecurityEvent;
 use Tinvar\Auth\AuthContext;
@@ -986,6 +988,32 @@ final class Accounts
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::ApiTokenCreated, name: $issued->token->name, userId: $user->authIdentifier()));
 
         return $issued;
+    }
+
+    /**
+     * A token for the tenant in force, made by $user (ADR 0193), as
+     * issueApiToken() makes their own: the session confirmed in the last
+     * five minutes, the token refused once a revocation has moved the
+     * credential epoch the session was opened at. Outliving every sign-in
+     * of the member who made it, a tenant's token is no less a lasting
+     * credential than their own. Who may make one is the caller's policy:
+     * $allowed is it, asked again once the tenant's token epoch is read.
+     *
+     * @param list<string|\BackedEnum> $scopes
+     * @param (\Closure(): bool)|null $allowed
+     * @throws ValidationException on `confirm` for a session not confirmed lately
+     * @throws ApiTokenRefused as TenantApiTokens::issue() refuses
+     */
+    public function issueTenantApiToken(Request $http, AccountUser $user, TenantApiTokens $tokens, string $name, array $scopes, ?CarbonImmutable $expiresAt, ?\Closure $allowed = null): IssuedTenantApiToken
+    {
+        $this->assertRecentlyConfirmed($http);
+        $state = SessionState::of($http);
+        $epoch = $state->user()?->authIdentifier() === $user->authIdentifier() ? $state->credentialEpoch() : null;
+        if ($epoch === null) {
+            throw new ApiTokenRefused(ApiTokenChoice::Caller, ApiTokens::SIGNED_OUT, 403);
+        }
+
+        return $tokens->issue($name, $scopes, $expiresAt, epoch: $epoch, allowed: $allowed);
     }
 
     // ------------------------------------------------------------- the worker

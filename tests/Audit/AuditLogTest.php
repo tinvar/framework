@@ -312,6 +312,26 @@ it('names the API token a user acted through, inside the chain, and keeps entrie
     expect($audit->verify('acme')->problem)->toBe('Entry 2 is not as it was written.');
 });
 
+it('names a tenant\'s API token as a service acting for the tenant, by the token, never a user (ADR 0193)', function () {
+    [$orm, $audit, $auth] = log();
+    $token = '0192f1c4a5b67e3f8a9b0c1d2e3f4a5b';
+    $actor = new \Tinvar\Auth\TenantTokenActor($token, 'acme', '', ['notes:write'], 'Nightly sync');
+
+    $auth->login($actor, '0', apiToken: $token);
+    $named = $audit->actor();
+    $orm->actAs('acme', fn () => note($orm, 'by the organization\'s token'));
+    $auth->login(null);
+    $entries = $orm->actAs('acme', fn (): array => $audit->trail()->recent());
+
+    expect($named->kind)->toBe(ActorKind::Service)
+        ->and($named->id)->toBe('tenant-token:' . $token)
+        ->and($named->apiToken)->toBe($token)
+        ->and($entries[0]->actor->kind)->toBe(ActorKind::Service)
+        ->and($entries[0]->actor->id)->toBe('tenant-token:' . $token)
+        ->and($entries[0]->actor->apiToken)->toBe($token)
+        ->and($audit->verify('acme')->intact)->toBeTrue();
+});
+
 it('reads what staff did while impersonating someone as theirs, by an index of its own', function () {
     [$orm, $audit, $auth, $connection] = log();
     $schema = new Schema($connection, Dialect::for($connection));

@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace Tinvar\Api;
 
 use Tinvar\Actions\ActionRegistry;
+use Tinvar\Attributes\AcceptsTenantTokens;
+use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\RequiresScope;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelContext;
+use Tinvar\Auth\PolicyGate;
+use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Calls\CallHosts;
 use Tinvar\Calls\CallResult;
 use Tinvar\Calls\CallRunner;
@@ -51,16 +55,26 @@ use Tinvar\Query\QueryRegistry;
  * a network allowlist -- run on the call's request, as they run for a page
  * or an endpoint in the panel. A token outlives the request that issued it,
  * so what the panel checked then is checked again at every call.
+ *
+ * **A tenant's token** (ADR 0193) is held the same way, and only to an
+ * operation marked #[AcceptsTenantTokens] (`tenant_token_not_accepted`
+ * otherwise); it runs as its TenantTokenActor, whose membership of a panel
+ * is the application's Memberships' to answer, as anyone's is.
  */
 final readonly class ApiCalls
 {
     /** @var array<string, array{Operation, list<string>}> by operation name: each, and the scopes it requires */
     private array $operations;
 
+    /** @var array<string, true> the operations a tenant's token may call, by name (ADR 0193) */
+    private array $tenantTokens;
+
     /**
      * @param list<array{Operation, RequiresScope}> $operations see discover()
      * @param CallHosts|null $hosts the hosts an operation is held to; none, and the application is
      *        taken to route on no host
+     * @param list<string> $tenantTokenOperations the operations a tenant's token may call, by
+     *        name (acceptingTenantTokens()); each must be among $operations
      */
     public function __construct(
         array $operations,
@@ -71,6 +85,7 @@ final readonly class ApiCalls
         private ?Memberships $memberships = null,
         private ?CallHosts $hosts = null,
         private ?EntryContext $entry = null,
+        array $tenantTokenOperations = [],
     ) {
         $byName = [];
         foreach ($operations as [$operation, $declaration]) {
@@ -80,7 +95,99 @@ final readonly class ApiCalls
             $byName[$operation->name] = [$operation, $declaration->scopes];
         }
         $this->operations = $byName;
+        $accepting = [];
+        foreach ($tenantTokenOperations as $name) {
+            if (!isset($byName[$name])) {
+                throw new \LogicException("The operation '{$name}' accepts tenant tokens and requires no scope: mark it #[RequiresScope] too, or take #[AcceptsTenantTokens] away.");
+            }
+            $accepting[$name] = true;
+        }
+        $this->tenantTokens = $accepting;
         CallHosts::assertHolds($hosts, array_map(static fn (array $entry): Operation => $entry[0], $byName), 'the API calls');
+    }
+
+    /**
+     * The names of the operations among $operations that accept tenant
+     * tokens (ADR 0193), from what carries #[AcceptsTenantTokens] --
+     * Operations::declaring()'s or described()'s. One that requires no
+     * scope is refused: nothing would be exposed, while it read as though
+     * something were. So is one on an action holder's class, as
+     * #[RequiresScope] is.
+     *
+     * @param list<array{Operation, object}> $accepting
+     * @param list<array{Operation, RequiresScope}> $operations
+     * @return list<string>
+     */
+    public static function acceptingTenantTokens(array $accepting, array $operations, ActionRegistry $actions): array
+    {
+        foreach ($actions->all() as $action) {
+            if (new \ReflectionClass($action->class)->getAttributes(AcceptsTenantTokens::class) !== []) {
+                throw new \LogicException(
+                    "{$action->class} carries #[AcceptsTenantTokens] on its class. Name it on each #[Action] method a tenant's token may call, "
+                    . 'so what a tenant\'s token reaches is read where each action is.',
+                );
+            }
+        }
+        $exposed = [];
+        foreach ($operations as [$operation]) {
+            $exposed[$operation->name] = true;
+        }
+        $names = [];
+        foreach ($accepting as [$operation]) {
+            if (!isset($exposed[$operation->name])) {
+                throw new \LogicException("{$operation->class} ({$operation->name}) accepts tenant tokens and requires no scope: mark it #[RequiresScope] too, or take #[AcceptsTenantTokens] away.");
+            }
+            $names[] = $operation->name;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Refuses an entry point that accepts tenant tokens while a check on it
+     * would be decided by a policy method -- the ability, or the policy's
+     * before() -- that does not name TenantTokenActor (PolicyGate::
+     * admitsTenantTokens()): every call it took would be refused, and the
+     * policy's author never said what a token may do. Read when the Kernel
+     * is built, from the declarations alone.
+     *
+     * @param list<array{string, list<Authorize>, array<string, string>}> $entries each entry
+     *        point: where it is, its checks, and its model inputs by name
+     * @throws \LogicException naming the first policy method that does not name the actor
+     */
+    public static function assertTenantTokenPolicies(PolicyRegistry $policies, array $entries): void
+    {
+        foreach ($entries as [$where, $checks, $models]) {
+            foreach ($checks as $check) {
+                $argument = (string) $check->argument;
+                $subject = $models[$argument] ?? (class_exists($argument) || interface_exists($argument) ? $argument : null);
+                /** @var class-string|null $subject */
+                $policy = $subject === null ? null : $policies->classFor($subject);
+                if ($policy === null) {
+                    continue;
+                }
+                foreach (['before', $check->ability] as $method) {
+                    $reflection = new \ReflectionClass($policy);
+                    $public = $reflection->hasMethod($method) && $reflection->getMethod($method)->isPublic();
+                    if ($method === 'before' && !$public) {
+                        continue;
+                    }
+                    if (!PolicyGate::admitsTenantTokens($policy, $method)) {
+                        throw new \LogicException(
+                            "{$where} accepts tenant tokens, and #[Authorize('{$check->ability}', '{$argument}')] is decided by {$policy}::{$method}(), "
+                            . 'whose first parameter does not name Tinvar\Auth\TenantTokenActor. Type it as `User|TenantTokenActor|null $actor` '
+                            . 'and say what an organization\'s token may do, or take #[AcceptsTenantTokens] away.',
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /** Whether a tenant's token may call $operation (#[AcceptsTenantTokens]). */
+    public function acceptsTenantTokens(string $operation): bool
+    {
+        return isset($this->tenantTokens[$operation]);
     }
 
     /**
@@ -124,18 +231,24 @@ final readonly class ApiCalls
     }
 
     /**
-     * Runs $operation for the user $presented signed in, held to what the
+     * Runs $operation for the user $presented signed in -- or, for a
+     * tenant's token, as the token itself (ADR 0193) -- held to what the
      * token allows.
      *
      * @param array<array-key, mixed> $arguments the caller's input, decoded from its JSON
      * @param Request|null $request the call's request, which a panel's guard and middleware run
      *        on; without one, an operation in a panel that has either is refused
      */
-    public function call(PresentedApiToken $presented, string $operation, array $arguments, ?Request $request = null): CallResult
+    public function call(PresentedApiToken|PresentedTenantApiToken $presented, string $operation, array $arguments, ?Request $request = null): CallResult
     {
         $entry = $this->operations[$operation] ?? null;
         if ($entry === null) {
             return CallResult::refused('unknown_operation');
+        }
+        // A tenant's token reaches only what says it may: its call runs as
+        // no user, which a policy written for people never expected.
+        if ($presented instanceof PresentedTenantApiToken && !isset($this->tenantTokens[$operation])) {
+            return CallResult::refused('tenant_token_not_accepted');
         }
         [$declared, $scopes] = $entry;
         $token = $presented->token;
@@ -155,11 +268,11 @@ final readonly class ApiCalls
         }
 
         return $this->auth->actingAs(
-            $presented->user,
+            $presented instanceof PresentedApiToken ? $presented->user : $presented->actor,
             fn (): CallResult => $this->orm->actAs($token->tenant, fn (): CallResult => $this->orm->withoutSubtreeGrant(
                 fn (): CallResult => $this->run($declared, $arguments, $request),
             )),
-            $presented->epoch,
+            $presented instanceof PresentedApiToken ? $presented->epoch : $presented->epoch(),
         );
     }
 

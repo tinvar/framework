@@ -91,6 +91,8 @@ final readonly class CompiledEndpoint
         // row (ADR 0191); any other is a 404 for one.
         /** @var array<string, true> */
         public array $trashedModels = [],
+        // #[AcceptsTenantTokens]: a tenant's API token is taken as well as a user's (ADR 0193).
+        public bool $tenantTokens = false,
     ) {}
 
     /** Whether an API token is what signs its caller in (ADR 0159). */

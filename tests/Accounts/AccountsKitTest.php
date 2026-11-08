@@ -737,6 +737,41 @@ it('asks a session to confirm it is its owner before it issues an API token, and
     });
 });
 
+// ADR 0193: a tenant's token outlives every sign-in of the member who made
+// it, so it is made only by a session confirmed lately, held to its
+// credential epoch, with the caller's own check asked again.
+it('asks a session to confirm it is its owner before it makes a tenant\'s API token, and asks the caller\'s check again', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $store = new \Tinvar\Api\ArrayTenantApiTokens();
+        $tokens = new \Tinvar\Api\TenantApiTokens($store, static fn (string $t): bool => true, $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+        $allowed = true;
+        $issue = static function () use ($owner, $app, $user, $tokens, &$allowed) {
+            return $owner->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+                $user,
+                static fn () => $app->orm->actAs('acme', static fn () => $a->issueTenantApiToken($r, $user, $tokens, 'Warehouse sync', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30), static fn (): bool => $allowed)),
+            ));
+        };
+
+        expect(refused($issue))->toBe(['confirm' => [Accounts::CONFIRM_FIRST]])
+            ->and($store->tokens)->toBe([]);
+
+        $owner->confirm();
+        $allowed = false;
+        $refusal = tokenRefused($issue);
+        $allowed = true;
+        $issued = $issue();
+
+        expect($refusal->choice)->toBe(ApiTokenChoice::Caller)
+            ->and($issued->plaintext)->toStartWith('tvt_')
+            ->and($issued->token->tenant)->toBe('acme')
+            ->and($issued->token->createdBy)->toBe($user->authIdentifier())
+            ->and($store->tokens)->toHaveCount(1);
+    });
+});
+
 it('tells the owner by email when a passkey is added', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $owner = member($app);

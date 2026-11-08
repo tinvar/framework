@@ -29,9 +29,14 @@ final readonly class SignInWithApiToken implements Middleware
     /** What a refusal names the realm: the application's API. */
     public const string REALM = 'api';
 
+    /**
+     * @param TenantApiTokens|null $tenantTokens the tenants' tokens (ADR 0193); none, and a `tvt_`
+     *        token is refused as one that does not hold
+     */
     public function __construct(
         private ApiTokens $tokens,
         private AuthContext $auth,
+        private ?TenantApiTokens $tenantTokens = null,
     ) {}
 
     public function handle(Request $request, \Closure $next): Response
@@ -43,13 +48,17 @@ final readonly class SignInWithApiToken implements Middleware
             ]);
         }
 
-        $presented = $this->tokens->authenticate($bearer);
-        if ($presented === null) {
-            throw new HttpException(401, 'An API call presented a token that does not hold.', 'api_token_invalid', [
-                'www-authenticate' => 'Bearer realm="' . self::REALM . '", error="invalid_token"',
-            ]);
+        // A tenant's token is looked up among the tenants' alone, and signs
+        // in no user: its call runs as the token (TenantTokenActor), on the
+        // tenant's token epoch, under its own id.
+        if (ApiTokenSecret::kindOf($bearer) === ApiTokenKind::Tenant) {
+            $tenant = $this->tenantTokens?->authenticate($bearer) ?? throw self::invalid();
+            $this->auth->login($tenant->actor, $tenant->epoch(), $tenant->token->id);
+
+            return $next($request->withAttribute(TenantApiTokens::REQUEST_ATTRIBUTE, $tenant));
         }
 
+        $presented = $this->tokens->authenticate($bearer) ?? throw self::invalid();
         $this->auth->login($presented->user, $presented->epoch, $presented->token->id);
 
         return $next($request->withAttribute(ApiTokens::REQUEST_ATTRIBUTE, $presented));
@@ -61,6 +70,22 @@ final readonly class SignInWithApiToken implements Middleware
         $presented = $request->attribute(ApiTokens::REQUEST_ATTRIBUTE);
 
         return $presented instanceof PresentedApiToken ? $presented : null;
+    }
+
+    /** The tenant's token that signed a request in (ADR 0193); null where none did. */
+    public static function tenantTokenPresentedBy(Request $request): ?PresentedTenantApiToken
+    {
+        $presented = $request->attribute(TenantApiTokens::REQUEST_ATTRIBUTE);
+
+        return $presented instanceof PresentedTenantApiToken ? $presented : null;
+    }
+
+    /** Every token that does not hold, of either kind, refused alike. */
+    private static function invalid(): HttpException
+    {
+        return new HttpException(401, 'An API call presented a token that does not hold.', 'api_token_invalid', [
+            'www-authenticate' => 'Bearer realm="' . self::REALM . '", error="invalid_token"',
+        ]);
     }
 
     /**

@@ -13,8 +13,13 @@ use Tinvar\Api\ApiTokens;
 use Tinvar\Api\ApiTokenSecret;
 use Tinvar\Api\HoldApiToken;
 use Tinvar\Api\SignInWithApiToken;
+use Tinvar\Api\TenantApiTokens;
+use Tinvar\Attributes\AcceptsTenantTokens;
+use Tinvar\Attributes\Authorize;
 use Tinvar\Calls\CallHosts;
 use Tinvar\Calls\CallRunner;
+use Tinvar\Calls\Operation;
+use Tinvar\Calls\Operations;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Audit\AuditLog;
 use Tinvar\Actions\TagInvalidation;
@@ -121,6 +126,7 @@ use Tinvar\Endpoints\EndpointHandler;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Endpoints\EndpointRunner;
 use Tinvar\Uploads\UploadTickets;
+use Tinvar\Validation\FieldPlan;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 use Tinvar\Webhooks\WebhookEndpoint;
@@ -186,6 +192,13 @@ final class Kernel
      * when it was given no ApiAccess.
      */
     public readonly ?ApiTokens $apiTokens;
+
+    /**
+     * The tokens tenants own (ADR 0193): issued, listed, revoked and ended
+     * by their members, and in the container for the application's pages;
+     * null when its ApiAccess has no TenantTokenAccess.
+     */
+    public readonly ?TenantApiTokens $tenantApiTokens;
 
     /** POST /_api/{operation}, mounted only when an application gives ApiAccess (ADR 0159). */
     private readonly ?ApiEndpoint $api_;
@@ -1375,8 +1388,39 @@ final class Kernel
                 . 'give it one -- new ApiAccess(new DatabaseApiTokens($connection), $tokenHolders), its lookup a TokenHolderLookup -- or take the #[RequiresScope] away.',
             );
         }
+        // What a tenant's token may reach (ADR 0193): only what also says
+        // #[AcceptsTenantTokens], each check on it decided by a policy that
+        // names the actor -- held here, from the declarations, rather than
+        // refused at every call.
+        $tenantOperations = ApiCalls::acceptingTenantTokens(
+            Operations::declaring(AcceptsTenantTokens::class, $this->actions, $this->queries, $entry),
+            $apiOperations,
+            $this->actions,
+        );
+        $tenantEndpoints = array_values(array_filter($scopedEndpoints, static fn (CompiledEndpoint $e): bool => $e->tenantTokens));
+        if ($gate instanceof PolicyGate) {
+            $accepting = array_flip($tenantOperations);
+            $tenantChecks = [];
+            foreach ($this->actions->all() as $action) {
+                if (isset($accepting[$action->name])) {
+                    $tenantChecks[] = [$action->where(), $action->checks, $action->allModels()];
+                }
+            }
+            foreach ($apiOperations as [$operation]) {
+                if ($operation->kind === Operation::QUERY && isset($accepting[$operation->name])) {
+                    $models = array_filter(array_map(static fn (FieldPlan $f): ?string => $f->modelClass, $operation->inputs));
+                    $tenantChecks[] = [$operation->class, Authorize::declaredOn($operation->class, '__invoke'), $models];
+                }
+            }
+            foreach ($tenantEndpoints as $e) {
+                $tenantChecks[] = [$e->where(), $e->checks, [...$e->models, ...$e->nestedModels]];
+            }
+            ApiCalls::assertTenantTokenPolicies($this->policies, $tenantChecks);
+        }
+
         $tokenSignIn = null;
         $apiTokens = null;
+        $tenantApiTokens = null;
         $api = null;
         if ($apiAccess !== null) {
             // Each token bound to the host it was issued on, and an
@@ -1398,7 +1442,28 @@ final class Kernel
                 $apiAccess->maxPerUser,
                 $apiAccess->maxLifetimeDays,
             );
-            $tokenSignIn = new SignInWithApiToken($apiTokens, $this->auth);
+            $tenantAccess = $apiAccess->tenantTokens;
+            if ($tenantAccess !== null) {
+                $byName = array_flip($tenantOperations);
+                $tenantApiTokens = new TenantApiTokens(
+                    $tenantAccess->store,
+                    $tenantAccess->tenants,
+                    $apiAccess->users,
+                    $this->auth,
+                    $this->orm,
+                    ApiScopes::of(
+                        array_values(array_filter($apiOperations, static fn (array $o): bool => isset($byName[$o[0]->name]))),
+                        array_map(static fn (CompiledEndpoint $e): array => [$entry->panelFor($e->panels, $e->class)->name ?? '', $e->scopes], $tenantEndpoints),
+                    ),
+                    $panels,
+                    $callHosts,
+                    $apiAccess->clock,
+                    $tenantAccess->maxPerTenant,
+                    $tenantAccess->maxLifetimeDays,
+                );
+                $container?->instance(TenantApiTokens::class, $tenantApiTokens);
+            }
+            $tokenSignIn = new SignInWithApiToken($apiTokens, $this->auth, $tenantApiTokens);
             $api = new ApiEndpoint(
                 new ApiCalls(
                     $apiOperations,
@@ -1409,6 +1474,7 @@ final class Kernel
                     $memberships,
                     $callHosts,
                     $entry,
+                    $tenantOperations,
                 ),
                 $tokenSignIn,
                 $throttle,
@@ -1419,6 +1485,7 @@ final class Kernel
             $container?->instance(ApiTokens::class, $apiTokens);
         }
         $this->apiTokens = $apiTokens;
+        $this->tenantApiTokens = $tenantApiTokens;
         $this->api_ = $api;
         $this->apiStack = new Pipeline([
             ...$this->floodGuardFor($throttle, 'api', $limits),
@@ -1439,7 +1506,7 @@ final class Kernel
             endpointsLimit: $limits['endpoints'] ?? 0,
             resolver: $resolver,
             tokenSignIn: $tokenSignIn,
-            tokenHold: $tokenSignIn === null ? null : static fn (CompiledEndpoint $e): HoldApiToken => new HoldApiToken($e->scopes, $orm, $panels),
+            tokenHold: $tokenSignIn === null ? null : static fn (CompiledEndpoint $e): HoldApiToken => new HoldApiToken($e->scopes, $orm, $panels, $e->tenantTokens),
         );
 
         // Checked above to have the Telemetry and Metrics it records into.

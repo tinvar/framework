@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Endpoints;
 
 use Tinvar\Actions\TagInvalidation;
+use Tinvar\Attributes\AcceptsTenantTokens;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\Domain;
@@ -338,6 +339,12 @@ final class EndpointRegistry
         // 0159): the endpoint runs with no session, as #[WithoutSession]
         // does, so no cookie signs anyone in and no CSRF token is asked for.
         $sessionless = $scopes !== [] || WithoutSession::declaredOn($class, $method->getName());
+        // A tenant's token (ADR 0193) is taken where a user's is, and only
+        // where the endpoint says so: alone, it would expose nothing.
+        $tenantTokens = AcceptsTenantTokens::declaredOn($class, $method->getName());
+        if ($tenantTokens && $scopes === []) {
+            throw new EndpointException("{$where} accepts tenant tokens and requires no scope: mark it #[RequiresScope] too, or take #[AcceptsTenantTokens] away.");
+        }
         if ($scopes !== [] && $public) {
             throw new EndpointException(
                 "{$where} requires the scopes " . implode(', ', $scopes) . ' and is #[PublicAccess]. A scope is held by a token, '
@@ -421,6 +428,7 @@ final class EndpointRegistry
             rawBody: $rawBody,
             budget: $budget,
             refusals: $refusals,
+            tenantTokens: $tenantTokens,
         );
     }
 

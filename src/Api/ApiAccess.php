@@ -28,6 +28,8 @@ final readonly class ApiAccess
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param int|null $maxLifetimeDays the longest a token may last, in days, so an expiry is
      *        required; null lets a user choose one that never expires
+     * @param TenantTokenAccess|null $tenantTokens where tokens a tenant owns are kept, and how a
+     *        tenant is known to exist (ADR 0193); none, and a tenant's token is taken nowhere
      */
     public function __construct(
         public ApiTokenStore $store,
@@ -35,6 +37,7 @@ final readonly class ApiAccess
         public int $maxPerUser = ApiTokens::MAX_PER_USER,
         public ?\Closure $clock = null,
         public ?int $maxLifetimeDays = ApiTokens::MAX_LIFETIME_DAYS,
+        public ?TenantTokenAccess $tenantTokens = null,
     ) {
         if ($maxPerUser < 1) {
             throw new \InvalidArgumentException("ApiAccess lets a user hold {$maxPerUser} tokens. Allow at least one, or give the Kernel no ApiAccess.");

@@ -31,11 +31,19 @@ final class PolicyGate implements Gate
         $subjectClass = \is_object($subject) ? $subject::class : $subject;
         $policy = $this->policies->for($subjectClass);
         $user = $this->auth->user();
+        // A tenant's API token (ADR 0193) is asked about only by a method
+        // that names it: a policy written for people -- `$user !== null` --
+        // would let every token in, and one that refuses it by a type would
+        // throw. Anything that does not name it says no.
+        $token = $user instanceof TenantTokenActor;
 
         // A before() hook answers for every ability on that policy: the usual
         // place for "an owner may do anything here". Returning null means it
         // has no opinion and the ability method decides.
         if (method_exists($policy, 'before') && self::callable($policy, 'before')) {
+            if ($token && !self::admitsTenantTokens($policy::class, 'before')) {
+                return false;
+            }
             $verdict = $policy->before($user, $check->ability, $subject);
             if ($verdict !== null) {
                 return self::decision($policy, 'before', $verdict);
@@ -44,6 +52,9 @@ final class PolicyGate implements Gate
 
         if (!self::callable($policy, $check->ability)) {
             throw AuthorizationException::noAbility($policy::class, $check->ability);
+        }
+        if ($token && !self::admitsTenantTokens($policy::class, $check->ability)) {
+            return false;
         }
 
         return self::decision(
@@ -82,6 +93,42 @@ final class PolicyGate implements Gate
 
     /** @var array<string, 'none'|'public'|'hidden'> what callable() found, by policy class and method */
     private static array $visibility = [];
+
+    /**
+     * Whether $policy's public $method names TenantTokenActor in the type of
+     * its first parameter -- `User|TenantTokenActor|null $actor` -- and so
+     * answers for a tenant's API token (ADR 0193). A wider type, Authenticatable
+     * or mixed, admits one without saying so, and does not count: the
+     * policy's author has to have meant it. The Kernel holds every check on
+     * what accepts tenant tokens to this when it is built.
+     *
+     * @param class-string $policy
+     */
+    public static function admitsTenantTokens(string $policy, string $method): bool
+    {
+        return self::$admits[$policy . '::' . strtolower($method)] ??= (static function () use ($policy, $method): bool {
+            $reflection = new \ReflectionClass($policy);
+            if (!$reflection->hasMethod($method) || !$reflection->getMethod($method)->isPublic()) {
+                return false;
+            }
+            $type = ($reflection->getMethod($method)->getParameters()[0] ?? null)?->getType();
+            $named = match (true) {
+                $type instanceof \ReflectionNamedType => [$type],
+                $type instanceof \ReflectionUnionType => $type->getTypes(),
+                default => [],
+            };
+            foreach ($named as $one) {
+                if ($one instanceof \ReflectionNamedType && strcasecmp(ltrim($one->getName(), '\\'), TenantTokenActor::class) === 0) {
+                    return true;
+                }
+            }
+
+            return false;
+        })();
+    }
+
+    /** @var array<string, bool> what admitsTenantTokens() found, by policy class and method */
+    private static array $admits = [];
 
     /**
      * A policy answers with a bool or it has not answered.
