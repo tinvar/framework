@@ -39,6 +39,9 @@
 	# The Host check below goes ahead of everything, the hub and the dev
 	# server's modules included.
 	order respond first
+	# The share token's redirect is to the address with the token taken
+	# out of it, which `uri` does first (ADR 0190).
+	order redir after uri
 }
 
 http://:{$TINVAR_PORT} {
@@ -50,8 +53,52 @@ http://:{$TINVAR_PORT} {
 	# errors dev shows, and the source the dev server serves. What it cannot
 	# change is the Host its requests name: an address, localhost, or a name
 	# under .localhost, which a browser resolves to loopback itself.
-	@foreignhost not host localhost 127.0.0.1 ::1 [::1] *.localhost *.*.localhost
+	#
+	# And the one name a tunnel serves it under, where `serve --dev
+	# --public-host` names one (ADR 0190): the tunnel's own, which no page
+	# elsewhere can point at this machine. Its default is a name no request
+	# can carry (.invalid, RFC 6761).
+	@foreignhost not host localhost 127.0.0.1 ::1 [::1] *.localhost *.*.localhost {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
 	respond @foreignhost "Misdirected Request" 421
+	# The stand-in itself is never let in: with no name given, the token
+	# below is a stand-in too, and a request built by hand may carry both.
+	@standin host public-host.tinvar.invalid
+	respond @standin "Misdirected Request" 421
+
+	# Through the tunnel it is still dev -- every request's props, the
+	# source the dev server serves -- so that name answers only
+	# a visitor holding this run's share token: in the query, on the first
+	# request, and in a cookie of its own from then on. The hub's stream
+	# and the dev server's modules and socket are behind it too, as they
+	# are behind the Host check above.
+	@unshared {
+		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		not header_regexp Cookie `(?:^|;\s*)__Host-tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}(?:;|$)`
+		not query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
+	}
+	respond @unshared "Forbidden: open the address tinvar dev printed, with its share token." 403
+
+	# The token's first request: the cookie set, and the token taken out of
+	# the query before anything else reads it. A page is sent on to its
+	# address without the token, so the token leaves the address bar, the
+	# history and what PHP reads of the request line; anything else -- a
+	# webhook's POST -- goes on, without it in the query.
+	@sharing {
+		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
+	}
+	@sharingpage {
+		host {$TINVAR_DEV_PUBLIC_HOST:public-host.tinvar.invalid}
+		query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
+		method GET HEAD
+	}
+	# Marked before `uri` takes the token out, which the redirect's
+	# matcher would otherwise look for in vain.
+	vars @sharingpage tinvar_share_redirect yes
+	header @sharing +Set-Cookie "__Host-tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}; Path=/; Secure; HttpOnly; SameSite=Lax"
+	uri @sharing query -tinvar-share
+	@sharedpage vars tinvar_share_redirect yes
+	redir @sharedpage {uri} 303
 
 	# The live hub, as an app's own Caddyfile runs it (Tinvar\Live, ADR
 	# 0030): FrankenPHP's built-in Mercure, which the front controller

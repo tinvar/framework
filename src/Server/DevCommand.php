@@ -14,6 +14,7 @@ use Tinvar\Support\PrivateDirectory;
  * needs in dev.
  *
  *   tinvar dev [--host=HOST] [--port=PORT] [--app=DIR] [--frankenphp=PATH] [--worker] [--schedule]
+ *              [--tunnel | --public-host=NAME]
  *
  * tinvar-spec.md, "Dev experience": "`dev` supervises PHP, the renderer and
  * Vite's dev server, with HMR passed through PHP so the app runs on one
@@ -38,6 +39,12 @@ use Tinvar\Support\PrivateDirectory;
  *     renderer a scrubbed environment of its own. Removed when this stops,
  *     so the key dies with the run.
  *
+ * With --tunnel it also opens a Cloudflare quick tunnel to it: cloudflared,
+ * run here, which prints the trycloudflare.com name it was given, and serve
+ * is told that name as --public-host, to let in a visitor holding the share
+ * token it prints and no one else (ADR 0190). --public-host names a tunnel
+ * the developer runs themselves, a named one on a domain of theirs.
+ *
  * Refused first, before anything is read or started, wherever the
  * environment says production; and on any host but loopback. It forwards
  * SIGINT and SIGTERM to serve, and exits as serve did when serve exits on
@@ -54,6 +61,22 @@ final class DevCommand
 
     /** The addresses dev may listen on, as serve --dev has them. */
     private const array LOOPBACK = ['127.0.0.1', '::1'];
+
+    /** Where a cloudflared other than the PATH's is named. */
+    public const string CLOUDFLARED_ENV = 'TINVAR_CLOUDFLARED';
+
+    /** Seconds cloudflared may take to say the name its quick tunnel was given. */
+    public const int TUNNEL_TIMEOUT = 30;
+
+    /**
+     * The name a quick tunnel is given, as cloudflared prints it: alone in
+     * its banner's box. Anywhere else -- the API it asks, api.trycloudflare.com,
+     * named in an error -- it is no tunnel's.
+     */
+    private const string QUICK_TUNNEL = '~\|\s+https://((?!api\.)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.trycloudflare\.com)\s+\|~';
+
+    /** What cloudflared is given of dev's environment: nothing of the app's, its keys and credentials. */
+    private const array CLOUDFLARED_ENV_KEPT = ['PATH', 'HOME', 'TMPDIR', 'USER', 'LANG'];
 
     /** @var \Closure(string): void */
     private readonly \Closure $err;
@@ -80,6 +103,7 @@ final class DevCommand
         ?\Closure $err = null,
         private readonly ?string $workingDirectory = null,
         private readonly float $poll = 0.5,
+        private readonly PortFinder $ports = new PortFinder(),
     ) {
         $this->err = $err ?? static function (string $line): void {
             fwrite(STDERR, $line . "\n");
@@ -111,16 +135,28 @@ final class DevCommand
             }
 
             $php = PhpCommand::prefix();
-            $this->serveArguments = $plan['serve'];
+            $serveArguments = $plan['serve'];
+            if ($plan['cloudflared'] !== null) {
+                [$tunnel, $serveArguments] = $this->openTunnel($plan['cloudflared'], $serveArguments, $run);
+            }
+            $this->serveArguments = $serveArguments;
             $serve = $this->spawn(
-                [...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, ...$plan['serve']],
+                [...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, ...$serveArguments],
                 [...array_filter(getenv(), \is_string(...)), DevToolbar::ENV => $run],
             );
 
-            return $this->supervise($serve['process'], $command);
+            return $this->supervise($serve['process'], $command, $tunnel ?? null);
+        } catch (ServeException $e) {
+            ($this->err)($e->getMessage());
+
+            // Stopped while the tunnel opened is a stop, as one after is.
+            return $this->stopping ? 0 : 1;
         } finally {
             if (isset($serve)) {
                 $this->terminate($serve['process'], $serve['tether']);
+            }
+            if (isset($tunnel)) {
+                $this->closeTunnel($tunnel);
             }
             PrivateDirectory::remove($run);
         }
@@ -130,7 +166,7 @@ final class DevCommand
      * Everything decided before anything starts.
      *
      * @param list<string> $arguments
-     * @return array{app: string, serve: list<string>, codegen: list<string>|null}
+     * @return array{app: string, serve: list<string>, codegen: list<string>|null, cloudflared: string|null}
      */
     public function plan(array $arguments): array
     {
@@ -145,9 +181,18 @@ final class DevCommand
 
         $app = null;
         $passed = [];
+        $tunnel = false;
+        $publicHost = false;
         foreach ($arguments as $argument) {
             if ($argument === '--dev') {
                 continue;
+            }
+            if ($argument === '--tunnel') {
+                $tunnel = true;
+                continue;
+            }
+            if (str_starts_with($argument, '--public-host=')) {
+                $publicHost = true;
             }
             if (preg_match('/^--app=(.+)\z/s', $argument, $m) === 1) {
                 $app = $m[1];
@@ -170,10 +215,16 @@ final class DevCommand
             throw new ServeException("{$resolved} has no public/index.php, which dev runs for every request.");
         }
 
+        if ($tunnel && $publicHost) {
+            throw new ServeException('--tunnel opens a quick tunnel and names it to serve itself; --public-host names one you run. Pass one of them.');
+        }
+
         return [
             'app' => $resolved,
             'serve' => ['serve', '--dev', "--app={$resolved}", ...$passed],
             'codegen' => $this->codegen === null ? null : ($this->codegen)($resolved),
+            // Looked for now, so a missing one stops dev before anything starts.
+            'cloudflared' => $tunnel ? self::cloudflared() : null,
         ];
     }
 
@@ -183,8 +234,9 @@ final class DevCommand
      *
      * @param resource $serve
      * @param list<string>|null $codegen
+     * @param array{process: resource, tether: resource, log: string}|null $tunnel
      */
-    private function supervise($serve, ?array $codegen): int
+    private function supervise($serve, ?array $codegen, ?array $tunnel = null): int
     {
         $watcher = $codegen === null || $this->watch === [] ? null : new SourceWatcher($this->watch);
 
@@ -204,6 +256,20 @@ final class DevCommand
                 ($this->err)("tinvar serve exited with status {$status['exitcode']}; stopping.");
 
                 return $status['exitcode'] === 0 ? 1 : $status['exitcode'];
+            }
+
+            // The tunnel gone, the address dev printed leads nowhere: said,
+            // and everything stopped, rather than serving on as if shared.
+            if ($tunnel !== null && !proc_get_status($tunnel['process'])['running']) {
+                if ($this->stopRequested()) {
+                    return 0;
+                }
+                ($this->err)('cloudflared exited, so the tunnel is closed; stopping. Its last lines:');
+                foreach (self::lastLines($tunnel['log']) as $line) {
+                    ($this->err)("[cloudflared]   {$line}");
+                }
+
+                return 1;
             }
 
             $changed = $watcher?->changes() ?? [];
@@ -295,6 +361,134 @@ final class DevCommand
         proc_close($process);
 
         return [$status['exitcode'], $output];
+    }
+
+    /**
+     * cloudflared: the one TINVAR_CLOUDFLARED names, else the PATH's.
+     */
+    private static function cloudflared(): string
+    {
+        $named = getenv(self::CLOUDFLARED_ENV);
+        if (\is_string($named) && $named !== '') {
+            if (!str_starts_with($named, '/') || !is_file($named) || !is_executable($named)) {
+                throw new ServeException(self::CLOUDFLARED_ENV . " names {$named}, which is not an executable file at an absolute path.");
+            }
+
+            return $named;
+        }
+        foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $directory) {
+            if ($directory !== '' && is_file("{$directory}/cloudflared") && is_executable("{$directory}/cloudflared")) {
+                return "{$directory}/cloudflared";
+            }
+        }
+
+        throw new ServeException(
+            '--tunnel runs cloudflared, which is not on the PATH. Install it (brew install cloudflared, or see '
+            . 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), '
+            . 'or name it in ' . self::CLOUDFLARED_ENV . '.',
+        );
+    }
+
+    /**
+     * A quick tunnel to the port serve is to listen on, and serve's
+     * arguments with that port and the tunnel's name in them.
+     *
+     * The port is chosen here, as serve would choose it, since cloudflared
+     * is told it before serve starts: the tunnel's name is known only once
+     * cloudflared has it, and serve needs the name to start.
+     *
+     * @param list<string> $serveArguments
+     * @return array{array{process: resource, tether: resource, log: string}, list<string>}
+     */
+    private function openTunnel(string $cloudflared, array $serveArguments, string $run): array
+    {
+        $host = ServeCommand::DEFAULT_HOST;
+        $port = null;
+        $rest = [];
+        foreach ($serveArguments as $argument) {
+            if (preg_match('/^--host=(.*)\z/s', $argument, $m) === 1) {
+                $host = $m[1];
+            } elseif (preg_match('/^--port=(.*)\z/s', $argument, $m) === 1) {
+                $port = $m[1];
+                continue;
+            }
+            $rest[] = $argument;
+        }
+        $port = $this->ports->find($host, $port);
+
+        // Its output to a file of the run's, read for the name and, if it
+        // exits, for why: a pipe nobody drained would stop it.
+        $log = "{$run}/cloudflared.log";
+        $process = proc_open(
+            [
+                // Killed if it outlasts its own grace: a stop is not left
+                // waiting on the HMR socket and the hub's stream, which a
+                // tunnel always has open.
+                ...PhpCommand::prefix(), __DIR__ . '/../../bin/tethered.php', '--kill-after=5',
+                $cloudflared, 'tunnel', '--no-autoupdate', '--grace-period', '1s',
+                '--url', 'http://' . PortFinder::hostForUrl($host) . ":{$port}",
+            ],
+            [0 => ['pipe', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']],
+            $pipes,
+            $this->workingDirectory,
+            // A third party's binary, facing the network: none of the app's
+            // keys or credentials dev's own environment may carry.
+            array_intersect_key(array_filter(getenv(), \is_string(...)), array_flip(self::CLOUDFLARED_ENV_KEPT)),
+        );
+        if (!\is_resource($process)) {
+            throw new ServeException("Could not start {$cloudflared}.");
+        }
+        $tunnel = ['process' => $process, 'tether' => $pipes[0], 'log' => $log];
+
+        ($this->err)('[tunnel] opening a Cloudflare quick tunnel...');
+        $deadline = microtime(true) + self::TUNNEL_TIMEOUT;
+        while (microtime(true) < $deadline) {
+            if (preg_match(self::QUICK_TUNNEL, (string) @file_get_contents($log), $m) === 1) {
+                ($this->err)("[tunnel] {$m[1]} reaches port {$port}; serve answers it with the share token alone.");
+
+                return [$tunnel, [...$rest, "--port={$port}", "--public-host={$m[1]}"]];
+            }
+            if (!proc_get_status($process)['running'] || $this->stopRequested()) {
+                break;
+            }
+            usleep(100_000);
+        }
+
+        $lines = self::lastLines($log);
+        $this->closeTunnel($tunnel);
+        if ($this->stopping) {
+            throw new ServeException('Stopped before the tunnel opened.');
+        }
+
+        throw new ServeException(
+            'cloudflared gave the tunnel no trycloudflare.com name within ' . self::TUNNEL_TIMEOUT . " s. Its last lines:\n  "
+            . implode("\n  ", $lines),
+        );
+    }
+
+    /** @param array{process: resource, tether: resource, log: string} $tunnel */
+    private function closeTunnel(array $tunnel): void
+    {
+        if (proc_get_status($tunnel['process'])['running']) {
+            proc_terminate($tunnel['process'], \defined('SIGTERM') ? SIGTERM : 15);
+        }
+        $deadline = microtime(true) + 10;
+        while (proc_get_status($tunnel['process'])['running'] && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+        if (proc_get_status($tunnel['process'])['running']) {
+            proc_terminate($tunnel['process'], \defined('SIGKILL') ? SIGKILL : 9);
+        }
+        fclose($tunnel['tether']);
+        proc_close($tunnel['process']);
+    }
+
+    /** @return list<string> the last lines of a log, for saying why something stopped */
+    private static function lastLines(string $log, int $count = 10): array
+    {
+        $lines = array_values(array_filter(explode("\n", trim((string) @file_get_contents($log))), static fn (string $l): bool => $l !== ''));
+
+        return \array_slice($lines, -$count);
     }
 
     /**

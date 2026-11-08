@@ -6,7 +6,8 @@ declare(strict_types=1);
  * `tinvar dev`: refused in production and off loopback before anything
  * starts; serve --dev run with the toolbar's run named to it; codegen at the
  * start and again whenever the watched PHP settles after a change; and
- * everything stopped together.
+ * everything stopped together. With --tunnel, a quick tunnel opened first
+ * and its name handed to serve, and closed with it (ADR 0190).
  */
 
 namespace Tinvar\Tests\Server\DevCommand;
@@ -114,6 +115,126 @@ it('answers a bad invocation with the usage status, starting nothing', function 
     expect($status)->toBe(DevCommand::USAGE)->and($said[0])->toContain('loopback only');
 });
 
+// ----------------------------------------------------------------- tunnels
+
+const CLOUDFLARED = __DIR__ . '/Fixtures/fake-cloudflared';
+
+/**
+ * The fake cloudflared, told where to log by the script itself: dev hands
+ * cloudflared none of its own environment, DEV_TEST_LOG included.
+ */
+function cloudflared(string $log): string
+{
+    file_put_contents("{$log}.bin", "#!/bin/sh\nDEV_TEST_LOG=" . escapeshellarg($log) . ' exec ' . escapeshellarg(CLOUDFLARED) . " \"\$@\"\n");
+    chmod("{$log}.bin", 0o755);
+
+    return "{$log}.bin";
+}
+
+it('looks for cloudflared under --tunnel before anything starts, and refuses it beside --public-host', function () {
+    $app = app();
+
+    withEnv(['TINVAR_CLOUDFLARED' => CLOUDFLARED], function () use ($app): void {
+        $plan = command()->plan(["--app={$app}", '--tunnel']);
+        expect($plan['cloudflared'])->toBe(CLOUDFLARED)
+            // Serve is told the port and the name once the tunnel has one.
+            ->and($plan['serve'])->toBe(['serve', '--dev', "--app={$app}"])
+            ->and(command()->plan(["--app={$app}"])['cloudflared'])->toBeNull()
+            ->and(fn () => command()->plan(["--app={$app}", '--tunnel', '--public-host=dev.example.com']))
+            ->toThrow(ServeException::class, 'Pass one of them');
+    });
+
+    withEnv(['TINVAR_CLOUDFLARED' => '', 'PATH' => '/nonexistent'], function () use ($app): void {
+        expect(fn () => command()->plan(["--app={$app}", '--tunnel']))
+            ->toThrow(ServeException::class, '--tunnel runs cloudflared, which is not on the PATH');
+    });
+    withEnv(['TINVAR_CLOUDFLARED' => 'cloudflared'], function () use ($app): void {
+        expect(fn () => command()->plan(["--app={$app}", '--tunnel']))
+            ->toThrow(ServeException::class, 'not an executable file at an absolute path');
+    });
+});
+
+// A --public-host names a tunnel the developer runs; serve holds it to being one.
+it('hands --public-host on to serve as given', function () {
+    $app = app();
+
+    expect(command()->plan(["--app={$app}", '--public-host=dev.example.com'])['serve'])
+        ->toBe(['serve', '--dev', "--app={$app}", '--public-host=dev.example.com']);
+});
+
+it('opens a quick tunnel to the port serve listens on, tells serve its name, and closes it with serve', function () {
+    if (!\function_exists('pcntl_signal')) {
+        $this->markTestSkipped('pcntl is not available.');
+    }
+    $app = app();
+    $log = sys_get_temp_dir() . '/tinvar-dev-log-' . bin2hex(random_bytes(4));
+    [$process, $stdout, $log] = started($app, ['--tunnel', '--port=6124'], ['TINVAR_CLOUDFLARED' => cloudflared($log), 'TINVAR_APP_KEY' => 'secret-key', 'DB_PASSWORD' => 'secret'], $log);
+
+    try {
+        expect(waitFor(static fn (): bool => is_file("{$log}.serve"), 20))->toBeTrue('serve started: ' . @file_get_contents("{$log}.err"));
+        $serve = json_decode((string) file_get_contents("{$log}.serve"), true);
+        \assert(\is_array($serve));
+        expect($serve['arguments'])->toBe(['--dev', "--app={$app}", '--port=6124', '--public-host=grade-habits-seller-arrange.trycloudflare.com'])
+            ->and(trim((string) file_get_contents("{$log}.cloudflared")))->toBe('tunnel --no-autoupdate --grace-period 1s --url http://127.0.0.1:6124')
+            // Nothing of dev's environment but what a process needs to run.
+            ->and(trim((string) file_get_contents("{$log}.cloudflared.env")))->toBe('')
+            ->and((string) file_get_contents("{$log}.err"))->toContain('[tunnel] grade-habits-seller-arrange.trycloudflare.com reaches port 6124');
+
+        posix_kill(proc_get_status($process)['pid'], SIGTERM);
+
+        expect(stopped($process))->toBe(0)
+            ->and(is_file("{$log}.stopped"))->toBeTrue('serve was stopped')
+            ->and(waitFor(static fn (): bool => is_file("{$log}.cloudflared.stopped")))->toBeTrue('cloudflared was stopped');
+    } finally {
+        if (\is_resource($process) && proc_get_status($process)['running']) {
+            proc_terminate($process, 9);
+        }
+        cleanUp($log);
+    }
+});
+
+it('stops everything, and says why, when the tunnel closes', function () {
+    if (!\function_exists('pcntl_signal')) {
+        $this->markTestSkipped('pcntl is not available.');
+    }
+    $log = sys_get_temp_dir() . '/tinvar-dev-log-' . bin2hex(random_bytes(4));
+    [$process, $stdout, $log] = started(app(), ['--tunnel'], ['TINVAR_CLOUDFLARED' => cloudflared($log)], $log);
+
+    try {
+        expect(waitFor(static fn (): bool => is_file("{$log}.serve"), 20))->toBeTrue();
+        touch("{$log}.tunnel-down");
+
+        expect(stopped($process))->toBe(1)
+            ->and((string) file_get_contents("{$log}.err"))->toContain('cloudflared exited, so the tunnel is closed; stopping.')
+            ->and((string) file_get_contents("{$log}.err"))->toContain('[cloudflared]   2026-11-08T17:00:09Z ERR connection to the edge lost')
+            ->and(is_file("{$log}.stopped"))->toBeTrue('serve was stopped');
+    } finally {
+        cleanUp($log);
+    }
+});
+
+it('starts no serve when cloudflared names no tunnel, and says what it said instead', function () {
+    if (!\function_exists('pcntl_signal')) {
+        $this->markTestSkipped('pcntl is not available.');
+    }
+    $log = sys_get_temp_dir() . '/tinvar-dev-log-' . bin2hex(random_bytes(4));
+    touch("{$log}.nameless");
+    // It exits before it names one: dev is not left waiting the full timeout.
+    touch("{$log}.tunnel-down");
+    [$process, $stdout, $log] = started(app(), ['--tunnel'], ['TINVAR_CLOUDFLARED' => cloudflared($log)], $log);
+
+    try {
+        expect(stopped($process))->toBe(1)
+            ->and((string) file_get_contents("{$log}.err"))->toContain('cloudflared gave the tunnel no trycloudflare.com name')
+            ->and((string) file_get_contents("{$log}.err"))->toContain('Requesting new quick Tunnel')
+            // The API it asked, named in its error, is no tunnel's name.
+            ->and((string) file_get_contents("{$log}.err"))->not->toContain('[tunnel] api.trycloudflare.com')
+            ->and(is_file("{$log}.serve"))->toBeFalse();
+    } finally {
+        cleanUp($log);
+    }
+});
+
 // ---------------------------------------------------------------- watching
 
 it('reports a change once the writes have settled: written, added and removed', function () {
@@ -208,11 +329,14 @@ it('finds what composer.json autoloads under the app, and nothing outside it', f
 /**
  * `tinvar dev` against the fake console, in a process of its own.
  *
+ * @param list<string> $arguments
+ * @param array<string, string> $extraEnv
+ *
  * @return array{resource, resource, string, string} the process, its standard output, the log prefix, the watched directory
  */
-function started(string $app, array $arguments = []): array
+function started(string $app, array $arguments = [], array $extraEnv = [], ?string $log = null): array
 {
-    $log = sys_get_temp_dir() . '/tinvar-dev-log-' . bin2hex(random_bytes(4));
+    $log ??= sys_get_temp_dir() . '/tinvar-dev-log-' . bin2hex(random_bytes(4));
     $watch = "{$app}/app";
     @mkdir($watch);
     file_put_contents("{$watch}/Data.php", '<?php');
@@ -222,7 +346,7 @@ function started(string $app, array $arguments = []): array
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', "{$log}.err", 'w']],
         $pipes,
         $app,
-        [...$env, 'DEV_TEST_LOG' => $log, 'DEV_TEST_WATCH' => $watch],
+        [...$env, ...$extraEnv, 'DEV_TEST_LOG' => $log, 'DEV_TEST_WATCH' => $watch],
     );
     expect($process)->toBeResource();
     stream_set_blocking($pipes[1], false);

@@ -1,0 +1,21 @@
+#!/bin/sh
+# cloudflared for DevCommandTest: says what it was given into
+# DEV_TEST_LOG.cloudflared, and what it can see of dev's environment into
+# DEV_TEST_LOG.cloudflared.env; prints a quick tunnel's name among lines of
+# its own as the real one does -- or, once DEV_TEST_LOG.nameless exists, the
+# error that names its API instead -- and runs until stopped, or exits 1
+# once DEV_TEST_LOG.tunnel-down appears.
+log="$DEV_TEST_LOG"
+echo "$*" > "$log.cloudflared"
+env | grep -E '^(TINVAR_|DB_)' > "$log.cloudflared.env"
+trap 'echo stopped > "$log.cloudflared.stopped"; exit 0' TERM INT
+echo "2026-11-08T17:00:00Z INF Requesting new quick Tunnel on trycloudflare.com..." >&2
+if [ ! -f "$log.nameless" ]; then
+  echo "2026-11-08T17:00:01Z INF |  https://grade-habits-seller-arrange.trycloudflare.com  |" >&2
+else
+  echo '2026-11-08T17:00:01Z ERR failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": EOF' >&2
+fi
+echo "2026-11-08T17:00:01Z INF Registered tunnel connection" >&2
+while [ ! -f "$log.tunnel-down" ]; do sleep 0.1; done
+echo "2026-11-08T17:00:09Z ERR connection to the edge lost" >&2
+exit 1

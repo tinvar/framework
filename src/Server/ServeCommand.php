@@ -27,7 +27,7 @@ use Tinvar\Support\PrivateDirectory;
  * stopped together.
  *
  *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--renderers=N]
- *                [--frankenphp=PATH] [--worker] [--schedule]
+ *                [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME]
  *
  * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server
  * is the renderer, with HMR and no separate build"): no build is needed, the
@@ -35,7 +35,9 @@ use Tinvar\Support\PrivateDirectory;
  * an edit to the PHP is in the next response too -- proxies the dev server's
  * modules and HMR socket under /_vite/ on its own origin, by the framework's
  * resources/Caddyfile.dev. Refused, loudly, wherever the environment says
- * production, and on any address but loopback.
+ * production, and on any address but loopback. With --public-host it also
+ * answers the one name a tunnel serves it under, to a visitor holding the
+ * share token it prints (PublicHost, ADR 0190).
  *
  * The app is a directory with a Caddyfile and a build: the command knows
  * nothing about any particular app. It passes the app what it decided as
@@ -95,7 +97,7 @@ final class ServeCommand
     /** Exit status for a bad invocation, as sysexits(3) has it. */
     public const int USAGE = 64;
 
-    private const array OPTIONS = ['host', 'port', 'app', 'workers', 'renderers', 'frankenphp'];
+    private const array OPTIONS = ['host', 'port', 'app', 'workers', 'renderers', 'frankenphp', 'public-host'];
 
     /** More would be more processes than any machine this runs on has cores for. */
     public const int MAX_RENDERERS = 64;
@@ -108,7 +110,7 @@ final class ServeCommand
      * every serve that is not, so none left over in a shell or an env file
      * turns dev mode on, or points a proxy at whatever holds the port.
      */
-    private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST'];
+    private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST', PublicHost::HOST_ENV, PublicHost::TOKEN_ENV];
 
     /** The prefix of the private directory each serve runs in (PrivateDirectory). */
     public const string RUN_PREFIX = 'tinvar-serve';
@@ -220,7 +222,7 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, publicHost: PublicHost|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int}
      */
     public function plan(array $arguments): array
     {
@@ -289,6 +291,12 @@ final class ServeCommand
         if ($dev && !\in_array($host, self::LOOPBACK, true)) {
             throw new ServeException("tinvar serve --dev listens on loopback only (127.0.0.1 or ::1); refusing {$host}.");
         }
+        // A tunnel's name, which only dev's Caddyfile knows to let in, and
+        // to hold to the share token (ADR 0190).
+        if (isset($options['public-host']) && !$dev) {
+            throw new ServeException('--public-host is for --dev: a build is served by its own Caddyfile, under the names it gives.');
+        }
+        $publicHost = isset($options['public-host']) ? PublicHost::of($options['public-host']) : null;
 
         $app = $this->app($options['app'] ?? null, requireCaddyfile: !$dev);
         // The build: dist/ in the app, unless TINVAR_BUILD_DIR names one of
@@ -351,6 +359,7 @@ final class ServeCommand
             'port' => $port,
             'dev' => $dev,
             'vitePort' => $vitePort,
+            'publicHost' => $publicHost,
             'caddyfile' => $dev ? \dirname(__DIR__, 2) . '/resources/Caddyfile.dev' : "{$app}/Caddyfile",
         ];
     }
@@ -367,10 +376,10 @@ final class ServeCommand
                 $options[$m[1]] = '';
                 continue;
             }
-            if (preg_match('/^--([a-z]+)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
+            if (preg_match('/^--([a-z]+(?:-[a-z]+)*)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new ServeException(
                     "Unknown argument '{$argument}'. Usage: tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] "
-                    . '[--workers=N] [--renderers=N] [--frankenphp=PATH] [--worker] [--schedule]',
+                    . '[--workers=N] [--renderers=N] [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME]',
                 );
             }
             $options[$m[1]] = $m[2];
@@ -446,7 +455,7 @@ final class ServeCommand
         return RendererBinary::script($this->projectRoot, $bin);
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, publicHost: PublicHost|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int} $plan */
     private function serve(array $plan): int
     {
         $this->stopBudget = $plan['stopBudget'];
@@ -492,7 +501,11 @@ final class ServeCommand
                 // date beside the socket, as a build writes them, so a route
                 // mints in dev exactly when its build would let it.
                 $children['the dev renderer'] = $renderer = $this->spawn(
-                    ['node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin'],
+                    [
+                        'node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin',
+                        // The tunnel's name, which Vite's own host check lets in too.
+                        ...($plan['publicHost'] === null ? [] : ["--public-host={$plan['publicHost']->host}"]),
+                    ],
                     $plan['app'],
                     [...$rendererEnv, ...array_intersect_key(getenv(), array_flip(self::DEV_RENDERER_ENV)), 'NODE_ENV' => 'development'],
                     logged: true,
@@ -513,6 +526,7 @@ final class ServeCommand
                     'TINVAR_DEV' => '1',
                     'TINVAR_VITE_PORT' => (string) $plan['vitePort'],
                     'TINVAR_DEFERRED_MANIFEST' => $deferred,
+                    ...($plan['publicHost']?->environment() ?? []),
                 ];
             } else {
                 // The pool's directory is the private one: PHP lists it for
@@ -598,6 +612,15 @@ final class ServeCommand
                 $plan['renderers'] === 1 ? 'renderer' : 'renderers',
                 $plan['pool'] === null ? $directory : "{$plan['pool']}, run as " . (string) FrameworkConfig::load()->rendererUserName(),
             ));
+        if ($plan['publicHost'] !== null) {
+            // On its own line of standard output, as the URL is: what a
+            // caller hands on, and the only place the token is ever said.
+            ($this->out)("Shared at {$plan['publicHost']->shareUrl()}");
+            ($this->err)(
+                "Anyone with that address reaches this dev server -- the app's source, its PHP included, and every "
+                . "page's props -- until it stops. {$plan['publicHost']->host} without the token is refused.",
+            );
+        }
 
         $status = $this->supervise($children, $plan['app'], $environment);
         $this->terminate($children, $plan['app'], $environment);
