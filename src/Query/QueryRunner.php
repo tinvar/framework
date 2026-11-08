@@ -345,7 +345,9 @@ final class QueryRunner
 
                 // Orm::holdsRow checks laziness before persistence, so this
                 // cannot force a ghost to initialize just by asking about it.
-                if ($known instanceof Model && Orm::holdsRow($known)) {
+                // Nor a trashed row the map holds -- a #[BelongsTo] read it
+                // -- which a query's argument never binds (ADR 0191).
+                if ($known instanceof Model && Orm::holdsRow($known) && !$known->isTrashed()) {
                     $resolved[$class][$id] = $known;
                     continue;
                 }

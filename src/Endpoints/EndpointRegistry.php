@@ -26,6 +26,7 @@ use Tinvar\Data\Data;
 use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\Attributes\WithTrashed;
 use Tinvar\Orm\Model;
 use Tinvar\Routing\CompiledRoute;
 use Tinvar\Routing\Domains;
@@ -198,6 +199,7 @@ final class EndpointRegistry
         $required = [];
         $taken = [];
         $rawBody = null;
+        $trashedModels = [];
 
         foreach ($method->getParameters() as $parameter) {
             $parameterName = $parameter->getName();
@@ -207,6 +209,9 @@ final class EndpointRegistry
             }
             $typeName = $type->getName();
             $fromPath = \in_array($parameterName, $parameters, true);
+            if (WithTrashed::on($parameter) && !($fromPath && !$type->isBuiltin() && is_subclass_of($typeName, Model::class))) {
+                throw new EndpointException("{$where}: \${$parameterName} is #[WithTrashed], which only a model the path names takes (ADR 0191).");
+            }
 
             if ($fromPath) {
                 $taken[] = $parameterName;
@@ -221,6 +226,9 @@ final class EndpointRegistry
                         );
                     }
                     $models[$parameterName] = $typeName;
+                    if (WithTrashed::on($parameter)) {
+                        $trashedModels[$parameterName] = true;
+                    }
                     continue;
                 }
                 if ($type->isBuiltin() ? \in_array($typeName, ['string', 'int', 'float', 'bool'], true) : is_subclass_of($typeName, \BackedEnum::class)) {
@@ -392,6 +400,7 @@ final class EndpointRegistry
             checks: $checks,
             classLevelChecks: $inherited,
             models: $models,
+            trashedModels: $trashedModels,
             scalars: $scalars,
             formRequests: $formRequests,
             nestedModels: $nestedModels,

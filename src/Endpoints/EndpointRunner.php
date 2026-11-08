@@ -19,6 +19,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Orm\Trashed;
 use Tinvar\Routing\Binder;
 use Tinvar\Support\Reflected;
 use Tinvar\Validation\FormRequest;
@@ -246,7 +247,8 @@ final class EndpointRunner
         foreach ($endpoint->models as $parameter => $class) {
             $id = $path[$parameter] ?? '';
             // Out of scope reads as absent, never as forbidden.
-            $models[$parameter] = $this->orm->find($class, $id) ?? throw NotFoundException::model($class, $id);
+            $models[$parameter] = $this->orm->find($class, $id, isset($endpoint->trashedModels[$parameter]) ? Trashed::With : Trashed::Without)
+                ?? throw NotFoundException::model($class, $id);
         }
 
         $unsent = [];

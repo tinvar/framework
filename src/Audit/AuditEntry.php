@@ -17,7 +17,7 @@ final readonly class AuditEntry
 {
     /**
      * @param int $sequence its place in its tenant's log, from 1: the cursor a page reads back from
-     * @param string $event `created`, `updated` or `deleted` for a model's row (ModelChangeKind),
+     * @param string $event `created`, `updated`, `deleted`, `trashed` or `restored` for a model's row (ModelChangeKind),
      *        `action` for an #[AuditedAction]'s run, or the event an application recorded
      * @param string|null $subjectType the model class the entry is about, if any
      * @param string|null $subjectId its key

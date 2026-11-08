@@ -53,6 +53,10 @@ final readonly class CompiledAction
         public array $optionalUploads = [],
         public bool $transaction = false,
         public ?\Tinvar\Routing\HostPattern $host = null,
+        // Its own model parameters declared #[WithTrashed], which bind a
+        // trashed row (ADR 0191); any other is a 404 for one.
+        /** @var array<string, true> */
+        public array $trashedModels = [],
     ) {}
 
     /**

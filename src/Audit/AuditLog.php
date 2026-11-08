@@ -71,7 +71,7 @@ use Tinvar\Validation\FormRequest;
 final class AuditLog implements ModelChanges, ActionObserver
 {
     /** The events model changes and action runs are filed under, which event() may not take. */
-    public const array RESERVED = ['created', 'updated', 'deleted', 'action'];
+    public const array RESERVED = ['created', 'updated', 'deleted', 'trashed', 'restored', 'action'];
 
     /** The most an entry's changes or data may come to, as JSON, in bytes. */
     public const int MAX_DATA_BYTES = 16_384;

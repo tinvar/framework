@@ -16,6 +16,7 @@ use Tinvar\Http\Request;
 use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Orm\Trashed;
 use Tinvar\Render\StaticPages;
 use Tinvar\Support\Reflected;
 use Tinvar\Uploads\Upload;
@@ -658,7 +659,7 @@ final class ActionRunner
             }
 
             // Out of scope reads as absent, never as forbidden.
-            $models[$parameter] = $this->orm->find($class, (string) $id)
+            $models[$parameter] = $this->orm->find($class, (string) $id, isset($action->trashedModels[$parameter]) ? Trashed::With : Trashed::Without)
                 ?? throw NotFoundException::model($class, (string) $id);
         }
 

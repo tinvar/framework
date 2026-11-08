@@ -22,6 +22,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\RawBody;
 use Tinvar\Http\Request;
+use Tinvar\Orm\Attributes\WithTrashed;
 use Tinvar\Orm\Model;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Support\KnownAttributes;
@@ -197,6 +198,7 @@ final class ActionRegistry
         }
 
         $models = [];
+        $trashedModels = [];
         $formRequests = [];
         $nestedModels = [];
         $uploads = [];
@@ -234,6 +236,12 @@ final class ActionRegistry
                 throw ActionException::unbindable($where, $name, (string) $type);
             }
 
+            // Only the action's own model binds a trashed row (ADR 0191).
+            $typeName = $type->getName();
+            if (WithTrashed::on($parameter) && ($type->isBuiltin() || !is_subclass_of($typeName === Model::class && $resource !== null ? $resource->model : $typeName, Model::class))) {
+                throw new ActionException("{$where}: \${$name} is #[WithTrashed], which only a model the action takes binds.");
+            }
+
             if ($type->isBuiltin()) {
                 if (!\in_array($type->getName(), ['string', 'int', 'float', 'bool', 'array'], true)) {
                     throw ActionException::unbindable($where, $name, $type->getName());
@@ -258,6 +266,9 @@ final class ActionRegistry
                     throw ActionException::unguarded($where, $name, $typeName);
                 }
                 $models[$name] = $typeName;
+                if (WithTrashed::on($parameter)) {
+                    $trashedModels[$name] = true;
+                }
                 if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
                     $optional[$name] = true;
                 } else {
@@ -390,6 +401,7 @@ final class ActionRegistry
             optionalUploads: $optionalUploads,
             transaction: $declaration->transaction,
             host: self::hostOf($where, $class, $method->getName()),
+            trashedModels: $trashedModels,
         );
     }
 

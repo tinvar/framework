@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Validation\Rules;
 
 use Tinvar\Orm\Model;
+use Tinvar\Orm\Trashed;
 use Tinvar\Validation\Rule;
 use Tinvar\Validation\ValidationContext;
 
@@ -18,6 +19,11 @@ use Tinvar\Validation\ValidationContext;
  * resolved and authorized -- never from the payload. Reading it from the input
  * would let a caller name the very row that holds the value and skip the check
  * entirely, which is a uniqueness bypass written as a convenience.
+ *
+ * A #[SoftDeletes] model's trashed row holds its value too, as a plain
+ * unique index holds it (ADR 0191). `ignoreTrashed: true` frees it, for a
+ * key a partial index -- `WHERE "deleted_at" IS NULL`, on Postgres or
+ * SQLite -- holds to the live rows alone.
  */
 #[\Attribute(\Attribute::TARGET_PARAMETER | \Attribute::TARGET_PROPERTY)]
 final readonly class Unique implements Rule
@@ -27,11 +33,14 @@ final readonly class Unique implements Rule
      * @param bool|string $ignoreSubject true exempts the single resolved model
      *        of this rule's class, and fails closed when there is more than
      *        one; a string names the parameter to exempt outright.
+     * @param bool $ignoreTrashed a trashed row's value is free to take again: for a key only a partial
+     *        unique index over the live rows holds
      */
     public function __construct(
         public string $model,
         public ?string $column = null,
         public bool|string $ignoreSubject = false,
+        public bool $ignoreTrashed = false,
     ) {}
 
     public function appliesTo(): array
@@ -49,7 +58,7 @@ final readonly class Unique implements Rule
         }
 
         $column = Column::resolve($this->model, $this->column, self::class, $field);
-        $matches = $context->orm()->whereIn($this->model, $column, [$value]);
+        $matches = $context->orm()->whereIn($this->model, $column, [$value], trashed: $this->ignoreTrashed ? Trashed::Without : Trashed::With);
 
         $exempt = null;
         if ($this->ignoreSubject !== false) {

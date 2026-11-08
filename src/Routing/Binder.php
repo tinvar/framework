@@ -8,7 +8,9 @@ use Tinvar\Data\Data;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
+use Tinvar\Orm\Attributes\WithTrashed;
 use Tinvar\Orm\Orm;
+use Tinvar\Orm\Trashed;
 use Tinvar\Support\Str;
 
 /**
@@ -47,6 +49,11 @@ final class Binder
 
                 $name = $parameter->getName();
                 if (isset($this->models[$name])) {
+                    // Shared down the chain, and a trashed row only where
+                    // every loader taking it says it takes one.
+                    if ($this->models[$name]->isTrashed() && !WithTrashed::on($parameter)) {
+                        throw NotFoundException::model($type, $parameters[$name] ?? '');
+                    }
                     continue;
                 }
 
@@ -60,7 +67,9 @@ final class Binder
                     throw RoutingException::missingParameter($route->template, $name);
                 }
 
-                $this->models[$name] = $this->orm->find($type, $parameters[$name])
+                // A trashed row is a 404 as a row gone is, unless the
+                // parameter says it takes one (ADR 0191).
+                $this->models[$name] = $this->orm->find($type, $parameters[$name], WithTrashed::on($parameter) ? Trashed::With : Trashed::Without)
                     ?? throw NotFoundException::model($type, $parameters[$name]);
             }
         }

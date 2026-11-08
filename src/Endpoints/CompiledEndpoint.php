@@ -87,6 +87,10 @@ final readonly class CompiledEndpoint
         public ?\Tinvar\Attributes\EndpointBudget $budget = null,
         // #[Refusals]: the RefusalWriter that writes its refusals (ADR 0188); null for the framework's shape.
         public ?string $refusals = null,
+        // The path models declared #[WithTrashed], which bind a trashed
+        // row (ADR 0191); any other is a 404 for one.
+        /** @var array<string, true> */
+        public array $trashedModels = [],
     ) {}
 
     /** Whether an API token is what signs its caller in (ADR 0159). */
