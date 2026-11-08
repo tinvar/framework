@@ -14,7 +14,9 @@ use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Searchable;
 use Tinvar\Auth\Gate;
 use Tinvar\Orm\NoTenantContext;
+use Tinvar\Orm\Page;
 use Tinvar\Orm\Query;
+use Tinvar\Orm\TenantBounds;
 use Tinvar\Search\Search;
 use Tinvar\Search\SearchableModel;
 use Tinvar\Search\SearchFailed;
@@ -288,6 +290,23 @@ describe('tenancy', function () {
         sort($within);
 
         expect($within)->toBe(['Printer jammed', 'Printer on fire'])
+            ->and($orm->actAs('acme', fn (): array => names($search->for(Ticket::class)->query('printer')->get())))->toBe(['Printer jammed']);
+    });
+
+    // The index is asked by tenant -- an IN list, an index each -- so a
+    // subtree past what a statement lists is refused, never searched in
+    // part (ADR 0196).
+    it('refuses a search across a subtree of more tenants than a list holds', function () {
+        $parents = [];
+        for ($i = 0; $i < TenantBounds::MAX_LISTED; $i++) {
+            $parents["acme-{$i}"] = 'acme';
+        }
+        [$orm, $search] = sqliteSearch(null, $parents);
+        $orm->actAs('acme', fn () => ticket($orm, 'Printer jammed'));
+        $within = static fn (\Closure $read): mixed => $orm->actAs('acme', static fn (): mixed => $orm->grantSubtree(static fn (): mixed => $orm->withinSubtree($read)));
+
+        expect(fn () => $within(fn (): array => $search->for(Ticket::class)->query('printer')->get()))->toThrow(\LengthException::class, 'withinSubtreePages()')
+            ->and(fn () => $within(fn (): Page => $search->for(Ticket::class)->query('printer')->paginate()))->toThrow(\LengthException::class)
             ->and($orm->actAs('acme', fn (): array => names($search->for(Ticket::class)->query('printer')->get())))->toBe(['Printer jammed']);
     });
 

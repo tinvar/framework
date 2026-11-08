@@ -8,6 +8,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\Page;
 use Tinvar\Orm\Query;
+use Tinvar\Orm\TenantBounds;
 
 /**
  * One search of one model (ADR 0154), built from Search::for():
@@ -128,7 +129,7 @@ final readonly class SearchQuery
             return new Page([], $page, $perPage, 0);
         }
         // Throws NoTenantContext where a read of the model would.
-        $tenants = $this->model->tenantScoped() ? $this->orm->tenantsInScope($this->model->meta()) : [''];
+        $tenants = $this->tenants();
         if ($page - 1 > intdiv(\PHP_INT_MAX, $perPage)) {
             return new Page([], $page, $perPage, 0);
         }
@@ -177,7 +178,7 @@ final readonly class SearchQuery
             return [];
         }
         // Throws NoTenantContext where a read of the model would.
-        $tenants = $this->model->tenantScoped() ? $this->orm->tenantsInScope($this->model->meta()) : [''];
+        $tenants = $this->tenants();
 
         $keys = [];
         while (\count($keys) < $limit) {
@@ -226,5 +227,30 @@ final readonly class SearchQuery
         }
 
         return $results;
+    }
+
+    /**
+     * The tenants the index is asked in: the ORM's scope's, '' for a model
+     * that is not #[TenantScoped], null across tenants. Refused past
+     * TenantBounds::MAX_LISTED (ADR 0196): a backend asks by tenant -- an
+     * IN list, an index each -- and a search of part of a subtree would be
+     * a silently wrong answer.
+     *
+     * @return list<string>|null
+     * @throws \LengthException for a subtree of more tenants than a list holds
+     */
+    private function tenants(): ?array
+    {
+        // Throws NoTenantContext where a read of the model would.
+        $tenants = $this->model->tenantScoped() ? $this->orm->tenantsInScope($this->model->meta()) : [''];
+        if ($tenants !== null && \count($tenants) > TenantBounds::MAX_LISTED) {
+            throw new \LengthException(\sprintf(
+                'A search reads at most %d tenants, and the subtree in force holds %d: search a page of it at a time, with withinSubtreePages().',
+                TenantBounds::MAX_LISTED,
+                \count($tenants),
+            ));
+        }
+
+        return $tenants;
     }
 }
