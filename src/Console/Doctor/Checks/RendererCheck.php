@@ -12,8 +12,8 @@ use Tinvar\Observability\RendererCheck as RendererHealthCheck;
 /**
  * The renderer pool: asked as `/_ready` and `renderer:check` ask it
  * (Tinvar\Observability\RendererCheck), at TINVAR_SOCKET. On a developer's
- * machine a pool that is not running is only said: `bin/dev` and
- * `bin/serve` start one. On a server, no renderer answering is no page
+ * machine a pool that is not running is only said: `php tinvar serve --dev` and
+ * `php tinvar serve` start one. On a server, no renderer answering is no page
  * served.
  */
 final readonly class RendererCheck implements DoctorCheck
@@ -31,7 +31,7 @@ final readonly class RendererCheck implements DoctorCheck
         $socket = $context->variable('TINVAR_SOCKET') ?? self::DEFAULT_SOCKET;
         if (!file_exists($socket)) {
             return $context->production() === null
-                ? [Finding::passed("No pool at {$socket}: `bin/dev` and `bin/serve` start one, `{$context->console} renderer:start` by hand.")]
+                ? [Finding::passed("No pool at {$socket}: `php tinvar serve --dev` and `php tinvar serve` start one, `{$context->console} renderer:start` by hand.")]
                 : [Finding::problem("No renderer pool at {$socket} (TINVAR_SOCKET), and {$context->production()}: no page can be rendered.", "Start the server as the image does (its entrypoint starts the pool), or `{$context->console} renderer:start`; check TINVAR_SOCKET names the pool's directory.")];
         }
         try {

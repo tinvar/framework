@@ -10,7 +10,7 @@ final readonly class KitTarget
     /**
      * @param string $root the application: its composer.json, app/ and resources/
      * @param string $namespace its root namespace, `App`
-     * @param string $console how a step names its CLI, `bin/tinvar`
+     * @param string $console how a step names its CLI, `tinvar`
      * @param string $migrations where its migrations are
      */
     public function __construct(

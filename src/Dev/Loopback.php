@@ -10,7 +10,7 @@ use Tinvar\Http\Request;
  * Whether a request came from this machine, to this machine, by name.
  *
  * tinvar-spec.md, "Dev and test tooling": the dev helpers "bind to loopback
- * with a per-run token". `tinvar dev` listens on loopback only, so a request
+ * with a per-run token". `tinvar serve --dev` listens on loopback only, so a request
  * from anywhere else should be impossible; this is the check that does not
  * rely on that.
  *

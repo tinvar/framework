@@ -6,7 +6,7 @@ namespace Tinvar\Server;
 
 /**
  * Where an application's PHP is, as its composer.json tells the autoloader:
- * what `tinvar dev` watches to run codegen when a Data class, a query or an
+ * what `tinvar serve --dev` watches to run codegen when a Data class, a query or an
  * action changes (ADR 0042, 0132).
  *
  * The autoload map already names every directory an application's classes

@@ -10,23 +10,24 @@ use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * `tinvar dev`: the one command that starts and supervises everything an app
- * needs in dev.
+ * `tinvar serve --dev`: the one command that starts and supervises
+ * everything an app needs in dev (`tinvar dev` before ADR 0199).
  *
- *   tinvar dev [--host=HOST] [--port=PORT] [--app=DIR] [--frankenphp=PATH] [--worker] [--schedule]
- *              [--tunnel | --public-host=NAME[,NAME...] [--share]]
+ *   tinvar serve --dev [--host=HOST] [--port=PORT] [--app=DIR] [--frankenphp=PATH] [--worker] [--schedule]
+ *                      [--tunnel | --public-host=NAME[,NAME...] [--share]]
  *
  * tinvar-spec.md, "Dev experience": "`dev` supervises PHP, the renderer and
  * Vite's dev server, with HMR passed through PHP so the app runs on one
  * origin", and "Codegen runs on file change, so TypeScript types update when
  * a Data object, query or action changes". And "Dev and test tooling": only
- * `tinvar dev` includes the dev toolbar, bound "to loopback with a per-run
+ * `tinvar serve --dev` includes the dev toolbar, bound "to loopback with a per-run
  * token".
  *
  * So it is three things, each the job of something that already does it:
  *
- *   - PHP, the renderer and Vite are `tinvar serve --dev` (ADR 0034), run as
- *     a child with every argument given here: that command already starts
+ *   - PHP, the renderer and Vite are the console's `serve:process --dev`
+ *     (ADR 0034; `serve --dev` itself before ADR 0199), run as a child with
+ *     every argument given here: that command already starts
  *     FrankenPHP in front of Vite's dev server on one origin, refuses
  *     production and anything but loopback, and stops everything together.
  *   - Codegen is the application's own command, run afresh in a process of
@@ -97,6 +98,8 @@ final class DevCommand
      * @param (\Closure(string): void)|null $err a line for standard error; standard output
      *        is serve's, whose URL is the line a caller waits for
      * @param float $poll seconds between looks at the watched sources
+     * @param string $serve the console's command that runs FrankenPHP and the renderer alone:
+     *        `serve:process` under an AppConsole, whose `serve --dev` is this (ADR 0199)
      */
     public function __construct(
         private readonly string $console,
@@ -106,6 +109,7 @@ final class DevCommand
         private readonly ?string $workingDirectory = null,
         private readonly float $poll = 0.5,
         private readonly PortFinder $ports = new PortFinder(),
+        private readonly string $serve = 'serve',
     ) {
         $this->err = $err ?? static function (string $line): void {
             fwrite(STDERR, $line . "\n");
@@ -176,7 +180,7 @@ final class DevCommand
         $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
         if ($marker !== null) {
             throw new ServeException(
-                "tinvar dev is refused: {$marker}=production. It runs Vite's dev server unsandboxed, shows raw errors "
+                "tinvar serve --dev is refused: {$marker}=production. It runs Vite's dev server unsandboxed, shows raw errors "
                 . 'and every request\'s props to the browser, and never runs in production. Serve a build there.',
             );
         }
@@ -201,7 +205,7 @@ final class DevCommand
                 continue;
             }
             if (preg_match('/^--host=(.*)\z/s', $argument, $m) === 1 && !\in_array($m[1], self::LOOPBACK, true)) {
-                throw new ServeException("tinvar dev listens on loopback only (127.0.0.1 or ::1); refusing {$m[1]}.");
+                throw new ServeException("tinvar serve --dev listens on loopback only (127.0.0.1 or ::1); refusing {$m[1]}.");
             }
             // The rest is serve's to read, and to refuse.
             $passed[] = $argument;
@@ -223,7 +227,7 @@ final class DevCommand
 
         return [
             'app' => $resolved,
-            'serve' => ['serve', '--dev', "--app={$resolved}", ...$passed],
+            'serve' => [$this->serve, '--dev', "--app={$resolved}", ...$passed],
             'codegen' => $this->codegen === null ? null : ($this->codegen)($resolved),
             // Looked for now, so a missing one stops dev before anything starts.
             'cloudflared' => $tunnel ? self::cloudflared() : null,

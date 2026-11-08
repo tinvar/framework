@@ -7,7 +7,7 @@ declare(strict_types=1);
  * checkout's bin/tinvar in a temporary directory, the app it makes --
  * installed by Composer and npm, migrated and seeded, its key and probe
  * token in a state directory of the run's own -- then built and served by
- * its own bin/serve through FrankenPHP, and its home page fetched.
+ * its own `tinvar serve` through FrankenPHP, and its home page fetched.
  *
  * Skipped without the repository's checkout (a package's run alone),
  * Composer, npm or a FrankenPHP binary. Composer and npm resolve from
@@ -107,13 +107,13 @@ it('makes an app with tinvar new, then builds it, serves it and answers its home
             ->and((string) file_get_contents("{$app}/.env"))->toContain('TINVAR_ENV=local');
 
         // The doctor of a new app finds nothing it cannot fix.
-        $doctor = must([PHP_BINARY, 'bin/tinvar', 'doctor', '--fix'], $app, $env);
+        $doctor = must([PHP_BINARY, 'tinvar', 'doctor', '--fix'], $app, $env);
         expect($doctor)->toContain('No problems.');
 
         must(['npm', 'run', 'build'], $app, $env);
 
         $log = "{$work}/serve.log";
-        $server = proc_open(['bin/serve', '--workers=2', '--renderers=1'], [0 => ['pipe', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']], $pipes, $app, $env);
+        $server = proc_open([PHP_BINARY, 'tinvar', 'serve', '--workers=2', '--renderers=1'], [0 => ['pipe', 'r'], 1 => ['file', $log, 'a'], 2 => ['file', $log, 'a']], $pipes, $app, $env);
         \assert(\is_resource($server));
         $url = null;
         $deadline = microtime(true) + 120;
@@ -124,7 +124,7 @@ it('makes an app with tinvar new, then builds it, serves it and answers its home
                 usleep(250_000);
             }
         }
-        expect($url)->not->toBeNull('bin/serve never said where it listens:' . "\n" . (string) @file_get_contents($log));
+        expect($url)->not->toBeNull('tinvar serve never said where it listens:' . "\n" . (string) @file_get_contents($log));
 
         $context = stream_context_create(['http' => ['ignore_errors' => true, 'timeout' => 15]]);
         $body = (string) file_get_contents("{$url}/", false, $context);

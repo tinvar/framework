@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar dev`: refused in production and off loopback before anything
+ * `tinvar serve --dev`: refused in production and off loopback before anything
  * starts; serve --dev run with the toolbar's run named to it; codegen at the
  * start and again whenever the watched PHP settles after a change; and
  * everything stopped together. With --tunnel, a quick tunnel opened first
@@ -83,7 +83,7 @@ it('refuses wherever the environment says production, before anything else', fun
 
     withEnv([$marker => 'production'], function () use ($app, $marker): void {
         expect(fn () => command()->plan(["--app={$app}"]))
-            ->toThrow(ServeException::class, "tinvar dev is refused: {$marker}=production")
+            ->toThrow(ServeException::class, "tinvar serve --dev is refused: {$marker}=production")
             // Even when nothing else about the invocation would pass.
             ->and(fn () => command()->plan(['--app=/no/such/app', '--host=0.0.0.0']))
             ->toThrow(ServeException::class, 'is refused');
@@ -327,7 +327,7 @@ it('finds what composer.json autoloads under the app, and nothing outside it', f
 // ------------------------------------------------------------------ running
 
 /**
- * `tinvar dev` against the fake console, in a process of its own.
+ * `tinvar serve --dev` against the fake console, in a process of its own.
  *
  * @param list<string> $arguments
  * @param array<string, string> $extraEnv

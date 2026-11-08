@@ -9,7 +9,7 @@ declare(strict_types=1);
  * APP_DATABASE names, which on a server only names where the app's log,
  * mail and counts are kept, and holds none of its rows.
  *
- * Through the skeleton's own bin/tinvar, in a copy of the skeleton, in a
+ * Through the skeleton's own tinvar, in a copy of the skeleton, in a
  * process of its own, as MakeResourceTest runs it: its App\ namespace is
  * loaded there and nowhere else. A render needs the skeleton built for the
  * test profile, which bin/skeleton-proof alone makes; `mcp` builds the app on
@@ -34,7 +34,7 @@ const STALE = 'From the SQLite file the app ran on before it moved to a server.'
 /**
  * The skeleton, copied into a directory of the test's own -- its app/,
  * bin/, database/ and resources/ and its composer.json -- with a
- * vendor/autoload.php, which bin/tinvar requires, that loads the
+ * vendor/autoload.php, which tinvar requires, that loads the
  * workspace's packages and the copy's App\ namespace.
  */
 function skeleton(): string
@@ -45,10 +45,11 @@ function skeleton(): string
     }
 
     $app = sys_get_temp_dir() . '/tinvar-skeleton-dev-tools-' . bin2hex(random_bytes(5));
-    foreach (['app', 'bin', 'database', 'resources'] as $directory) {
+    foreach (['app', 'database', 'resources'] as $directory) {
         copyTree("{$skeleton}/{$directory}", "{$app}/{$directory}");
     }
     copy("{$skeleton}/composer.json", "{$app}/composer.json");
+    copy("{$skeleton}/tinvar", "{$app}/tinvar");
     foreach (glob("{$app}/database/*.sqlite*") ?: [] as $file) {
         unlink($file);
     }
@@ -124,7 +125,7 @@ function onPath(string $tool): bool
 
 /**
  * Runs $test with a copy of the skeleton pointed at a database of its own
- * on $driver's server -- migrated by the app's own bin/tinvar and seeded
+ * on $driver's server -- migrated by the app's own tinvar and seeded
  * with its welcome note -- and, at APP_DATABASE, an SQLite file holding a
  * note of its own, as an app that moved from SQLite to a server may keep
  * one: what the dev tools copied in place of the app's database. On MySQL,
@@ -178,7 +179,7 @@ function onServer(string $driver, \Closure $test, bool $tools = true): void
         }
         $env = environment($settings);
         foreach (['migrate', 'db:seed'] as $command) {
-            [$status, $output] = run([PHP_BINARY, "{$app}/bin/tinvar", $command], $app, $env);
+            [$status, $output] = run([PHP_BINARY, "{$app}/tinvar", $command], $app, $env);
             expect($status)->toBe(0, $output);
         }
         $stale = new \PDO("sqlite:{$app}/database/app.sqlite");
@@ -217,7 +218,7 @@ function run(array $command, string $cwd, array $env): array
 }
 
 /**
- * `bin/tinvar mcp` in $app, held open: asked to initialize, and -- once it
+ * `tinvar mcp` in $app, held open: asked to initialize, and -- once it
  * has answered, by when it has built the app on its copy -- $while is
  * called with its pid and a function that sends one more request and
  * returns the reply. Then its input is closed, and it ends.
@@ -229,7 +230,7 @@ function run(array $command, string $cwd, array $env): array
  */
 function mcp(string $app, array $env, ?\Closure $while = null): array
 {
-    $process = proc_open([PHP_BINARY, "{$app}/bin/tinvar", 'mcp'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $app, $env);
+    $process = proc_open([PHP_BINARY, "{$app}/tinvar", 'mcp'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $app, $env);
     \assert(\is_resource($process));
     $pid = (int) proc_get_status($process)['pid'];
     stream_set_blocking($pipes[1], false);

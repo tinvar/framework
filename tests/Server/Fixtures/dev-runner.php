@@ -3,10 +3,10 @@
 declare(strict_types=1);
 
 /**
- * Runs `tinvar dev` against the fake console, watching DEV_TEST_WATCH, for
+ * Runs `tinvar serve --dev` against the fake console, watching DEV_TEST_WATCH, for
  * DevCommandTest -- in a process of its own, since it runs until stopped.
  *
- *   php dev-runner.php [arguments for tinvar dev...]
+ *   php dev-runner.php [arguments for tinvar serve --dev...]
  */
 
 require \dirname(__DIR__, 5) . '/vendor/autoload.php';

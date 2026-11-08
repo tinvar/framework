@@ -33,11 +33,11 @@ use Tinvar\Support\Signer;
  * visit, redaction of secrets, gated outside local"; "Observability":
  * "Per-render tick panel" and "Socket timing: time in PHP, time in
  * renderer, time streaming"; and "Dev and test tooling": the dev helpers
- * exist only under `tinvar dev`, and "bind to loopback with a per-run token".
+ * exist only under `tinvar serve --dev`, and "bind to loopback with a per-run token".
  *
  * How it stays out of production, each layer on its own:
  *
- *   - It exists only under `tinvar dev`, which makes a private directory for
+ *   - It exists only under `tinvar serve --dev`, which makes a private directory for
  *     the run, puts a key in it, and names it in TINVAR_DEV_TOOLBAR. That
  *     variable beside any production marker refuses the process -- as
  *     TINVAR_DEV=1 does (DevMode, ADR 0034) -- whether or not dev mode is on.
@@ -59,7 +59,7 @@ use Tinvar\Support\Signer;
  */
 final class DevToolbar implements FrameTap
 {
-    /** Names the run's private directory; set by `tinvar dev`, and by nothing else. */
+    /** Names the run's private directory; set by `tinvar serve --dev`, and by nothing else. */
     public const string ENV = 'TINVAR_DEV_TOOLBAR';
 
     /** The run's key, in that directory. */
@@ -110,7 +110,7 @@ final class DevToolbar implements FrameTap
     }
 
     /**
-     * The toolbar `tinvar dev` asked for, or null when it asked for none.
+     * The toolbar `tinvar serve --dev` asked for, or null when it asked for none.
      *
      * Refused beside a production marker first, before anything else is
      * read: TINVAR_DEV_TOOLBAR in production is a dev setting copied where
@@ -137,7 +137,7 @@ final class DevToolbar implements FrameTap
         if ($marker !== null) {
             throw new \RuntimeException(
                 self::ENV . " is refused: {$marker}=production. The dev toolbar shows every request's props and "
-                . 'frames, and never runs in production. Unset ' . self::ENV . '; only `tinvar dev` sets it.',
+                . 'frames, and never runs in production. Unset ' . self::ENV . '; only `tinvar serve --dev` sets it.',
             );
         }
 
@@ -153,7 +153,7 @@ final class DevToolbar implements FrameTap
 
     /**
      * Puts a fresh key for a run of the toolbar into $directory, a private
-     * directory `tinvar dev` has just made (PrivateDirectory).
+     * directory `tinvar serve --dev` has just made (PrivateDirectory).
      */
     public static function prepare(string $directory): void
     {
@@ -507,7 +507,7 @@ final class DevToolbar implements FrameTap
 
         $key = file_get_contents($file);
         if (!\is_string($key) || preg_match('/^[0-9a-f]{64}\z/', $key) !== 1) {
-            throw new \RuntimeException("{$file} is not a key `tinvar dev` wrote.");
+            throw new \RuntimeException("{$file} is not a key `tinvar serve --dev` wrote.");
         }
 
         return $key;
@@ -522,7 +522,7 @@ final class DevToolbar implements FrameTap
         clearstatcache(true, $path);
         $exists = $kind === 'directory' ? is_dir($path) : is_file($path);
         if (!str_starts_with($path, '/') || is_link($path) || !$exists) {
-            throw new \RuntimeException("The dev toolbar's {$kind} {$path} is not one `tinvar dev` made.");
+            throw new \RuntimeException("The dev toolbar's {$kind} {$path} is not one `tinvar serve --dev` made.");
         }
 
         $stat = @stat($path);

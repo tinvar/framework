@@ -6,7 +6,7 @@ namespace Tinvar\Console\NewApp;
 
 /**
  * The directory `tinvar new` makes an app in, held so nobody else can
- * redirect where it writes or change what it then runs -- bin/tinvar,
+ * redirect where it writes or change what it then runs -- tinvar,
  * vendor/ -- as the person making the app (ADR 0157).
  *
  * - **The path is resolved once.** A link on the way to it is followed only

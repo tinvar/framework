@@ -360,7 +360,7 @@ describe('the build, the renderers and production', function () {
         file_put_contents("{$root}/dist/rsc/profile.json", '{"profile":"test"}');
         $mismatched = new BuildCheck()->run(context($root, ['TINVAR_ENV' => 'production']));
         expect(severities($mismatched))->toBe(['problem', 'problem'])
-            ->and($mismatched[0]->fix)->toBe('`bin/tinvar build --profile=production`.')
+            ->and($mismatched[0]->fix)->toBe('`php tinvar build --profile=production`.')
             ->and($mismatched[1]->message)->toContain('fragments.json is missing');
     });
 

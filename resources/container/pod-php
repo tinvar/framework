@@ -6,7 +6,7 @@
 # changes user or holds a capability.
 #
 #   pod-php                 serve: FrankenPHP, the queue worker, the scheduler
-#   pod-php tinvar ARGS...  bin/tinvar ARGS, and exit
+#   pod-php tinvar ARGS...  tinvar ARGS, and exit
 #   pod-php CMD ARGS...     CMD, and exit
 #
 # It refuses to start, with exit 78, unless:
@@ -84,7 +84,7 @@ if [ $# -gt 0 ]; then
     cd "${TINVAR_CONTAINER_CWD:-/}"
     if [ "$1" = tinvar ]; then
         shift
-        exec php "${TINVAR_CONTAINER_TINVAR:?names bin/tinvar}" "$@"
+        exec php "${TINVAR_CONTAINER_TINVAR:?names tinvar}" "$@"
     fi
     exec "$@"
 fi

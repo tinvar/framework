@@ -1,4 +1,4 @@
-# Caddy in front of my-app, written by `bin/tinvar deploy:init vps-compose`:
+# Caddy in front of my-app, written by `php tinvar deploy:init vps-compose`:
 # TLS for app.example.com, and the proof the app takes it for its proxy by. Caddy
 # sets X-Forwarded-For to the client it was connected from, never what a
 # client sent, and header_up overwrites any X-Tinvar-Proxy a client sent

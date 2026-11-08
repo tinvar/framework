@@ -119,15 +119,15 @@ final class NewAppCommand
             $source->prepareNpm($directory, $processes);
         }
         foreach ($answers->kits as $package) {
-            $this->must($processes->run([$php, 'bin/tinvar', 'kit:install', $package, '--no-interaction'], $directory, $env), "The {$package} kit did not install; see what it said above.");
+            $this->must($processes->run([$php, 'tinvar', 'kit:install', $package, '--no-interaction'], $directory, $env), "The {$package} kit did not install; see what it said above.");
         }
 
         // The key and the probe token, codegen, the migrations and npm ci:
         // the skeleton's own setup, as `composer create-project` runs it.
-        $ready = $processes->run([$php, 'bin/tinvar', 'setup', '--no-next-steps', '--no-interaction'], $directory, $env) === 0;
-        $seeded = $ready && $processes->run([$php, 'bin/tinvar', 'db:seed', '--non-production', '--no-interaction'], $directory, $env) === 0;
+        $ready = $processes->run([$php, 'tinvar', 'setup', '--no-next-steps', '--no-interaction'], $directory, $env) === 0;
+        $seeded = $ready && $processes->run([$php, 'tinvar', 'db:seed', '--non-production', '--no-interaction'], $directory, $env) === 0;
         if ($answers->deploy !== null) {
-            $this->must($processes->run([$php, 'bin/tinvar', 'deploy:init', $answers->deploy->value, '--no-interaction'], $directory, $env), 'deploy:init failed; see what it said above.');
+            $this->must($processes->run([$php, 'tinvar', 'deploy:init', $answers->deploy->value, '--no-interaction'], $directory, $env), 'deploy:init failed; see what it said above.');
         }
 
         ($this->out)($this->nextSteps($answers, $directory, $ready && $seeded, $passwordFile));
@@ -281,7 +281,7 @@ final class NewAppCommand
     /**
      * This process's environment, without another app's settings: those
      * NOT_INHERITED names, and every variable the new app's $dotEnv sets --
-     * its bin/tinvar never reads one over the environment, so one this
+     * its tinvar never reads one over the environment, so one this
      * process holds (the app it was run from loaded its own .env) would
      * win over what the new app was asked to be.
      *
@@ -314,7 +314,7 @@ final class NewAppCommand
             $found = null;
         }
 
-        return $found === null ? '  bin/tinvar frankenphp:install       # FrankenPHP, which bin/dev and bin/serve run: setup said above why it did not' : null;
+        return $found === null ? '  php tinvar frankenphp:install       # FrankenPHP, which serve runs: setup said above why it did not' : null;
     }
 
     /** What to do next, as the setup's own last lines say it, and what this run left to do. */
@@ -323,9 +323,9 @@ final class NewAppCommand
         $cd = escapeshellarg($directory);
         $lines = ['', "{$answers->name()} is made. Next:", '', "  cd {$cd}"];
         if (!$answers->install) {
-            $lines[] = '  composer update && composer install    # then bin/tinvar setup';
+            $lines[] = '  composer update && composer install    # then php tinvar setup';
             foreach ($answers->kits as $package) {
-                $lines[] = '  bin/tinvar kit:install ' . $package . '    # before setup: then do the steps it says';
+                $lines[] = '  php tinvar kit:install ' . $package . '    # before setup: then do the steps it says';
             }
         }
         if ($answers->database->isServer() && !$ready) {
@@ -337,7 +337,7 @@ final class NewAppCommand
             if ($passwordFile !== null) {
                 $lines[] = "  #   the password is in {$passwordFile}: pbcopy < " . escapeshellarg($passwordFile) . ' and paste it';
             }
-            $lines[] = '  bin/tinvar migrate && bin/tinvar db:seed --non-production';
+            $lines[] = '  php tinvar migrate && php tinvar db:seed --non-production';
         }
         if ($answers->install && !is_dir("{$directory}/node_modules")) {
             $lines[] = '  npm ci --ignore-scripts             # setup said above why it did not; Node 22.13 or later';
@@ -345,9 +345,9 @@ final class NewAppCommand
         if ($answers->install && ($step = self::frankenPhpStep($directory)) !== null) {
             $lines[] = $step;
         }
-        $lines[] = '  bin/tinvar doctor                   # every check the app needs, each problem with its fix';
-        $lines[] = '  bin/dev                             # dev mode: renders from source, reloads as you edit';
-        $lines[] = '  npm run build && bin/serve          # or the build, as production serves it';
+        $lines[] = '  php tinvar doctor                   # every check the app needs, each problem with its fix';
+        $lines[] = '  php tinvar serve --dev              # dev mode: renders from source, reloads as you edit';
+        $lines[] = '  npm run build && php tinvar serve   # or the build, as production serves it';
         $lines[] = '  vendor/bin/pest && npx vitest run   # the tests';
         if ($answers->tenancy !== TenantLookup::Off) {
             $lines[] = '';

@@ -18,8 +18,8 @@ use Tinvar\Support\StateFile;
  * steps that move them into the platform's secret store, each reading its
  * file so no value is printed or typed.
  *
- *     bin/tinvar deploy:init fly
- *     bin/tinvar deploy:init vps-compose --layout=two --domain=https://shop.example.com
+ *     php tinvar deploy:init fly
+ *     php tinvar deploy:init vps-compose --layout=two --domain=https://shop.example.com
  *
  * Asked for a target where a person is there and none is given. A file
  * already there with other contents is left alone unless --force: it may
@@ -40,7 +40,7 @@ final readonly class DeployInitCommand
         private array $env,
         private \Closure $out,
         private \Closure $err,
-        private string $console = 'bin/tinvar',
+        private string $console = 'php tinvar',
     ) {}
 
     /** @param list<string> $arguments */

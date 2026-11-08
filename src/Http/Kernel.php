@@ -364,7 +364,7 @@ final class Kernel
     /** The application's event bus, which hears RenderFailed after the closures. */
     private readonly ?Events $events;
 
-    /** The dev toolbar, under `tinvar dev` only; never on a Kernel not built for dev. */
+    /** The dev toolbar, under `tinvar serve --dev` only; never on a Kernel not built for dev. */
     private readonly ?DevToolbar $toolbar;
 
     /** The request handle() is answering: what a failed boundary's RenderFailed names. */
@@ -587,7 +587,7 @@ final class Kernel
      * @param Events|null $events the application's event bus: every RenderFailed is
      *        dispatched on it, after the $renderFailed closures, so a #[Listener] for
      *        it hears each failed render as they do
-     * @param DevToolbar|null $toolbar the dev toolbar `tinvar dev` asked for: each
+     * @param DevToolbar|null $toolbar the dev toolbar `tinvar serve --dev` asked for: each
      *        request is recorded, documents carry the toolbar, and /_dev/toolbar
      *        answers for them -- on loopback, with its token. Refused unless built
      *        for dev ($dev), so no production Kernel can carry one.
@@ -792,7 +792,7 @@ final class Kernel
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
                 'The dev toolbar was given to a Kernel not built for dev. It shows every request\'s props and frames, '
-                . 'and exists only under `tinvar dev`.',
+                . 'and exists only under `tinvar serve --dev`.',
             );
         }
         $this->toolbar = $toolbar;
@@ -1067,7 +1067,7 @@ final class Kernel
                 routes: $this->routes,
                 // Telling the loaders' tags apart by segment, for the live
                 // token each re-render answers with.
-                // And, under `tinvar dev`, each re-render's origins for the
+                // And, under `tinvar serve --dev`, each re-render's origins for the
                 // toolbar: an action's request badges its fields as a
                 // navigation's does.
                 loaders: new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead, $this->telemetry, $this->toolbar === null ? null : $this->toolbar->loaded(...)),
@@ -1679,7 +1679,7 @@ final class Kernel
         // budget is a budget of renders (ADR 0018).
         $perToken = FragmentEndpoint::tokenCount(...);
 
-        // Under `tinvar dev`, each fragment's props badged with where they
+        // Under `tinvar serve --dev`, each fragment's props badged with where they
         // came from -- the page that minted them -- before it renders
         // (ADR 0112).
         $render = $fragments?->render;

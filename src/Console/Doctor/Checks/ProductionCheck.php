@@ -35,7 +35,7 @@ final readonly class ProductionCheck implements DoctorCheck
         try {
             $dev = DevMode::fromEnvironment($env);
         } catch (\RuntimeException $e) {
-            $findings[] = Finding::problem($e->getMessage(), 'Unset TINVAR_DEV on the server; `bin/dev` is the only thing that sets it.');
+            $findings[] = Finding::problem($e->getMessage(), 'Unset TINVAR_DEV on the server; `php tinvar serve --dev` is the only thing that sets it.');
             $dev = false;
         }
         // Asked only where it would refuse: on a developer's machine it

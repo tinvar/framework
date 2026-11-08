@@ -23,10 +23,11 @@ use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * `tinvar serve`: an app's renderers and FrankenPHP, started together and
- * stopped together.
+ * An app's renderers and FrankenPHP, started together and stopped
+ * together: `tinvar serve:process`, which `tinvar serve` runs once the app
+ * is migrated and built, and `tinvar serve --dev` under DevCommand (ADR 0199).
  *
- *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--renderers=N]
+ *   tinvar serve:process [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--renderers=N]
  *                [--frankenphp=PATH] [--worker] [--schedule] [--public-host=NAME[,NAME...] [--share]]
  *
  * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server

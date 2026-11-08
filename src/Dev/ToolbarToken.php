@@ -13,7 +13,7 @@ use Tinvar\Support\Signer;
  * What a page's dev toolbar shows the endpoint, so it may read back the
  * requests of the visitor it was drawn for: the spec's "per-run token".
  *
- * Signed with the key `tinvar dev` made for this run (DevToolbar), so a
+ * Signed with the key `tinvar serve --dev` made for this run (DevToolbar), so a
  * token from an earlier run, or one any other process wrote, does not
  * verify. Bound as every token is (TokenClaims): the session and the
  * signed-in user with their auth epoch, as keyed hashes, the build, and
@@ -32,7 +32,7 @@ final readonly class ToolbarToken
 {
     public const string PURPOSE = 'dev-toolbar';
 
-    /** A day's work at a desk; the key it is signed with lasts one run of `tinvar dev` regardless. */
+    /** A day's work at a desk; the key it is signed with lasts one run of `tinvar serve --dev` regardless. */
     public const int TTL = 43200;
 
     public function __construct(

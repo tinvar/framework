@@ -46,19 +46,19 @@ it('installs the kit a package Composer installed declares, into the app, and sa
     $root = project([['name' => 'acme/notes', 'extra' => ['tinvar' => ['kit' => ['name' => 'notes', 'title' => 'Notes', 'class' => NotesKit::class]]]]]);
     $out = '';
 
-    new KitInstaller($root, new KitTarget($root, 'App', 'bin/tinvar', "{$root}/database/migrations"), static function (string $t) use (&$out): void {
+    new KitInstaller($root, new KitTarget($root, 'App', 'php tinvar', "{$root}/database/migrations"), static function (string $t) use (&$out): void {
         $out .= $t;
     })->install('acme/notes');
 
     expect(file_get_contents("{$root}/kit.txt"))->toBe("installed under App\n")
-        ->and($out)->toBe("Installing Notes (acme/notes)\n  `bin/tinvar migrate`\n")
+        ->and($out)->toBe("Installing Notes (acme/notes)\n  `php tinvar migrate`\n")
         ->and(array_keys(KitInstaller::installed($root)))->toBe(['acme/notes']);
     exec('rm -rf ' . escapeshellarg($root));
 });
 
 it('refuses a package that is not installed, and a kit class that is no AppKit', function () {
     $root = project([['name' => 'acme/odd', 'extra' => ['tinvar' => ['kit' => ['name' => 'odd', 'class' => \stdClass::class]]]]]);
-    $installer = new KitInstaller($root, new KitTarget($root, 'App', 'bin/tinvar', $root), static function (string $t): void {});
+    $installer = new KitInstaller($root, new KitTarget($root, 'App', 'php tinvar', $root), static function (string $t): void {});
 
     expect(static fn () => $installer->install('acme/missing'))->toThrow(\RuntimeException::class, 'composer require acme/missing')
         ->and(static fn () => $installer->install('acme/odd'))->toThrow(\RuntimeException::class, 'not a class implementing');

@@ -23,7 +23,7 @@ final readonly class DoctorContext
     /**
      * @param string $root the application: its composer.json, package.json, Caddyfile and build
      * @param array<string, string> $env the environment the application would run in
-     * @param string $console how a fix names the application's CLI: `bin/tinvar`
+     * @param string $console how a fix names the application's CLI: `tinvar`
      * @param (\Closure(): DiscoveredClasses)|null $classes what the application registers; null for none
      * @param (\Closure(bool): Connection)|null $connect opens the application's database, told whether to make a SQLite file
      * @param string|null $migrations the migrations' directory
@@ -40,7 +40,7 @@ final readonly class DoctorContext
     public function __construct(
         public string $root,
         public array $env,
-        public string $console = 'bin/tinvar',
+        public string $console = 'php tinvar',
         public ?\Closure $classes = null,
         public ?\Closure $connect = null,
         public ?string $migrations = null,

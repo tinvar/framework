@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar dev` for real: serve --dev under it, codegen at the start, and the
+ * `tinvar serve --dev` for real: serve --dev under it, codegen at the start, and the
  * dev toolbar over the shop's pages in Chromium -- its script and style run
  * under each response's nonce, it reads the session's requests through PHP
  * on the page's own origin, and shows the catalog's props, timings and
@@ -98,7 +98,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     $typesTime = filemtime("{$copy}/resources/types/generated.ts");
 
     $process = proc_open(
-        [PHP_BINARY, "{$root}/bin/tinvar", 'dev', "--app={$copy}"],
+        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', '--dev', "--app={$copy}"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $log, 'w']],
         $pipes,
         $root,
@@ -127,7 +127,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
             }
             usleep(100_000);
         }
-        expect($m[1] ?? null)->not->toBeNull("tinvar dev printed no URL:\n" . file_get_contents($log));
+        expect($m[1] ?? null)->not->toBeNull("tinvar serve --dev printed no URL:\n" . file_get_contents($log));
         $url = $m[1];
 
         $browsed = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-toolbar.mjs", $url], $root, 150);
@@ -270,9 +270,9 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($panel['product']['ticks'])->toContain('products.availability')
         ->and($panel['product']['ticks'])->toContain('from OrderPanel ← Page');
 
-    // Not `tinvar dev`: a page with no toolbar is not read, and a forged
+    // Not `tinvar serve --dev`: a page with no toolbar is not read, and a forged
     // token where no endpoint answers -- as in production -- reads nothing.
-    expect($panel['elsewhere']['plain'])->toContain('not served by `tinvar dev`')
+    expect($panel['elsewhere']['plain'])->toContain('not served by `tinvar serve --dev`')
         ->and($panel['elsewhere']['forged'])->toContain('not a Tinvar dev server');
 
     // Firefox, from the same src/: installed as a temporary add-on, which is
@@ -300,7 +300,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
 
 /**
  * `render --dump / --dev --json` for the app at $app, as the shop's
- * bin/tinvar builds it, through the `tinvar dev` serving it.
+ * bin/tinvar builds it, through the `tinvar serve --dev` serving it.
  *
  * @return array{int, string, string, array{database?: string, files?: ?string}} the status, what it
  *         printed, what it said on error, and what the application was handed

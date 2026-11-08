@@ -20,7 +20,7 @@ namespace Tinvar\Console\Kits;
  *
  * `tinvar new` offers every kit its source has by that name -- `--accounts`
  * for the one named `accounts`, `--kit=<package>` for any -- requires the
- * package, and once Composer has installed it runs `bin/tinvar kit:install
+ * package, and once Composer has installed it runs `php tinvar kit:install
  * <package>` in the new application, which builds the class and calls
  * install(). The same command adds a kit to an application that already
  * exists.

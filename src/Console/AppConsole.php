@@ -61,11 +61,12 @@ use Tinvar\Server\ServeCommand;
 use Tinvar\Server\ServeException;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
+use Tinvar\Support\DevMode;
 use Tinvar\Transfers\TransferRegistry;
 
 /**
  * An application's command line: the framework's commands, pointed at one
- * application -- what every `bin/tinvar` runs, the skeleton's and this
+ * application -- what every `tinvar` runs, the skeleton's and this
  * workspace's alike.
  *
  *     exit(new AppConsole(
@@ -108,6 +109,12 @@ final class AppConsole
 
     /** The rule `tinvar check` reports a route on a `{tenant}` host reading its tenant from elsewhere under. */
     public const string TENANT_HOST_READS_HOST = 'tenant-host-reads-host';
+
+    /** What `serve` takes (ADR 0199). */
+    public const string SERVE_USAGE = 'serve [--dev [--tunnel | --public-host=NAME[,NAME...] [--share]]] [--host=HOST] [--port=PORT] [--workers=N] [--renderers=N] [--frankenphp=PATH] [--prebuilt] [--no-worker] [--schedule]';
+
+    /** What a build that `serve --prebuilt` serves must hold, made with the image. */
+    private const array PREBUILT = ['rsc/index.js', 'rsc/__vite_rsc_assets_manifest.js', 'rsc/profile.json', 'fragments.json'];
 
     /** @var array<string, array{usage: string, about: string, run: \Closure(list<string>): int}> */
     private array $commands = [];
@@ -171,7 +178,7 @@ final class AppConsole
         private readonly bool $workers = false,
         private readonly ?DatabaseSeeder $seeder = null,
         private readonly string $connection = 'app',
-        private readonly string $name = 'bin/tinvar',
+        private readonly string $name = 'php tinvar',
         private readonly ?\Closure $rendererLog = null,
         private readonly ?\Closure $resourceTest = null,
         private readonly ?\Closure $connect = null,
@@ -721,12 +728,176 @@ final class AppConsole
     }
 
     /**
-     * The renderers and FrankenPHP, together; see ServeCommand. This
-     * application and no other, unless the console serves any it is given.
+     * The app served (ADR 0199). Production's way unless --dev says dev
+     * mode: migrated, built where it has no build, its fragment and
+     * discovery manifests written, the build named and recorded as
+     * released, then served with the queue worker beside it where the app
+     * has one (--no-worker for none). With --prebuilt, the image's: nothing
+     * is built or written, and a build not all there, or not production's,
+     * stops the start.
+     *
+     * A console over a workspace's apps (one whose app is not its project)
+     * prepares nothing: each app's own script does.
      *
      * @param list<string> $arguments
      */
     public function serve(array $arguments): int
+    {
+        $dev = \in_array('--dev', $arguments, true);
+        $own = $this->projectRoot === $this->root;
+        if ($own && $this->workers) {
+            $worker = !\in_array('--no-worker', $arguments, true);
+            $arguments = array_values(array_filter($arguments, static fn (string $a): bool => $a !== '--no-worker' && $a !== '--worker'));
+            if ($worker) {
+                $arguments[] = '--worker';
+            }
+        }
+        if ($dev) {
+            return $this->dev(array_values(array_filter($arguments, static fn (string $a): bool => $a !== '--dev')), migrate: $own);
+        }
+        if (!$own) {
+            return $this->process($arguments);
+        }
+
+        $prebuilt = \in_array('--prebuilt', $arguments, true);
+        $arguments = array_values(array_filter($arguments, static fn (string $a): bool => $a !== '--prebuilt'));
+        // What is made before serving goes to standard error: standard
+        // output is serve's, whose URL is the line a caller waits for.
+        ob_start(static function (string $buffer): string {
+            fwrite(STDERR, $buffer);
+
+            return '';
+        }, 1);
+        try {
+            $prepared = $this->prepare($prebuilt);
+        } finally {
+            ob_end_flush();
+        }
+
+        return $prepared === 0 ? $this->process($arguments) : $prepared;
+    }
+
+    /**
+     * Everything `serve` does before serving, in order: the production
+     * profile and dist/ refused otherwise, first, before the database is
+     * touched; the schema the code expects; the build; and its name.
+     */
+    private function prepare(bool $prebuilt): int
+    {
+        $profile = getenv(BuildProfile::ENV);
+        if (\is_string($profile) && $profile !== '' && $profile !== BuildProfile::PRODUCTION) {
+            fwrite(STDERR, BuildProfile::ENV . "={$profile}: `{$this->name} serve` serves the production profile. A browser test run serves its test build itself.\n");
+
+            return 64;
+        }
+        foreach ([BuildProfile::RUN_ENV, BuildProfile::BUILD_DIR_ENV] as $variable) {
+            $value = getenv($variable);
+            if (\is_string($value) && $value !== '') {
+                fwrite(STDERR, "{$variable} is set: `{$this->name} serve` serves the app's own build, dist/. Unset it.\n");
+
+                return 64;
+            }
+        }
+
+        $migrated = $this->migrate('migrate', []);
+        if ($migrated !== 0) {
+            return $migrated;
+        }
+
+        $dist = "{$this->root}/dist";
+        if ($prebuilt) {
+            // The image's (Dockerfile): the build and its manifests were
+            // made with it, and dist/ is read-only.
+            foreach (self::PREBUILT as $file) {
+                if (!is_file("{$dist}/{$file}")) {
+                    fwrite(STDERR, "--prebuilt, and there is no dist/{$file}: the image was built without the app's build.\n");
+
+                    return 66;
+                }
+            }
+            $made = (string) file_get_contents("{$dist}/" . BuildProfile::BUILD_FILE);
+            if (!str_contains($made, '"profile":"production"')) {
+                fwrite(STDERR, '--prebuilt, and dist/ was not built for production: ' . trim($made) . ".\n");
+
+                return 66;
+            }
+        } elseif (!is_file("{$dist}/rsc/index.js")) {
+            echo "Building the app...\n";
+            $built = $this->build([]);
+            if ($built !== 0) {
+                return $built;
+            }
+        } else {
+            // On every start, not only after a build: a route renamed in PHP
+            // changes the fragment manifest with nothing for Vite to rebuild,
+            // and a class added changes discovery's (ADR 0146).
+            $fragments = ($this->commands['build:fragments']['run'])([]);
+            if ($fragments !== 0) {
+                return $fragments;
+            }
+            $discovered = $this->discover([]);
+            if ($discovered !== 0) {
+                return $discovered;
+            }
+        }
+
+        // Named by the hash of its client manifest, with the profile it was
+        // made for in front of any but production's (ADR 0066), and recorded
+        // as released, so the build before it stays retained for the
+        // clients still on it and build:revoke can name it. A build released
+        // before is refused as current and keeps its place: never a reason
+        // not to serve, nor is a prune that failed.
+        try {
+            $build = BuildProfile::buildId($dist);
+        } catch (\RuntimeException) {
+            fwrite(STDERR, "dist/ is not a finished build: no client manifest to name it by. Build it again.\n");
+
+            return 66;
+        }
+        putenv("TINVAR_BUILD={$build}");
+        ($this->commands['build:current']['run'])([$build]);
+        ($this->commands['build:prune']['run'])([]);
+
+        return 0;
+    }
+
+    /**
+     * Dev mode (DevCommand): refused where the environment says production
+     * before anything is migrated, then the schema the code expects.
+     *
+     * @param list<string> $arguments
+     */
+    private function dev(array $arguments, bool $migrate): int
+    {
+        $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
+        if ($migrate && $marker === null) {
+            $migrated = $this->migrate('migrate', []);
+            if ($migrated !== 0) {
+                return $migrated;
+            }
+        }
+
+        return new DevCommand(
+            console: $this->console,
+            // Where composer.json autoloads the application from; app/
+            // where it names nothing under the application.
+            watch: ComposerSources::of($this->projectRoot, $this->root) ?: (is_dir("{$this->root}/app") ? ["{$this->root}/app"] : []),
+            codegen: fn (string $app): array => [...PhpCommand::prefix(), $this->console, 'codegen', "--out={$app}/resources/types"],
+            // An app with a console of its own runs where it is; one
+            // console over a workspace's apps, where it was run from.
+            workingDirectory: $this->projectRoot === $this->root ? $this->root : null,
+            serve: 'serve:process',
+        )->run($arguments);
+    }
+
+    /**
+     * The renderers and FrankenPHP, together, and nothing before them; see
+     * ServeCommand. This application and no other, unless the console
+     * serves any it is given.
+     *
+     * @param list<string> $arguments
+     */
+    public function process(array $arguments): int
     {
         $app = null;
         foreach ($arguments as $argument) {
@@ -944,18 +1115,17 @@ final class AppConsole
 
                 return 1;
             })
-            ->command('serve', 'serve [--host=HOST] [--port=PORT] [--workers=N] [--renderers=N] [--frankenphp=PATH]', 'Serve the build with FrankenPHP workers and a pool of renderers', $this->serve(...))
+            ->command('serve', self::SERVE_USAGE, "Serve the app: migrate, build it where it has no build, write its manifests, record the build as released, and serve it with FrankenPHP workers, a pool of renderers and the queue worker. With --dev, dev mode instead: Vite's dev server renders from source, codegen runs on every PHP change, and the dev toolbar sits over each page, on loopback and never in production", $this->serve(...))
+            // What `serve` and `serve --dev` start once ready: FrankenPHP and
+            // the renderers alone, with nothing made or migrated first.
+            ->command('serve:process', '', '', $this->process(...))
             ->command('frankenphp:install', 'frankenphp:install', "Download FrankenPHP's official binary for this machine to tools/frankenphp, held to its pinned sha256 before it is made executable; nothing where serve already finds one (network)", $this->frankenphpInstall(...))
-            ->command('dev', 'dev [--host=HOST] [--port=PORT] [--frankenphp=PATH]', "Vite's dev server as the renderer, codegen on every PHP change, and the dev toolbar, on loopback; never in production", fn (array $a): int => new DevCommand(
-                console: $this->console,
-                // Where composer.json autoloads the application from; app/
-                // where it names nothing under the application.
-                watch: ComposerSources::of($this->projectRoot, $this->root) ?: (is_dir("{$this->root}/app") ? ["{$this->root}/app"] : []),
-                codegen: fn (string $app): array => [...PhpCommand::prefix(), $this->console, 'codegen', "--out={$app}/resources/types"],
-                // An app with a console of its own runs where it is; one
-                // console over a workspace's apps, where it was run from.
-                workingDirectory: $this->projectRoot === $this->root ? $this->root : null,
-            )->run($a))
+            // `tinvar dev`, from before ADR 0199: `serve --dev` now.
+            ->command('dev', '', '', function (array $a): int {
+                fwrite(STDERR, "`{$this->name} dev` is `{$this->name} serve --dev` now.\n");
+
+                return $this->serve(['--dev', ...$a]);
+            })
             ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE. Then the fragment manifest and the discovery manifest beside it, which production boots from', $this->build(...))
             ->command('discover', 'discover [--check] [--build=DIR]', "Write every class the app registers, discovered under its namespace, to the build's manifest, which production boots from without a scan; with --check, write nothing and fail where the manifest is missing or stale", $this->discover(...))
             ->command('build:fragments', 'build:fragments [--build=DIR]', "Write the fragment manifest -- which routes may defer, and what each route's renders may query -- from the build and the routes", $this->fragments(...));

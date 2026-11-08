@@ -26,10 +26,11 @@ function skeleton(): string
     }
 
     $app = sys_get_temp_dir() . '/tinvar-skeleton-endpoints-' . bin2hex(random_bytes(5));
-    foreach (['app', 'bin', 'database', 'resources'] as $directory) {
+    foreach (['app', 'database', 'resources'] as $directory) {
         copyTree("{$skeleton}/{$directory}", "{$app}/{$directory}");
     }
     copy("{$skeleton}/composer.json", "{$app}/composer.json");
+    copy("{$skeleton}/tinvar", "{$app}/tinvar");
     foreach (glob("{$app}/database/*.sqlite*") ?: [] as $file) {
         unlink($file);
     }
@@ -159,7 +160,7 @@ function remove(string $directory): void
 it('serves the app\'s own endpoints through its Kernel, a sessionless one with its exact bytes', function () {
     $app = skeleton();
     try {
-        [$migrated, $migration] = run($app, ["{$app}/bin/tinvar", 'migrate']);
+        [$migrated, $migration] = run($app, ["{$app}/tinvar", 'migrate']);
         [$status, $output] = run($app, ["{$app}/call.php"]);
         $said = json_decode(trim($output), true);
 

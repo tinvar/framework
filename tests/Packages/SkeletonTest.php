@@ -116,14 +116,14 @@ it('ships no secret, and keeps secrets and state out of git and the image', func
 // ADR 0175: setup downloads FrankenPHP where serve finds none, after npm,
 // and a failure there leaves the step in the next steps, not a failed setup.
 it('downloads FrankenPHP in setup, after npm, and leaves it to the next steps when that fails', function () {
-    $setup = read('packages/skeleton/bin/tinvar');
+    $setup = read('packages/skeleton/tinvar');
     $npm = strpos($setup, '[$npm, \'ci\', \'--ignore-scripts\'');
     $install = strpos($setup, "\$console->run([__FILE__, 'frankenphp:install'])");
 
     expect($install)->toBeInt()
         ->and($install)->toBeGreaterThan($npm)
         ->and($setup)->toContain("getenv('TINVAR_SETUP_SKIP_FRANKENPHP') === '1'")
-        ->and($setup)->toContain('bin/tinvar frankenphp:install       # FrankenPHP, which bin/serve and bin/dev run');
+        ->and($setup)->toContain('php tinvar frankenphp:install       # FrankenPHP, which serve runs');
 
     // Setup runs as composer create-project's script, which Composer stops
     // after 300 seconds unless the project says otherwise: a slow
@@ -137,9 +137,9 @@ it('runs no install script and nothing it fetched when an app is made', function
     $composer = json_decode(read('packages/skeleton/composer.json'), true);
     \assert(\is_array($composer));
 
-    expect($composer['scripts']['post-create-project-cmd'] ?? null)->toBe(['@php bin/tinvar setup'])
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain("'ci', '--ignore-scripts'")
-        ->and(read('packages/skeleton/bin/tinvar'))->not->toContain("'install', '--ignore-scripts'");
+    expect($composer['scripts']['post-create-project-cmd'] ?? null)->toBe(['@php tinvar setup'])
+        ->and(read('packages/skeleton/tinvar'))->toContain("'ci', '--ignore-scripts'")
+        ->and(read('packages/skeleton/tinvar'))->not->toContain("'install', '--ignore-scripts'");
 });
 
 // ADR 0138: the skeleton ships its lock, and setup installs from it with
@@ -156,7 +156,7 @@ it('ships a lock its own check refuses only for leaving unpublished @tinvar/* to
         token_get_all(read('packages/skeleton/app/Kernel.php')),
     ));
     $unpublished = preg_match("/unpublished:\\s*\\[[^\\]]*'@tinvar\\/\\*'/", $kernel) === 1;
-    expect(read('packages/skeleton/bin/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
+    expect(read('packages/skeleton/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
 
     $policy = new \Tinvar\Packages\PackagePolicy(
         installScripts: ['fsevents' => 'As the skeleton allows it.'],
@@ -216,20 +216,20 @@ it('serves PHP behind the shop\'s intercept block, which its check holds it to',
         ->and(read('packages/skeleton/Caddyfile'))->toContain('write_idle 8s')
         // Its check is the framework's application console's, which holds
         // the app's own Caddyfile, as the workspace's console holds the shop's.
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain('new AppConsole(')
+        ->and(read('packages/skeleton/tinvar'))->toContain('new AppConsole(')
         ->and(read('packages/framework/src/Console/AppConsole.php'))->toContain('CaddyfileRules::check("{$this->root}/Caddyfile")')
         ->and(read('bin/tinvar'))->toContain('new AppConsole(')
         ->and(read('packages/skeleton/.env.example'))->toContain('# APP_STORAGE=');
 });
 
-// ADR 0177, 0178: `bin/dev` runs the framework's dev Caddyfile, whose live
+// ADR 0177, 0178: `tinvar serve --dev` runs the framework's dev Caddyfile, whose live
 // hub refuses to start without its keys. The console derives them from the
 // app key where the app gives none, reading the key as the Kernel does --
 // TINVAR_APP_KEY, else the key file the console is handed -- so the
 // skeleton hands it that file, and its Kernel reads the key the same way.
 it('lets the console derive the dev server\'s hub keys from the key the Kernel reads', function () {
     expect(read('packages/framework/resources/Caddyfile.dev'))->toContain('{env.TINVAR_LIVE_SUBSCRIBER_KEY}')
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain('keyFile: Kernel::keyFile(...),')
-        ->and(read('packages/skeleton/bin/tinvar'))->not->toContain('serverEnvironment:')
+        ->and(read('packages/skeleton/tinvar'))->toContain('keyFile: Kernel::keyFile(...),')
+        ->and(read('packages/skeleton/tinvar'))->not->toContain('serverEnvironment:')
         ->and(read('packages/skeleton/app/Kernel.php'))->toContain("return AppKey::application('TINVAR_APP_KEY', self::keyFile());");
 });

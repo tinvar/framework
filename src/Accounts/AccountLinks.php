@@ -17,7 +17,7 @@ use Tinvar\Support\DevMode;
  *
  * The origin is the app's configured URL (APP_URL in the skeleton), https.
  * With none configured, development has a stand-in: the address `tinvar
- * serve` and `tinvar dev` serve on (TINVAR_URL), spelled on `localhost`,
+ * serve` and `tinvar serve --dev` serve on (TINVAR_URL), spelled on `localhost`,
  * which a browser treats as secure and which passkeys accept as their
  * relying party -- 127.0.0.1 is neither. Wherever the environment says
  * production, nothing stands in: no URL, or a plain-http one, stops the

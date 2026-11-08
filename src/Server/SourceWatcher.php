@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Server;
 
 /**
- * Notices when an application's PHP changes, for `tinvar dev` to run codegen
+ * Notices when an application's PHP changes, for `tinvar serve --dev` to run codegen
  * ("Codegen runs on file change, so TypeScript types update when a Data
  * object, query or action changes").
  *

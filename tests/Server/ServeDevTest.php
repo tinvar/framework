@@ -79,7 +79,7 @@ function serve(string $root, array $arguments, array $env): array
 {
     $log = (string) tempnam(sys_get_temp_dir(), 'tinvar-serve-dev-log-');
     $process = proc_open(
-        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', ...$arguments],
+        [PHP_BINARY, "{$root}/bin/tinvar", 'serve:process', ...$arguments],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $log, 'w']],
         $pipes,
         $root,

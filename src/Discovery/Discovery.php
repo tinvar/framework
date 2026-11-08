@@ -51,7 +51,7 @@ use Tinvar\Support\KnownAttributes;
  *   - anywhere else, from a scan, kept for the process and made again when
  *     a file under the namespace changes, or the framework that sorts them
  *     does: a look at each file's time and size, at most once every
- *     $recheck seconds -- as `tinvar dev` watches the sources it runs
+ *     $recheck seconds -- as `tinvar serve --dev` watches the sources it runs
  *     codegen for (SourceWatcher). `tinvar check` scans afresh (freshly()).
  */
 final class Discovery

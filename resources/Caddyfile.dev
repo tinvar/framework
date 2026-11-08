@@ -86,7 +86,7 @@ http://:{$TINVAR_PORT} {
 		not header_regexp Cookie `(?:^|;\s*)__Host-tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}(?:;|$)`
 		not query tinvar-share={$TINVAR_DEV_SHARE_TOKEN:none}
 	}
-	respond @unshared "Forbidden: open the address tinvar dev printed, with its share token." 403
+	respond @unshared "Forbidden: open the address tinvar serve --dev printed, with its share token." 403
 
 	# The token's first request: the cookie set, and the token taken out of
 	# the query before anything else reads it. A page is sent on to its

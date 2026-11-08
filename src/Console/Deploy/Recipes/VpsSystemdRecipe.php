@@ -55,7 +55,7 @@ final readonly class VpsSystemdRecipe implements DeployRecipe
         $data = RecipeParts::sqlite($app) ? "  --volume {$name}-data:/var/lib/app/data \\\n" : '';
 
         $unit = <<<UNIT
-            # {$name} under systemd, written by `bin/tinvar deploy:init vps-systemd`
+            # {$name} under systemd, written by `php tinvar deploy:init vps-systemd`
             # (ADR 0157 in the framework's repository): the app's image, run as its
             # compose file runs it, behind the host's Caddy. No secret is in this
             # file: they are in /etc/{$name}/app.env, root's alone.
@@ -91,7 +91,7 @@ final readonly class VpsSystemdRecipe implements DeployRecipe
             UNIT;
 
         $caddyfile = <<<CADDY
-            # The host's Caddy in front of {$name}, written by `bin/tinvar deploy:init
+            # The host's Caddy in front of {$name}, written by `php tinvar deploy:init
             # vps-systemd`: TLS for {$host}, and the proof the app takes it for its
             # proxy by. Caddy sets X-Forwarded-For to the client it was connected
             # from, never what a client sent, and header_up overwrites any
@@ -105,7 +105,7 @@ final readonly class VpsSystemdRecipe implements DeployRecipe
             CADDY;
 
         $dropIn = <<<CONF
-            # Caddy's systemd drop-in, written by `bin/tinvar deploy:init vps-systemd`:
+            # Caddy's systemd drop-in, written by `php tinvar deploy:init vps-systemd`:
             # the trusted proxy secret the Caddyfile sends, from root's file.
             [Service]
             EnvironmentFile=/etc/{$name}/proxy.env

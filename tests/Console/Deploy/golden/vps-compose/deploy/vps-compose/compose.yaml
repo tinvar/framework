@@ -1,4 +1,4 @@
-# my-app on a VPS, written by `bin/tinvar deploy:init vps-compose` (ADR
+# my-app on a VPS, written by `php tinvar deploy:init vps-compose` (ADR
 # 0157 in the framework's repository). From the project's root, as root,
 # since the secrets are root's files:
 #

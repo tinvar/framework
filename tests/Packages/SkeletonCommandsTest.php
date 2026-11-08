@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 /**
  * An app made from the skeleton runs its own #[Command] classes from
- * bin/tinvar, as the shop's console does: each by the name it declares,
+ * tinvar, as the shop's console does: each by the name it declares,
  * listed in `help`, run through the app's Kernel's console.
  *
- * Through the skeleton's own bin/tinvar, in a copy of the skeleton, in a
+ * Through the skeleton's own tinvar, in a copy of the skeleton, in a
  * process of its own, as SkeletonDevToolsTest runs it: its App\ namespace
  * is loaded there and nowhere else.
  */
@@ -25,10 +25,11 @@ function skeleton(): string
     }
 
     $app = sys_get_temp_dir() . '/tinvar-skeleton-commands-' . bin2hex(random_bytes(5));
-    foreach (['app', 'bin', 'database', 'resources'] as $directory) {
+    foreach (['app', 'database', 'resources'] as $directory) {
         copyTree("{$skeleton}/{$directory}", "{$app}/{$directory}");
     }
     copy("{$skeleton}/composer.json", "{$app}/composer.json");
+    copy("{$skeleton}/tinvar", "{$app}/tinvar");
     foreach (glob("{$app}/database/*.sqlite*") ?: [] as $file) {
         unlink($file);
     }
@@ -98,7 +99,7 @@ function tinvar(string $app, array $arguments): array
         'TINVAR_PROBE_TOKEN' => bin2hex(random_bytes(24)),
         'APP_DATABASE' => "{$app}/database/app.sqlite",
     ];
-    $process = proc_open([PHP_BINARY, "{$app}/bin/tinvar", ...$arguments], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $app, $env);
+    $process = proc_open([PHP_BINARY, "{$app}/tinvar", ...$arguments], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $app, $env);
     \assert(\is_resource($process));
     $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
     fclose($pipes[1]);

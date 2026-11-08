@@ -16,7 +16,7 @@ use Tinvar\Support\BuildProfile;
  * the front controller refuses one), its fragment manifest, and a
  * discovery manifest listing exactly the classes a scan finds -- what
  * production boots from without a scan. On a developer's machine, where
- * `bin/dev` renders from source, a build is optional; one there is still
+ * `php tinvar serve --dev` renders from source, a build is optional; one there is still
  * held to being fresh.
  */
 final readonly class BuildCheck implements DoctorCheck
@@ -34,7 +34,7 @@ final readonly class BuildCheck implements DoctorCheck
 
         if (!$built) {
             return $production === null
-                ? [Finding::passed("No build in {$directory}: `bin/dev` renders from source; `{$context->console} build` makes one to serve.")]
+                ? [Finding::passed("No build in {$directory}: `php tinvar serve --dev` renders from source; `{$context->console} build` makes one to serve.")]
                 : [Finding::problem("No build in {$directory}, and {$production}: there is nothing to serve.", "`{$context->console} build` (the image's Dockerfile runs it), then deploy what it wrote.")];
         }
 

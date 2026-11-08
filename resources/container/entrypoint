@@ -6,7 +6,7 @@
 # container is root or holds a capability.
 #
 #   entrypoint                 serve: the renderers, then the PHP side
-#   entrypoint tinvar ARGS...  bin/tinvar ARGS as the app's user, and exit
+#   entrypoint tinvar ARGS...  tinvar ARGS as the app's user, and exit
 #   entrypoint CMD ARGS...     CMD as the app's user, and exit
 #
 # It runs as root with no capability but CAP_SETUID and CAP_SETGID, to start
@@ -135,7 +135,7 @@ if [ $# -gt 0 ]; then
     cd "${TINVAR_CONTAINER_CWD:-/}"
     if [ "$1" = tinvar ]; then
         shift
-        exec "${as_app[@]}" /usr/local/bin/tini -- php "${TINVAR_CONTAINER_TINVAR:?names bin/tinvar}" "$@"
+        exec "${as_app[@]}" /usr/local/bin/tini -- php "${TINVAR_CONTAINER_TINVAR:?names tinvar}" "$@"
     fi
     exec "${as_app[@]}" /usr/local/bin/tini -- "$@"
 fi

@@ -111,7 +111,7 @@ final readonly class VpsComposeRecipe implements DeployRecipe
         $volumes = ($two ? "  sockets:\n" : '') . (RecipeParts::sqlite($app) ? "  data:\n" : '') . "  caddy-data:\n";
 
         $compose = <<<YAML
-            # {$name} on a VPS, written by `bin/tinvar deploy:init vps-compose` (ADR
+            # {$name} on a VPS, written by `php tinvar deploy:init vps-compose` (ADR
             # 0157 in the framework's repository). From the project's root, as root,
             # since the secrets are root's files:
             #
@@ -164,7 +164,7 @@ final readonly class VpsComposeRecipe implements DeployRecipe
             YAML;
 
         $caddyfile = <<<CADDY
-            # Caddy in front of {$name}, written by `bin/tinvar deploy:init vps-compose`:
+            # Caddy in front of {$name}, written by `php tinvar deploy:init vps-compose`:
             # TLS for {$host}, and the proof the app takes it for its proxy by. Caddy
             # sets X-Forwarded-For to the client it was connected from, never what a
             # client sent, and header_up overwrites any X-Tinvar-Proxy a client sent

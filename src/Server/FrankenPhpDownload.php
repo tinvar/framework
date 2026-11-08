@@ -7,7 +7,7 @@ namespace Tinvar\Server;
 /**
  * FrankenPHP's official binary for this machine, downloaded from its
  * GitHub release into the project's tools/frankenphp, where `tinvar serve`
- * and `tinvar dev` look for it (ADR 0175).
+ * and `tinvar serve --dev` look for it (ADR 0175).
  *
  * Each binary is pinned here by its sha256, and nothing is made
  * executable until the download hashes to it. The download is written

@@ -100,7 +100,7 @@ final readonly class SignIn implements Middleware
     }
 }
 
-/** A run's directory and key, as `tinvar dev` makes them; removed after the test. */
+/** A run's directory and key, as `tinvar serve --dev` makes them; removed after the test. */
 function run(): string
 {
     $directory = PrivateDirectory::create('tinvar-dev-test');
@@ -245,7 +245,7 @@ it('refuses the toolbar beside any production marker, before anything else, dev 
         ->toThrow(\RuntimeException::class, 'is refused');
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 
-it('is not there unless `tinvar dev` asked for it, in dev', function () {
+it('is not there unless `tinvar serve --dev` asked for it, in dev', function () {
     $directory = run();
 
     expect(DevToolbar::fromEnvironment(static fn (): string => '', env: []))->toBeNull()
@@ -271,22 +271,22 @@ it('refuses a run directory or key that is not this user\'s alone', function () 
 
     $missing = run();
     unlink("{$missing}/" . DevToolbar::KEY_FILE);
-    expect(fn () => toolbar($missing))->toThrow(\RuntimeException::class, 'is not one `tinvar dev` made');
+    expect(fn () => toolbar($missing))->toThrow(\RuntimeException::class, 'is not one `tinvar serve --dev` made');
 
     $short = run();
     file_put_contents("{$short}/" . DevToolbar::KEY_FILE, 'abc');
-    expect(fn () => toolbar($short))->toThrow(\RuntimeException::class, 'is not a key `tinvar dev` wrote');
+    expect(fn () => toolbar($short))->toThrow(\RuntimeException::class, 'is not a key `tinvar serve --dev` wrote');
 
     $real = run();
     $link = sys_get_temp_dir() . '/tinvar-dev-link-' . bin2hex(random_bytes(4));
     symlink($real, $link);
     try {
-        expect(fn () => toolbar($link))->toThrow(\RuntimeException::class, 'is not one `tinvar dev` made');
+        expect(fn () => toolbar($link))->toThrow(\RuntimeException::class, 'is not one `tinvar serve --dev` made');
     } finally {
         unlink($link);
     }
 
-    expect(fn () => toolbar('relative/dir'))->toThrow(\RuntimeException::class, 'is not one `tinvar dev` made');
+    expect(fn () => toolbar('relative/dir'))->toThrow(\RuntimeException::class, 'is not one `tinvar serve --dev` made');
 });
 
 // ------------------------------------------------------------- drawing

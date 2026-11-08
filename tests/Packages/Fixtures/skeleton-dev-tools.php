@@ -7,7 +7,7 @@ declare(strict_types=1);
  * on the server database the environment names (ADR 0173): the copy
  * DatabaseSnapshot makes of what Kernel::devToolsDatabase() hands the dev
  * tools, and Kernel::fromEnvironment() on it, as the application closure
- * in the skeleton's bin/tinvar builds it. Run by SkeletonDevToolsTest in a
+ * in the skeleton's tinvar builds it. Run by SkeletonDevToolsTest in a
  * process of its own, so the skeleton's App\ namespace is loaded here and
  * nowhere else.
  *

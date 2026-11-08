@@ -1,6 +1,6 @@
 // The dev toolbar's script (Tinvar\Dev\DevToolbar).
 //
-// PHP inlines it into a document served under `tinvar dev`, and nowhere
+// PHP inlines it into a document served under `tinvar serve --dev`, and nowhere
 // else: under the response's nonce, beside a data block holding the
 // endpoint and the token this page may read its session's requests with. No
 // application bundle imports it, so no build contains it.

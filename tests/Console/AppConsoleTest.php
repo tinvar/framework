@@ -117,6 +117,103 @@ it('prints what the check found as JSON with --json, each problem at the class i
     expect($mine)->toBe(['heading' => 'Mine failed:', 'problems' => [], 'passed' => ['ok: mine']]);
 });
 
+/**
+ * An app's own console (its project is the app), as the skeleton's is:
+ * what `serve` does before it serves (ADR 0199). In a directory of its
+ * own, with an in-memory database.
+ *
+ * @param array<string, mixed> $overrides
+ * @return array{AppConsole, string}
+ */
+function ownConsole(array $overrides = []): array
+{
+    $root = sys_get_temp_dir() . '/tinvar-own-console-' . bin2hex(random_bytes(5));
+    mkdir("{$root}/migrations", 0o755, true);
+    $root = (string) realpath($root);
+
+    return [console(['root' => $root, 'projectRoot' => $root, 'migrations' => "{$root}/migrations", 'workers' => true, ...$overrides]), $root];
+}
+
+/**
+ * $variables set for $run alone.
+ *
+ * @param array<string, string> $variables
+ */
+function withEnvironment(array $variables, \Closure $run): mixed
+{
+    $before = [];
+    foreach ($variables as $name => $value) {
+        $before[$name] = getenv($name);
+        putenv("{$name}={$value}");
+    }
+    try {
+        return $run();
+    } finally {
+        foreach ($before as $name => $value) {
+            putenv($value === false ? $name : "{$name}={$value}");
+        }
+    }
+}
+
+// ADR 0199: `serve` is the app served, production's way, and `serve --dev`
+// dev mode; `serve:process` what both start, and `dev` the old name.
+it('lists serve with --dev, and neither serve:process nor dev', function () {
+    [$status, $help] = ran(console(), 'help');
+
+    expect($status)->toBe(0)
+        ->and($help)->toContain('serve [--dev [--tunnel | --public-host=NAME[,NAME...] [--share]]]')
+        ->and($help)->toContain('--prebuilt')
+        ->and($help)->not->toContain('serve:process')
+        ->and($help)->not->toMatch('/^  dev\b/m')
+        ->and(console()->has('serve:process'))->toBeTrue()
+        ->and(console()->has('dev'))->toBeTrue();
+});
+
+it('refuses a profile other than production, or a test run, before the database is touched', function (string $name, string $value) {
+    $touched = false;
+    [$console] = ownConsole(['database' => static function () use (&$touched): string {
+        $touched = true;
+
+        return ':memory:';
+    }]);
+
+    $status = withEnvironment([$name => $value], static fn (): int => ran($console, 'serve')[0]);
+
+    expect($status)->toBe(64)->and($touched)->toBeFalse();
+})->with([
+    'the test profile' => ['TINVAR_PROFILE', 'test'],
+    'the staging profile' => ['TINVAR_PROFILE', 'staging'],
+    'a test run' => ['TINVAR_TEST_RUN', 'run-1'],
+    'another build directory' => ['TINVAR_BUILD_DIR', '/tmp/elsewhere'],
+]);
+
+it('migrates, then refuses --prebuilt where the image has no build, or one not made for production', function () {
+    [$console, $root] = ownConsole();
+
+    expect(ran($console, 'serve', '--prebuilt')[0])->toBe(66);
+
+    mkdir("{$root}/dist/rsc", 0o755, true);
+    foreach (['rsc/index.js', 'rsc/__vite_rsc_assets_manifest.js', 'fragments.json'] as $file) {
+        file_put_contents("{$root}/dist/{$file}", '');
+    }
+    file_put_contents("{$root}/dist/rsc/profile.json", '{"profile":"test"}');
+
+    expect(ran($console, 'serve', '--prebuilt')[0])->toBe(66);
+});
+
+it('refuses serve --dev where the environment says production, before migrating', function () {
+    $touched = false;
+    [$console] = ownConsole(['database' => static function () use (&$touched): string {
+        $touched = true;
+
+        return ':memory:';
+    }]);
+
+    $status = withEnvironment(['APP_ENV' => 'production'], static fn (): int => ran($console, 'serve', '--dev')[0]);
+
+    expect($status)->toBe(64)->and($touched)->toBeFalse();
+});
+
 it('refuses --worker where the application has no queue to run', function () {
     expect(ran(console(), 'serve', '--worker')[0])->toBe(64);
 });

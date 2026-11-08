@@ -785,7 +785,7 @@ final class MakeCommand
         }
 
         if ($this->resourceTest === null) {
-            return 'No test was written: tinvar/testing, which writes it, is not handed to this console (bin/tinvar passes it where it is installed).';
+            return 'No test was written: tinvar/testing, which writes it, is not handed to this console (tinvar passes it where it is installed).';
         }
 
         return 'No test was written: the app has no tests/ directory, or no Kernel::fromEnvironment(database:, telemetry:) and Database\\Migrations to build one with, as the skeleton has.';

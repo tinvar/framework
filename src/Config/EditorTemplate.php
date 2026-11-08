@@ -15,7 +15,7 @@ namespace Tinvar\Config;
  * A page could not know the developer's editor (ADR 0062), so only the
  * DevTools extension linked its sites; a variable on the developer's own
  * machine can say it. It is read only where dev draws a site -- the toolbar
- * exists under `tinvar dev` alone, the overlay only in a Kernel built for
+ * exists under `tinvar serve --dev` alone, the overlay only in a Kernel built for
  * dev -- and is nothing anywhere else.
  *
  * What it can never become is a script. A link drawn into the page is one a

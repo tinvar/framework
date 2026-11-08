@@ -21,7 +21,7 @@ final class FrankenPhp
     public static function locate(string $projectRoot, ?string $explicit = null): string
     {
         return self::find($projectRoot, $explicit) ?? throw new ServeException(
-            'No FrankenPHP binary found. Run `bin/tinvar frankenphp:install` to download it to tools/frankenphp, '
+            'No FrankenPHP binary found. Run `php tinvar frankenphp:install` to download it to tools/frankenphp, '
             . 'or put one there, set TINVAR_FRANKENPHP, pass --frankenphp=PATH, or install it on your PATH (https://frankenphp.dev).',
         );
     }

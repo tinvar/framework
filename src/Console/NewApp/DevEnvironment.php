@@ -12,7 +12,7 @@ use Tinvar\Mail\MailTransports;
 /**
  * The `.env` `tinvar new` writes for the developer's machine (ADR 0157):
  * the settings it asked about, read into the environment by the app's
- * bin/tinvar there and nowhere else (Tinvar\Config\EnvironmentFile), git
+ * tinvar there and nowhere else (Tinvar\Config\EnvironmentFile), git
  * ignoring it. No secret is ever in it: a secret's variable names a file
  * outside the project, in its _FILE variable.
  */
@@ -28,13 +28,13 @@ final class DevEnvironment
         $lines = [
             "# This machine's settings for {$answers->name()}, written by `tinvar new`.",
             '#',
-            '# bin/tinvar reads this into its environment before anything reads config,',
+            '# tinvar reads this into its environment before anything reads config,',
             '# here and nowhere else: never where TINVAR_ENV says production or staging,',
             '# never over a variable the environment already sets, and never a secret --',
             '# a variable ending in _KEY, _SECRET, _PASSWORD, _TOKEN or _DSN is left out. Put a',
             '# secret in a file outside the project, readable by you alone, and name the',
             '# file in its _FILE variable. git ignores this file; .env.example lists the',
-            '# rest. `bin/tinvar doctor` checks it all.',
+            '# rest. `php tinvar doctor` checks it all.',
             '',
             '# A developer\'s machine: db:seed and migrate:fresh may run here.',
             'TINVAR_ENV=local',
@@ -43,8 +43,8 @@ final class DevEnvironment
 
         if ($answers->database->isServer()) {
             $lines = [...$lines,
-                "# The {$answers->database->title()} database. Create the user and the database (bin/tinvar doctor",
-                '# says whether it can reach them), then `bin/tinvar migrate`.',
+                "# The {$answers->database->title()} database. Create the user and the database (`php tinvar doctor`",
+                '# says whether it can reach them), then `php tinvar migrate`.',
                 "APP_DATABASE_DRIVER={$answers->database->value}",
                 "APP_DATABASE_HOST={$answers->databaseHost}",
                 'APP_DATABASE_PORT=' . ($answers->databasePort ?? $answers->database->defaultPort()),

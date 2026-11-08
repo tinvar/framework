@@ -8,7 +8,7 @@ use Tinvar\Support\ChildDescriptors;
 
 /**
  * The commands `tinvar new` runs -- Composer, npm, the new application's
- * own bin/tinvar -- each with its output passed on as it comes, and its
+ * own tinvar -- each with its output passed on as it comes, and its
  * exit status; a test hands in one that records them instead.
  */
 class Processes

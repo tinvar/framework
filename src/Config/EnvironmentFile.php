@@ -11,7 +11,7 @@ use Tinvar\Support\DevMode;
  * An application's `.env`, read into a developer's process environment
  * before anything reads config (ADR 0157): what `tinvar new` writes the
  * settings it asked about into -- the database, the mail provider, the
- * hosts -- so `bin/dev` and `bin/tinvar` run with them without anyone
+ * hosts -- so `php tinvar serve --dev` and `tinvar` run with them without anyone
  * exporting a variable by hand.
  *
  * Config is still read from the environment and nowhere else (ADR 0085):

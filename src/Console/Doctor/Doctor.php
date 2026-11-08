@@ -23,8 +23,8 @@ use Tinvar\Console\Prompts\Width;
  * serve safely, run together, and every problem reported at once, each
  * with the exact fix.
  *
- *     bin/tinvar doctor          # report; exit 1 on any problem
- *     bin/tinvar doctor --fix    # do the safe fixes first, then report
+ *     php tinvar doctor          # report; exit 1 on any problem
+ *     php tinvar doctor --fix    # do the safe fixes first, then report
  *
  * Each check runs the framework's own boot-time check where there is one --
  * the config classes' load, TrustedProxies, Domains, MailTransports, the
@@ -142,7 +142,7 @@ final class Doctor
      *
      * @param list<array{string, list<Finding>}> $results
      */
-    public static function report(array $results, string $console = 'bin/tinvar'): string
+    public static function report(array $results, string $console = 'php tinvar'): string
     {
         $lines = [];
         $fixable = 0;

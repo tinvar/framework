@@ -7,7 +7,7 @@ namespace Tinvar\Dev;
 /**
  * Where the dev toolbar keeps the requests it recorded, between the request
  * that made one and the toolbar's fetch for it: files in the private
- * directory `tinvar dev` made for this run.
+ * directory `tinvar serve --dev` made for this run.
  *
  * Files, because dev serves every request from a fresh PHP (FrankenPHP in
  * classic mode, ADR 0034): nothing in memory outlives the request that

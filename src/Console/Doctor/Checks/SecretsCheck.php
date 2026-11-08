@@ -43,12 +43,12 @@ final readonly class SecretsCheck implements DoctorCheck
             try {
                 $secrets = EnvironmentFile::parse((string) file_get_contents($env), '.env')['secrets'];
             } catch (ConfigException $e) {
-                $findings[] = Finding::problem(implode("\n", $e->problems), 'Correct the line it names in .env; bin/tinvar refuses to start with it.');
+                $findings[] = Finding::problem(implode("\n", $e->problems), 'Correct the line it names in .env; tinvar refuses to start with it.');
                 $secrets = [];
             }
             foreach ($secrets as $variable) {
                 $findings[] = Finding::warning(
-                    "{$variable} has a value in .env, inside the project, where a copy, an archive or a commit carries it away. bin/tinvar never reads a secret from there.",
+                    "{$variable} has a value in .env, inside the project, where a copy, an archive or a commit carries it away. tinvar never reads a secret from there.",
                     "Move it to a file outside the project, readable by you alone (chmod 600), name that file in {$variable}_FILE in .env, and delete the line; or export {$variable} in your shell.",
                 );
             }
@@ -66,7 +66,7 @@ final readonly class SecretsCheck implements DoctorCheck
             $length = \strlen(trim($given));
 
             return $length < AppKey::MIN_LENGTH
-                ? [Finding::problem("{$what} in {$variable} is {$length} characters; it must be " . AppKey::MIN_LENGTH . ' or more, or every token signed with it can be guessed offline.', "Set {$variable} to `bin/tinvar key:generate --show`'s output, in the environment or the platform's secret store.")]
+                ? [Finding::problem("{$what} in {$variable} is {$length} characters; it must be " . AppKey::MIN_LENGTH . ' or more, or every token signed with it can be guessed offline.', "Set {$variable} to `php tinvar key:generate --show`'s output, in the environment or the platform's secret store.")]
                 : [Finding::passed("{$what} is given by {$variable}.")];
         }
 
