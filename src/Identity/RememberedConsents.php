@@ -48,6 +48,14 @@ interface RememberedConsents
     /** Forgets every domain $user said not to be asked about. */
     public function forgetUser(string $user): void;
 
+    /**
+     * Forgets $origin for everyone: the domain is no longer what they said
+     * not to be asked about. tinvar/tenancy calls it when a custom domain
+     * lapses (ADR 0198), since a domain that lapsed may have changed hands,
+     * and whoever is served on it next is asked about afresh.
+     */
+    public function forgetOrigin(string $origin): void;
+
     /** @return list<RememberedConsent> the domains $user is not asked about now, at $epoch */
     public function forUser(string $user, string $epoch, int $now): array;
 }

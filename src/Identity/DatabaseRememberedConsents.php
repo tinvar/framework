@@ -84,6 +84,22 @@ final readonly class DatabaseRememberedConsents implements RememberedConsents
         ));
     }
 
+    /**
+     * In a transaction of the caller's, or a savepoint inside one: a lapse
+     * forgets the domain inside the transaction that lapsed it, which may be
+     * an action's, so this is not the durable transaction forget() is. The
+     * realm lookup has stopped answering for the host by then, so no
+     * handoff reaches a screen this row would skip, whether or not it is on
+     * disk yet.
+     */
+    public function forgetOrigin(string $origin): void
+    {
+        $this->connection->transaction(fn (): int => $this->connection->execute(
+            "DELETE FROM {$this->table} WHERE origin = ?",
+            [$origin],
+        ));
+    }
+
     public function forUser(string $user, string $epoch, int $now): array
     {
         $string = static fn (mixed $value): string => \is_scalar($value) ? (string) $value : '';

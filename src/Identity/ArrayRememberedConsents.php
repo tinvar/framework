@@ -37,6 +37,13 @@ final class ArrayRememberedConsents implements RememberedConsents
         unset($this->rows[$user]);
     }
 
+    public function forgetOrigin(string $origin): void
+    {
+        foreach (array_keys($this->rows) as $user) {
+            unset($this->rows[$user][$origin]);
+        }
+    }
+
     public function forUser(string $user, string $epoch, int $now): array
     {
         $out = [];

@@ -757,6 +757,28 @@ describe('a remembered domain (ADR 0125)', function () {
         $store->forgetUser('alice');
         expect($store->forUser('alice', '1', 1001))->toBe([]);
     });
+
+    it('forgets a domain for everyone at once when it lapses (ADR 0198)', function (\Closure $make) {
+        /** @var RememberedConsents $store */
+        $store = $make();
+        $store->remember('alice', '1', 'acme', 'portal', 'https://shop.acme.example', 1000);
+        $store->remember('bob', '1', 'acme', 'portal', 'https://shop.acme.example', 1000);
+        $store->remember('bob', '1', 'acme', 'portal', 'https://acme.example', 1000);
+
+        $store->forgetOrigin('https://shop.acme.example');
+
+        expect($store->remembers('alice', '1', 'acme', 'portal', 'https://shop.acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('bob', '1', 'acme', 'portal', 'https://shop.acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('bob', '1', 'acme', 'portal', 'https://acme.example', 1001))->toBeTrue();
+    })->with([
+        'in memory' => [static fn (): RememberedConsents => new \Tinvar\Identity\ArrayRememberedConsents()],
+        'in the database' => [static function (): RememberedConsents {
+            $connection = new PdoConnection(new \PDO('sqlite::memory:'), 'consents-origin-test');
+            DatabaseRememberedConsents::define(new Schema($connection, Dialect::for($connection)));
+
+            return new DatabaseRememberedConsents($connection);
+        }],
+    ]);
 });
 
 describe('a cancel landing on the application\'s page (ADR 0125)', function () {
