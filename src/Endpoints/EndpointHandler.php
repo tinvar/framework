@@ -48,6 +48,9 @@ final class EndpointHandler
     /** The request attribute carrying the matched endpoint, for the stack's authentication to read. */
     public const string MATCHED = 'tinvar.endpoint';
 
+    /** The limits' prefix for a host's own endpoint budget: `endpoints@api.{root}` (ADR 0187). */
+    public const string HOST_BUDGET = 'endpoints@';
+
     /**
      * @param \Closure(string): Middleware $middlewareResolver builds an
      *        endpoint's own #[Middleware]
@@ -67,6 +70,10 @@ final class EndpointHandler
         // `throttle:endpoints` a minute, for the account pass a sessionless
         // endpoint's stack could not run; 0 for none.
         private readonly int $endpointsLimit = 0,
+        // The same, for the endpoints of each host given a budget of its
+        // own (`endpoints@<host>`, ADR 0187), by the host as #[Domain] writes it.
+        /** @var array<string, int> */
+        private readonly array $hostEndpointsLimits = [],
         // An endpoint that takes API tokens (#[RequiresScope], ADR 0159):
         // the middleware that signs a token's user in, run where a
         // sessionless endpoint's own middleware would sign its caller in;
@@ -134,7 +141,7 @@ final class EndpointHandler
                 ...$tokens[0],
                 ...$own,
                 new RequireAuthentication($this->auth, self::entryPoint(...)),
-                ...$this->accountShareOfEndpoints(),
+                ...$this->accountShareOfEndpoints($endpoint),
                 ...$this->bucket($endpoint, byAddress: false),
                 ...$entry,
                 ...$tokens[1],
@@ -288,17 +295,23 @@ final class EndpointHandler
     }
 
     /**
-     * `throttle:endpoints` by account, for a sessionless endpoint: the
+     * `throttle:endpoints` by account -- or its host's own budget's (ADR
+     * 0187) -- for a sessionless endpoint: the
      * stack's pass ran before its own middleware signed anyone in, so it
      * charged the address alone.
      *
      * @return list<Middleware>
      */
-    private function accountShareOfEndpoints(): array
+    private function accountShareOfEndpoints(CompiledEndpoint $endpoint): array
     {
-        return $this->throttle === null || $this->endpointsLimit <= 0
+        $host = $endpoint->host?->pattern;
+        [$bucket, $limit] = $host !== null && \array_key_exists($host, $this->hostEndpointsLimits)
+            ? [self::HOST_BUDGET . $host, $this->hostEndpointsLimits[$host]]
+            : ['endpoints', $this->endpointsLimit];
+
+        return $this->throttle === null || $limit <= 0
             ? []
-            : [new ThrottleRequests($this->throttle, 'endpoints', $this->endpointsLimit, byAddress: false)];
+            : [new ThrottleRequests($this->throttle, $bucket, $limit, byAddress: false)];
     }
 
     /**
