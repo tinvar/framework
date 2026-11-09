@@ -498,7 +498,10 @@ final readonly class Sessions
         $factors = $this->factorsOf($row, $state->id, $state->realm, $impersonator->authIdentifier());
         $expires = (int) $row['expires_at'];
         $parked = bin2hex(random_bytes(32));
-        $tenant = $row['tenant'] ?? null;
+        // The impersonator's own tenant goes to their parked session alone;
+        // the target's runs in the tenant the impersonation was started in
+        // ($tenant), never the impersonator's.
+        $own = $row['tenant'] ?? null;
         $redemption = $row['handoff_redemption'] ?? null;
         self::insert($this->connection, [
             'id' => $parked,
@@ -510,7 +513,7 @@ final readonly class Sessions
             'expires_at' => $expires,
             'credentials' => $row['credentials'],
             'factors' => self::sealFactorsWith($this->factorSeals, $factors, $parked, $state->realm, $impersonator->authIdentifier(), hashed: true),
-            'tenant' => \is_string($tenant) && $tenant !== '' ? $tenant : null,
+            'tenant' => \is_string($own) && $own !== '' ? $own : null,
             'handoff_redemption' => \is_string($redemption) && $redemption !== '' ? $redemption : null,
         ]);
 
@@ -526,7 +529,7 @@ final readonly class Sessions
             'expires_at' => $expires,
             'credentials' => $this->sealFor($target, $this->credentials($target)),
             'factors' => $this->sealFactors($factors, $id, $state->realm, $target->authIdentifier()),
-            'tenant' => $tenant === '' ? null : $tenant,
+            'tenant' => $tenant === null || $tenant === '' ? null : $tenant,
             'impersonation' => $impersonation,
         ]);
 

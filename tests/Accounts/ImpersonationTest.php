@@ -701,6 +701,23 @@ it('binds what is bound to the user\'s epoch during an impersonation to that imp
     });
 });
 
+it('lands the target in the tenant the impersonation was started in, not the impersonator\'s own', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        // Staff with no tenant of their own start it acting in acme, as an
+        // app's staff panel does for one tenant's member: the target's session
+        // runs in acme, and the staff's parked session keeps none.
+        $staff = new Browser($app)->signIn('staff@example.com');
+        expect($staff->state()->tenant() ?? '')->toBe('');
+
+        $staff->do(static fn (Request $r): string => $app->orm->actAs('acme', static fn (): string => impersonations($app)->start($r, find($app, 'ada@example.com'), 'Ticket 4411: their invoices look wrong', '/orders', null, '/admin/users')), panel: 'admin');
+
+        expect($staff->who())->toBe('ada@example.com')
+            ->and($staff->state()->tenant())->toBe('acme');
+        $parked = $app->orm->connection()->select("SELECT tenant FROM sessions WHERE user_id = ? AND impersonation IS NULL", [find($app, 'staff@example.com')->authIdentifier()]);
+        expect(array_column($parked, 'tenant'))->toBe([null]);
+    }, tenancy: \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+})->with('drivers');
+
 it('holds an impersonation to the tenant it was started in: asked of the policy, pinned on the session, and never switched', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $staff = new Browser($app)->signIn('staff@example.com');
