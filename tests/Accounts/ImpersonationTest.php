@@ -718,6 +718,20 @@ it('lands the target in the tenant the impersonation was started in, not the imp
     }, tenancy: \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
 })->with('drivers');
 
+it('records an expired impersonation\'s end in its own tenant\'s log, whatever tenant the sweep runs in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $staff = new Browser($app)->signIn('staff@example.com');
+        $staff->do(static fn (Request $r): string => $app->orm->actAs('acme', static fn (): string => impersonations($app)->start($r, find($app, 'ada@example.com'), 'Ticket 4411: their invoices look wrong', '/orders', null, '/admin/users')), panel: 'admin');
+
+        // Its time is up; the next start, acting in globex, sweeps it first.
+        $app->now += 31 * 60;
+        $app->orm->actAs('globex', static fn (): int => impersonations($app)->endExpired());
+
+        $stops = $app->orm->connection()->select("SELECT tenant FROM audit_entries WHERE event = 'auth.impersonation_stopped'");
+        expect(array_column($stops, 'tenant'))->toBe(['acme']);
+    }, tenancy: \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+})->with('drivers');
+
 it('holds an impersonation to the tenant it was started in: asked of the policy, pinned on the session, and never switched', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $staff = new Browser($app)->signIn('staff@example.com');

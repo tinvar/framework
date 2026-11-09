@@ -352,12 +352,18 @@ final readonly class Impersonations
                 }
                 if (is_numeric($row['arrived_at'] ?? null)) {
                     $target = $this->users->find((string) $row['user_id']);
-                    $this->audit?->security(SecurityEvent::ImpersonationStopped, $target instanceof Model ? $target : null, [
+                    $record = fn (): null => $this->audit?->security(SecurityEvent::ImpersonationStopped, $target instanceof Model ? $target : null, [
                         'impersonation' => $id,
                         'reason' => (string) $row['reason'],
                         'impersonator' => (string) $row['impersonator_id'],
                         'ended' => 'expired',
                     ]);
+                    // In the tenant it was started in, whatever tenant the
+                    // sweep runs in: a start acting in another tenant sweeps
+                    // first, and its log is not this one's (ADR 0194).
+                    $this->orm !== null && $this->orm->hasTenancy()
+                        ? $this->orm->actAs((string) ($row['tenant'] ?? ''), $record)
+                        : $record();
                 }
 
                 return 1;
