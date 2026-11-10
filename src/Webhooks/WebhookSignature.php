@@ -23,9 +23,15 @@ namespace Tinvar\Webhooks;
  * format (NEXT_HEADER), which WebhookEndpoint also accepts: a receiver
  * may take the new secret up at any time inside the overlap, and one that
  * reads only this header must have it by the time the overlap ends.
+ *
+ * HEADER and NEXT_HEADER are the default names. An application may name
+ * its own (TINVAR_WEBHOOK_SIGNATURE_HEADER, ADR 0200), which the sender
+ * and the endpoint read from WebhookSignatureHeader in their place; the
+ * value and the MAC are the same under any name.
  */
 final class WebhookSignature
 {
+    /** The signature's header unless the application names another (Tinvar\Config\WebhookSignatureHeader). */
     public const string HEADER = 'tinvar-signature';
 
     /** The new secret's signature while a rotation's overlap lasts (ADR 0197): this format, its own header. */

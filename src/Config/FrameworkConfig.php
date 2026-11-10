@@ -74,6 +74,8 @@ final readonly class FrameworkConfig
      *        to be taken for one (TrustedProxies, ADR 0134)
      * @param string|null $trustedProxyClient `header` where a proxy that proves itself names the
      *        client in X-Tinvar-Client, read in place of X-Forwarded-For (Cloudflare's `ip.src`)
+     * @param string|null $webhookSignatureHeader the header outbound webhooks are signed in and the
+     *        endpoint reads, `Tinvar-Signature` unless set (WebhookSignatureHeader, ADR 0200)
      */
     public function __construct(
         public ?string $dev = null,
@@ -105,6 +107,7 @@ final readonly class FrameworkConfig
         #[\SensitiveParameter]
         public ?Secret $trustedProxySecret = null,
         public ?string $trustedProxyClient = null,
+        public ?string $webhookSignatureHeader = null,
     ) {
         $problems = [];
 
@@ -167,6 +170,12 @@ final readonly class FrameworkConfig
             $problems[] = 'TINVAR_STAGING_APP_KEY must be at least ' . AppKey::MIN_LENGTH . ' bytes.';
         }
 
+        // Why, never the name: a malformed one may be anything at all.
+        $signature = $webhookSignatureHeader === null || $webhookSignatureHeader === '' ? null : WebhookSignatureHeader::problemWith($webhookSignatureHeader);
+        if ($signature !== null) {
+            $problems[] = WebhookSignatureHeader::ENV . " {$signature}, or be unset for " . WebhookSignatureHeader::DEFAULT . '.';
+        }
+
         if ($problems !== []) {
             throw new ConfigException($problems);
         }
@@ -181,6 +190,16 @@ final readonly class FrameworkConfig
     public static function load(): self
     {
         return Configs::load(self::class);
+    }
+
+    /**
+     * The header outbound webhooks are signed in and the endpoint reads
+     * (ADR 0200): TINVAR_WEBHOOK_SIGNATURE_HEADER, Tinvar-Signature unless
+     * set, its rotation header following it.
+     */
+    public function webhookSignature(): WebhookSignatureHeader
+    {
+        return new WebhookSignatureHeader($this->webhookSignatureHeader === null || $this->webhookSignatureHeader === '' ? WebhookSignatureHeader::DEFAULT : $this->webhookSignatureHeader);
     }
 
     /**

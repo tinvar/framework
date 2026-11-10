@@ -10,6 +10,7 @@ use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\Webhook;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
+use Tinvar\Config\WebhookSignatureHeader;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\MiddlewareAttribute;
 use Tinvar\Http\NonceStore;
@@ -34,7 +35,9 @@ use Tinvar\Support\KnownAttributes;
  *      given, which verifies or places the delivery nowhere (404).
  *   3. The signature: an HMAC over the timestamp, nonce, method, path,
  *      query and body (WebhookSignature), with the secret the application
- *      keeps for this webhook and tenant. Wrong or missing is a 401.
+ *      keeps for this webhook and tenant, read from the header the
+ *      application names (WebhookSignatureHeader: `Tinvar-Signature`
+ *      unless configured, ADR 0200) or its -Next. Wrong or missing is a 401.
  *   4. The timestamp, within TOLERANCE of now either way (401): a captured
  *      delivery stops working minutes after it was sent.
  *   5. The nonce, unseen for this webhook and tenant within that window
@@ -67,12 +70,17 @@ final class WebhookEndpoint
     /** @var array<class-string, class-string<WebhookVerifier>> handler => the verifier it declares */
     private array $verifiers = [];
 
+    /** The header Tinvar's own signature is read from, and its rotation's (ADR 0200). */
+    private readonly WebhookSignatureHeader $signature;
+
     /**
      * @param list<class-string> $webhooks
      * @param \Closure(class-string): object $resolver builds handlers
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param TenantResolver|null $tenants the tenancy registered (tinvar/tenancy); without it,
      *        a webhook declaring #[TenantFrom] is refused here
+     * @param WebhookSignatureHeader|null $signature the header the signature is read from;
+     *        the configured one (TINVAR_WEBHOOK_SIGNATURE_HEADER, else Tinvar-Signature) unless given
      */
     public function __construct(
         array $webhooks,
@@ -84,7 +92,11 @@ final class WebhookEndpoint
         private readonly ?PanelRegistry $registry = null,
         private readonly ?\Closure $clock = null,
         private readonly ?TenantResolver $tenants = null,
+        ?WebhookSignatureHeader $signature = null,
     ) {
+        // Read once, when the endpoint is built at boot: a name refused
+        // refuses the application then, not each delivery.
+        $this->signature = $signature ?? new WebhookSignatureHeader();
         if ($tenants !== null && !$orm->hasTenancy()) {
             throw new \InvalidArgumentException(
                 'The webhook endpoint was given tenancy, and its Orm none: register the tree with the Orm (Tenancy::tree()) too.',
@@ -236,9 +248,11 @@ final class WebhookEndpoint
         // The signature, and -- from a sender rotating its secret (ADR 0197)
         // -- the new secret's beside it: either verifying will do. Both are
         // computed and compared, so the time taken says nothing of which.
+        // Under the name the application chose and no other (ADR 0200): a
+        // signature under any other name is not read at all.
         $verified = null;
         $readable = false;
-        foreach ([WebhookSignature::HEADER, WebhookSignature::NEXT_HEADER] as $header) {
+        foreach ([$this->signature->name, $this->signature->next] as $header) {
             $signature = WebhookSignature::parse($request->header($header));
             if ($signature === null) {
                 continue;

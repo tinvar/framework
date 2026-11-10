@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Webhooks;
 
 use Tinvar\Attributes\Queue;
+use Tinvar\Config\WebhookSignatureHeader;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobRefused;
 use Tinvar\Jobs\Rate;
@@ -41,7 +42,9 @@ use Tinvar\Outbound\Target;
  * A subscription that is paused (WebhookSubscription::$active) ends the
  * delivery unsent. While its secret is rotated (ADR 0197) the signature
  * header is made with the secret being replaced, exactly as it always was,
- * and the new secret's goes beside it in WebhookSignature::NEXT_HEADER. And
+ * and the new secret's goes beside it in the header's -Next. Both are
+ * named as the application chose (WebhookSignatureHeader, ADR 0200):
+ * `Tinvar-Signature` unless TINVAR_WEBHOOK_SIGNATURE_HEADER says. And
  * where the subscriptions keep count (CountsDeliveryFailures), each delivery
  * is counted as it ends -- a refusal or a 410 here, a last try that failed
  * in failed(), which the worker calls once it gives up on the job, however
@@ -82,7 +85,7 @@ final readonly class DeliverWebhook implements Job
         return Rate::perTenant(runs: self::TENANT_RUNS, per: 60);
     }
 
-    public function handle(OutboundHttp $http, WebhookSubscriptions $subscriptions, DeliveryLog $log, Orm $orm): void
+    public function handle(OutboundHttp $http, WebhookSubscriptions $subscriptions, DeliveryLog $log, Orm $orm, WebhookSignatureHeader $header): void
     {
         $attempt = \count($log->attempts($this->delivery)) + 1;
         $record = function (string $outcome, ?int $status, ?string $reason, int $milliseconds) use ($log, $orm, $attempt): void {
@@ -122,7 +125,7 @@ final readonly class DeliverWebhook implements Job
                 $subscription->url,
                 [
                     'content-type' => 'application/json',
-                    ...$this->signatures($subscription, $target->requestTarget(), time()),
+                    ...$this->signatures($subscription, $header, $target->requestTarget(), time()),
                 ],
                 $this->body,
                 timeout: self::TIMEOUT,
@@ -195,17 +198,18 @@ final readonly class DeliverWebhook implements Job
     }
 
     /**
-     * The signature header, made with the secret every receiver holds, and
-     * while a rotation overlaps the new secret's beside it.
+     * The signature header, under the name the application chose (ADR
+     * 0200), made with the secret every receiver holds, and while a
+     * rotation overlaps the new secret's beside it, under that name's -Next.
      *
      * @return array<string, string>
      */
-    private function signatures(WebhookSubscription $subscription, string $target, int $at): array
+    private function signatures(WebhookSubscription $subscription, WebhookSignatureHeader $header, string $target, int $at): array
     {
-        $headers = [WebhookSignature::HEADER => WebhookSignature::header($subscription->signingSecret(), $at, $this->delivery, 'POST', $target, $this->body)];
+        $headers = [$header->name => WebhookSignature::header($subscription->signingSecret(), $at, $this->delivery, 'POST', $target, $this->body)];
         $next = $subscription->nextSecret();
         if ($next !== null) {
-            $headers[WebhookSignature::NEXT_HEADER] = WebhookSignature::header($next, $at, $this->delivery, 'POST', $target, $this->body);
+            $headers[$header->next] = WebhookSignature::header($next, $at, $this->delivery, 'POST', $target, $this->body);
         }
 
         return $headers;
