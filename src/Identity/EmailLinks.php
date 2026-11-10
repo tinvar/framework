@@ -230,6 +230,16 @@ final readonly class EmailLinks
         return $this->make($purpose, $to, $path, $tenant, $user, $link->data, $link->expiresAt)['url'];
     }
 
+    /** @param array<string, string> $data short strings by short keys, or an InvalidArgumentException */
+    private static function assertData(array $data): void
+    {
+        foreach ($data as $key => $value) {
+            if (\strlen($key) > 64 || \strlen($value) > 1024) {
+                throw new \InvalidArgumentException('A link keeps short strings, by short keys.');
+            }
+        }
+    }
+
     /** A path an emailed link lands on: root-relative, no query; or an InvalidArgumentException. */
     private static function assertPath(string $path): void
     {
@@ -249,11 +259,7 @@ final readonly class EmailLinks
         if (($user === null) !== \in_array($purpose, self::ADDRESSED, true)) {
             throw new \InvalidArgumentException('A sign-in, reset or change-of-address link is about an account; an invite, an opt-in or a sign-up is about an address and no account.');
         }
-        foreach ($data as $key => $value) {
-            if (\strlen($key) > 64 || \strlen($value) > 1024) {
-                throw new \InvalidArgumentException('A link keeps short strings, by short keys.');
-            }
-        }
+        self::assertData($data);
 
         $now = $this->now();
         $secret = Signer::encode(random_bytes(32));
@@ -317,10 +323,76 @@ final readonly class EmailLinks
         return new EmailLink($link->id, $link->purpose, $link->tenant, $link->origin, $link->user, $link->data, $link->createdAt, $link->expiresAt, $now);
     }
 
-    /** Revokes an unused link by its id; true when one was. */
-    public function revoke(string $id, string $purpose, string $tenant): bool
+    /**
+     * Revokes an unused link by its id; true when one was. $note is kept
+     * in its record's data beside what was there -- an invite declined
+     * keeps when (ADR 0201) -- and may name none of its keys.
+     *
+     * @param array<string, string> $note
+     */
+    public function revoke(string $id, string $purpose, string $tenant, array $note = []): bool
     {
-        return $this->store->revoke($id, $purpose, $tenant, $this->now());
+        if ($note !== []) {
+            self::assertData($note);
+            $link = $this->store->byId($id, $purpose, $tenant);
+            if ($link === null) {
+                return false;
+            }
+            if (array_intersect_key($note, $link->data) !== []) {
+                throw new \InvalidArgumentException('A revocation notes something beside what a link keeps, never over it.');
+            }
+        }
+
+        return $this->store->revoke($id, $purpose, $tenant, $this->now(), $note);
+    }
+
+    /**
+     * Uses an invite by its record's id, with no token: for the account
+     * signed in as the address it names, which Invitations holds it to
+     * (ADR 0201). Marked used in the one conditional write consume() makes,
+     * so of an emailed link and its id used at once, one wins. Null for a
+     * record that is not there, of that tenant, open.
+     *
+     * An invite alone: a link that signs in, resets a password or proves an
+     * address proves itself by its token, and is never used without it.
+     */
+    public function useById(string $id, string $purpose, string $tenant): ?EmailLink
+    {
+        self::assertById($purpose);
+        $now = $this->now();
+        $link = $this->store->byId($id, $purpose, $tenant);
+        if ($link === null || $link->user !== '' || !$link->isOpen($now) || !$this->store->consumeById($id, $purpose, $tenant, $now)) {
+            return null;
+        }
+
+        return new EmailLink($link->id, $link->purpose, $link->tenant, $link->origin, $link->user, $link->data, $link->createdAt, $link->expiresAt, $now);
+    }
+
+    /**
+     * Invites in every tenant still open, newest first, whose data holds
+     * each of $data's values -- an address, which it must name: the invites
+     * to someone signed in as it, wherever they were sent from (ADR 0201).
+     *
+     * @param int<1, max> $limit
+     * @param array<string, string> $data
+     * @return list<EmailLink>
+     */
+    public function openAcrossTenants(string $purpose, int $limit, array $data): array
+    {
+        self::assertById($purpose);
+        if (($data['email'] ?? '') === '') {
+            throw new \InvalidArgumentException('Invites are listed across tenants by the address they were sent to, and no wider.');
+        }
+
+        return $this->store->openAcrossTenants($purpose, $this->now(), $limit, $data);
+    }
+
+    /** An invite, or an InvalidArgumentException: the only links used, or listed across tenants, without a token. */
+    private static function assertById(string $purpose): void
+    {
+        if ($purpose !== self::INVITE) {
+            throw new \InvalidArgumentException('Only an invite is used by its id, or listed across tenants, for the account signed in as its address; every other link proves itself by its token.');
+        }
     }
 
     /** The record with this id, used or not; null for none. */

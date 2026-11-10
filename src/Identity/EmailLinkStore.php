@@ -30,11 +30,25 @@ interface EmailLinkStore
     public function consume(string $secretHash, string $purpose, string $tenant, int $now): bool;
 
     /**
+     * Marks the record with this id, of $purpose in $tenant, used at $now --
+     * once, as consume() does: true only for the one caller that changed
+     * it, false for one used, revoked or expired at $now, or none. What an
+     * invite accepted by its signed-in addressee uses (ADR 0201).
+     */
+    public function consumeById(string $id, string $purpose, string $tenant, int $now): bool;
+
+    /**
      * Revokes an unused record of $purpose in $tenant, by id, at $now. True
      * when one was; false for one used, revoked or expired already, or
      * none.
+     *
+     * $note is added to the record's data in the same conditional write --
+     * an invite declined keeps `declined_at` (ADR 0201) -- beside keys it
+     * never replaces: EmailLinks refuses a note naming one the data has.
+     *
+     * @param array<string, string> $note
      */
-    public function revoke(string $id, string $purpose, string $tenant, int $now): bool;
+    public function revoke(string $id, string $purpose, string $tenant, int $now, array $note = []): bool;
 
     /** The record with this id, of $purpose in $tenant; null for none. */
     public function byId(string $id, string $purpose, string $tenant): ?EmailLink;
@@ -50,6 +64,18 @@ interface EmailLinkStore
      * @return list<EmailLink>
      */
     public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array;
+
+    /**
+     * Records of $purpose in every tenant still open at $now, newest first,
+     * at most $limit, whose data holds each of $data's values: the invites
+     * to an address, wherever they were sent from (ADR 0201). The caller
+     * names the address; the store never lists a purpose whole.
+     *
+     * @param int<1, max> $limit
+     * @param non-empty-array<string, string> $data
+     * @return list<EmailLink>
+     */
+    public function openAcrossTenants(string $purpose, int $now, int $limit, array $data): array;
 
     /**
      * Forgets records that expired before $before, at most $limit of them.

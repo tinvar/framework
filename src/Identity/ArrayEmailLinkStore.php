@@ -34,11 +34,24 @@ final class ArrayEmailLinkStore implements EmailLinkStore
         return true;
     }
 
-    public function revoke(string $id, string $purpose, string $tenant, int $now): bool
+    public function consumeById(string $id, string $purpose, string $tenant, int $now): bool
     {
         foreach ($this->links as $hash => $link) {
             if ($link->id === $id && $link->purpose === $purpose && $link->tenant === $tenant && $link->isOpen($now)) {
-                $this->links[$hash] = self::with($link, revokedAt: $now);
+                $this->links[$hash] = self::with($link, usedAt: $now);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function revoke(string $id, string $purpose, string $tenant, int $now, array $note = []): bool
+    {
+        foreach ($this->links as $hash => $link) {
+            if ($link->id === $id && $link->purpose === $purpose && $link->tenant === $tenant && $link->isOpen($now)) {
+                $this->links[$hash] = self::with($link, revokedAt: $now, data: [...$note, ...$link->data]);
 
                 return true;
             }
@@ -60,9 +73,24 @@ final class ArrayEmailLinkStore implements EmailLinkStore
 
     public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array
     {
+        return $this->openWhere($purpose, $tenant, $now, $limit, $data);
+    }
+
+    public function openAcrossTenants(string $purpose, int $now, int $limit, array $data): array
+    {
+        return $this->openWhere($purpose, null, $now, $limit, $data);
+    }
+
+    /**
+     * @param int<1, max> $limit
+     * @param array<string, string> $data
+     * @return list<EmailLink>
+     */
+    private function openWhere(string $purpose, ?string $tenant, int $now, int $limit, array $data): array
+    {
         $open = array_values(array_filter(
             $this->links,
-            static fn (EmailLink $link): bool => $link->purpose === $purpose && $link->tenant === $tenant && $link->isOpen($now)
+            static fn (EmailLink $link): bool => $link->purpose === $purpose && ($tenant === null || $link->tenant === $tenant) && $link->isOpen($now)
                 && array_intersect_assoc($data, $link->data) === $data,
         ));
         usort($open, static fn (EmailLink $a, EmailLink $b): int => [$b->createdAt, $b->id] <=> [$a->createdAt, $a->id]);
@@ -86,7 +114,8 @@ final class ArrayEmailLinkStore implements EmailLinkStore
         return $pruned;
     }
 
-    private static function with(EmailLink $link, ?int $usedAt = null, ?int $revokedAt = null): EmailLink
+    /** @param array<string, string>|null $data */
+    private static function with(EmailLink $link, ?int $usedAt = null, ?int $revokedAt = null, ?array $data = null): EmailLink
     {
         return new EmailLink(
             $link->id,
@@ -94,7 +123,7 @@ final class ArrayEmailLinkStore implements EmailLinkStore
             $link->tenant,
             $link->origin,
             $link->user,
-            $link->data,
+            $data ?? $link->data,
             $link->createdAt,
             $link->expiresAt,
             $usedAt ?? $link->usedAt,

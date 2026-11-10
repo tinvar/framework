@@ -66,7 +66,7 @@ final readonly class DatabaseEmailLinkStore implements EmailLinkStore
                 $link->tenant,
                 $link->origin,
                 $link->user,
-                json_encode((object) $link->data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                self::encode($link->data),
                 $link->createdAt,
                 $link->expiresAt,
                 $link->usedAt,
@@ -95,12 +95,38 @@ final readonly class DatabaseEmailLinkStore implements EmailLinkStore
         ) === 1;
     }
 
-    public function revoke(string $id, string $purpose, string $tenant, int $now): bool
+    public function consumeById(string $id, string $purpose, string $tenant, int $now): bool
     {
         return $this->connection->execute(
-            "UPDATE {$this->table} SET revoked_at = ? WHERE id = ? AND purpose = ? AND tenant = ? "
+            "UPDATE {$this->table} SET used_at = ? WHERE id = ? AND purpose = ? AND tenant = ? "
             . 'AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?',
             [$now, $id, $purpose, $tenant, $now],
+        ) === 1;
+    }
+
+    public function revoke(string $id, string $purpose, string $tenant, int $now, array $note = []): bool
+    {
+        if ($note === []) {
+            return $this->connection->execute(
+                "UPDATE {$this->table} SET revoked_at = ? WHERE id = ? AND purpose = ? AND tenant = ? "
+                . 'AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?',
+                [$now, $id, $purpose, $tenant, $now],
+            ) === 1;
+        }
+
+        // The data read, then written back with the note beside it, by the
+        // same conditional write that revokes: a record's data changes
+        // nowhere else, so the one write that wins writes it over the data
+        // it read.
+        $link = $this->byId($id, $purpose, $tenant);
+        if ($link === null || !$link->isOpen($now)) {
+            return false;
+        }
+
+        return $this->connection->execute(
+            "UPDATE {$this->table} SET revoked_at = ?, data = ? WHERE id = ? AND purpose = ? AND tenant = ? "
+            . 'AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?',
+            [$now, self::encode([...$note, ...$link->data]), $id, $purpose, $tenant, $now],
         ) === 1;
     }
 
@@ -116,20 +142,34 @@ final readonly class DatabaseEmailLinkStore implements EmailLinkStore
 
     public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array
     {
+        return $this->openWhere($purpose, $tenant, $now, $limit, $data);
+    }
+
+    public function openAcrossTenants(string $purpose, int $now, int $limit, array $data): array
+    {
+        return $this->openWhere($purpose, null, $now, $limit, $data);
+    }
+
+    /**
+     * @param array<string, string> $data
+     * @return list<EmailLink>
+     */
+    private function openWhere(string $purpose, ?string $tenant, int $now, int $limit, array $data): array
+    {
         // Each value found in the data column by its JSON, written as add()
         // writes it: a key and its value side by side, which no other value
         // can spell, since a value's own quotes are escaped. LIKE folds case
         // on SQLite and MySQL, so what comes back is held to $data exactly
         // too.
         $matching = '';
-        $bindings = [$tenant, $purpose, $now];
+        $bindings = $tenant === null ? [$purpose, $now] : [$tenant, $purpose, $now];
         foreach ($data as $key => $value) {
             $pair = substr(json_encode([$key => $value], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 1, -1);
             $matching .= " AND data LIKE ? ESCAPE '!'";
             $bindings[] = '%' . strtr($pair, ['!' => '!!', '%' => '!%', '_' => '!_']) . '%';
         }
         $rows = $this->connection->select(
-            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE tenant = ? AND purpose = ? AND expires_at > ? "
+            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE " . ($tenant === null ? '' : 'tenant = ? AND ') . "purpose = ? AND expires_at > ? "
             . "AND used_at IS NULL AND revoked_at IS NULL{$matching} ORDER BY created_at DESC, id DESC LIMIT " . max(1, $limit),
             $bindings,
         );
@@ -160,6 +200,12 @@ final readonly class DatabaseEmailLinkStore implements EmailLinkStore
             "DELETE FROM {$this->table} WHERE id IN (" . implode(', ', array_fill(0, \count($ids), '?')) . ')',
             $ids,
         );
+    }
+
+    /** @param array<string, string> $data */
+    private static function encode(array $data): string
+    {
+        return json_encode((object) $data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     /** @param array<string, mixed> $row */

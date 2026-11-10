@@ -31,6 +31,9 @@ final readonly class Invitations
     /** The most open invites one listing shows. */
     public const int LIST_LIMIT = 200;
 
+    /** The most addresses addressedTo() looks for invites to at once. */
+    public const int ADDRESS_LIMIT = 20;
+
     /**
      * @param string $path the page an invite lands on, which shows it and POSTs it back
      */
@@ -176,6 +179,126 @@ final readonly class Invitations
         $link = $this->links->consume($token, EmailLinks::INVITE, $origin, $tenant);
 
         return $link === null ? null : Invitation::of($link);
+    }
+
+    /**
+     * The open invites to any of $emails, in every tenant, newest first, at
+     * most LIST_LIMIT: what someone signed in as those addresses may accept
+     * or decline without the emailed link (ADR 0201). Each one still as
+     * open() would find it -- unused, unrevoked, unexpired, and its inviter
+     * still allowed to send it.
+     *
+     * $emails are addresses the account is proved to read -- its verified
+     * ones, never what a request names: whoever is listed an invite here
+     * may join with it. Those that are no address are passed over.
+     *
+     * @param list<string> $emails
+     * @return list<Invitation>
+     */
+    public function addressedTo(array $emails): array
+    {
+        $found = [];
+        foreach (self::addresses($emails) as $address) {
+            foreach ($this->links->openAcrossTenants(EmailLinks::INVITE, self::LIST_LIMIT, ['email' => $address]) as $link) {
+                $invitation = Invitation::of($link);
+                if ($invitation !== null && $invitation->email === $address && $this->stillGranted($invitation)) {
+                    $found[$invitation->id] = $invitation;
+                }
+            }
+        }
+        $found = array_values($found);
+        usort($found, static fn (Invitation $a, Invitation $b): int => [$b->createdAt, $b->id] <=> [$a->createdAt, $a->id]);
+
+        return \array_slice($found, 0, self::LIST_LIMIT);
+    }
+
+    /**
+     * Uses the invite with this id in $tenant, with no token, for someone
+     * signed in as one of $emails -- their verified addresses, as for
+     * addressedTo() -- and returns what it grants, for the application to
+     * grant as accept()'s caller does (ADR 0201). Null for every reason it
+     * is refused, alike: none with that id there, one to another address,
+     * used, revoked, declined or expired, an inviter who may no longer send
+     * it, or the race lost to its emailed link.
+     *
+     * @param list<string> $emails
+     */
+    public function acceptFor(string $id, string $tenant, array $emails): ?Invitation
+    {
+        $invitation = $this->addressed($id, $tenant, $emails);
+        if ($invitation === null || !$this->stillGranted($invitation)) {
+            return null;
+        }
+        $link = $this->links->useById($id, EmailLinks::INVITE, $tenant);
+
+        return $link === null ? null : Invitation::of($link);
+    }
+
+    /**
+     * Declines the invite with this id in $tenant for someone signed in as
+     * one of $emails (ADR 0201): it is closed, as a revocation closes it --
+     * its emailed link opens nothing after -- and its record keeps when it
+     * was declined. Returns it, declinedAt set; null for one not open to
+     * them, as acceptFor() refuses.
+     *
+     * @param list<string> $emails
+     */
+    public function declineFor(string $id, string $tenant, array $emails): ?Invitation
+    {
+        $invitation = $this->addressed($id, $tenant, $emails);
+        $at = $this->links->now();
+        if ($invitation === null || !$this->links->revoke($id, EmailLinks::INVITE, $tenant, ['declined_at' => (string) $at])) {
+            return null;
+        }
+
+        return new Invitation(
+            $invitation->id,
+            $invitation->email,
+            $invitation->tenant,
+            $invitation->panel,
+            $invitation->role,
+            $invitation->inviter,
+            $invitation->createdAt,
+            $invitation->expiresAt,
+            $at,
+        );
+    }
+
+    /**
+     * The invite with this id in $tenant when it is open now and sent to
+     * one of $emails; null otherwise.
+     *
+     * @param list<string> $emails
+     */
+    private function addressed(string $id, string $tenant, array $emails): ?Invitation
+    {
+        if ($id === '' || $tenant === '') {
+            return null;
+        }
+        $link = $this->links->byId($id, EmailLinks::INVITE, $tenant);
+        $invitation = $link === null || $link->user !== '' || !$link->isOpen($this->links->now()) ? null : Invitation::of($link);
+
+        return $invitation !== null && \in_array($invitation->email, self::addresses($emails), true) ? $invitation : null;
+    }
+
+    /**
+     * $emails as invites keep them, each once, those that are no address
+     * left out, at most ADDRESS_LIMIT.
+     *
+     * @param list<string> $emails
+     * @return list<string>
+     */
+    private static function addresses(array $emails): array
+    {
+        $addresses = [];
+        foreach ($emails as $email) {
+            $address = self::address($email);
+            if ($address !== null) {
+                $addresses[$address] = $address;
+            }
+        }
+
+        return \array_slice(array_values($addresses), 0, self::ADDRESS_LIMIT);
     }
 
     /**

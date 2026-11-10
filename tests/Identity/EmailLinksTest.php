@@ -254,7 +254,7 @@ final class Roles implements InvitePolicy
 
     public function mayInvite(Authenticatable $inviter, string $tenant, string $panel, string $role): bool
     {
-        return $tenant === 'acme' && $panel === 'staff' && \in_array($role, $this->may[$inviter->authIdentifier()] ?? [], true);
+        return \in_array($tenant, ['acme', 'initech'], true) && $panel === 'staff' && \in_array($role, $this->may[$inviter->authIdentifier()] ?? [], true);
     }
 }
 
@@ -385,6 +385,127 @@ describe('an invite', function () {
         expect($this->links->consume($token, EmailLinks::SIGN_IN, ORIGIN, 'acme'))->toBeNull();
         Clock::$now = NOW + EmailLinks::LIFETIMES[EmailLinks::INVITE];
         expect($this->invitations->accept($token, ORIGIN, 'acme'))->toBeNull();
+    });
+});
+
+describe('an invite to whoever is signed in as its address', function () {
+    beforeEach(function () {
+        $this->users = new Users();
+        $this->roles = new Roles();
+    });
+
+    it('lists the open invites to the addresses given, across tenants, newest first', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', ORIGIN);
+        Clock::$now = NOW + 1;
+        $initech = $invitations->invite(new User('boss'), 'X@Example.com', 'initech', 'staff', 'clerk', ORIGIN)['invitation'];
+        $invitations->invite(new User('boss'), 'other@example.com', 'acme', 'staff', 'clerk', ORIGIN);
+        $invitations->invite(new User('boss'), 'second@example.com', 'initech', 'staff', 'clerk', ORIGIN);
+        // An invite the policy would not let its inviter send now, nor
+        // one of another purpose, is listed.
+        $links->issue(EmailLinks::INVITE, ORIGIN, '/invites', 'globex', null, ['email' => 'x@example.com', 'panel' => 'staff', 'role' => 'clerk', 'inviter' => 'boss']);
+        $links->issue(EmailLinks::OPT_IN, ORIGIN, '/opt-in', 'acme', null, ['email' => 'x@example.com']);
+
+        expect(array_map(static fn ($i): array => [$i->tenant, $i->role], $invitations->addressedTo([' X@EXAMPLE.com ', 'not an address'])))->toBe([['initech', 'clerk'], ['acme', 'manager']])
+            ->and(array_map(static fn ($i): string => $i->id, $invitations->addressedTo(['x@example.com', 'second@example.com'])))->toHaveCount(3)
+            ->and($invitations->addressedTo([]))->toBe([])
+            ->and($invitations->addressedTo(['nobody@example.com']))->toBe([])
+            ->and($invitations->addressedTo(['x@example.com'])[0]->id)->toBe($initech->id);
+
+        $this->roles->may['boss'] = ['clerk'];
+        expect(array_map(static fn ($i): string => $i->tenant, $invitations->addressedTo(['x@example.com'])))->toBe(['initech']);
+
+        Clock::$now = NOW + EmailLinks::LIFETIMES[EmailLinks::INVITE];
+        expect(array_map(static fn ($i): string => $i->tenant, $invitations->addressedTo(['x@example.com'])))->toBe(['initech']);
+        Clock::$now = NOW + 1 + EmailLinks::LIFETIMES[EmailLinks::INVITE];
+        expect($invitations->addressedTo(['x@example.com']))->toBe([]);
+    })->with('stores');
+
+    it('is accepted by its id, once, for one of its addresses, and its emailed link is then used', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $sent = $invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', ORIGIN);
+        $id = $sent['invitation']->id;
+
+        expect($invitations->acceptFor($id, 'acme', ['someone@example.com']))->toBeNull()
+            ->and($invitations->acceptFor($id, 'globex', ['x@example.com']))->toBeNull()
+            ->and($invitations->acceptFor('no-such-id', 'acme', ['x@example.com']))->toBeNull();
+
+        $accepted = $invitations->acceptFor($id, 'acme', ['y@example.com', 'X@example.com']);
+        expect($accepted?->role)->toBe('manager')
+            ->and($accepted?->tenant)->toBe('acme')
+            ->and($accepted?->panel)->toBe('staff')
+            ->and($accepted?->email)->toBe('x@example.com')
+            ->and($invitations->acceptFor($id, 'acme', ['x@example.com']))->toBeNull()
+            ->and($invitations->accept(tokenOf($sent['url']), ORIGIN, 'acme'))->toBeNull()
+            ->and($invitations->addressedTo(['x@example.com']))->toBe([])
+            ->and($links->byId($id, EmailLinks::INVITE, 'acme')?->usedAt)->toBe(NOW);
+    })->with('stores');
+
+    it('is refused by its id once revoked, expired, or its inviter may no longer send it', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $revoked = $invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', ORIGIN)['invitation']->id;
+        $invitations->revoke(new User('boss'), $revoked, 'acme', 'staff');
+        $narrowed = $invitations->invite(new User('boss'), 'x@example.com', 'initech', 'staff', 'manager', ORIGIN)['invitation']->id;
+        $expired = $invitations->invite(new User('boss'), 'y@example.com', 'acme', 'staff', 'clerk', ORIGIN)['invitation']->id;
+
+        expect($invitations->acceptFor($revoked, 'acme', ['x@example.com']))->toBeNull();
+
+        $this->roles->may['boss'] = ['clerk'];
+        expect($invitations->acceptFor($narrowed, 'initech', ['x@example.com']))->toBeNull()
+            ->and($links->byId($narrowed, EmailLinks::INVITE, 'initech')?->usedAt)->toBeNull();
+
+        Clock::$now = NOW + EmailLinks::LIFETIMES[EmailLinks::INVITE];
+        expect($invitations->acceptFor($expired, 'acme', ['y@example.com']))->toBeNull()
+            ->and($invitations->declineFor($expired, 'acme', ['y@example.com']))->toBeNull();
+    })->with('stores');
+
+    it('is declined by its id for one of its addresses: marked declined, listed no more, and its link opens nothing', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $sent = $invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', ORIGIN);
+        $id = $sent['invitation']->id;
+
+        expect($invitations->declineFor($id, 'acme', ['y@example.com']))->toBeNull()
+            ->and($invitations->declineFor($id, 'initech', ['x@example.com']))->toBeNull();
+
+        Clock::$now = NOW + 5;
+        $declined = $invitations->declineFor($id, 'acme', ['x@example.com']);
+        $record = $links->byId($id, EmailLinks::INVITE, 'acme');
+
+        expect($declined?->declinedAt)->toBe(NOW + 5)
+            ->and($declined?->role)->toBe('manager')
+            ->and($sent['invitation']->declinedAt)->toBeNull()
+            ->and($record?->revokedAt)->toBe(NOW + 5)
+            ->and($record?->data['declined_at'] ?? null)->toBe((string) (NOW + 5))
+            ->and($record?->data['email'] ?? null)->toBe('x@example.com')
+            ->and($record === null ? null : \Tinvar\Identity\Invitation::of($record)?->declinedAt)->toBe(NOW + 5)
+            ->and($invitations->declineFor($id, 'acme', ['x@example.com']))->toBeNull()
+            ->and($invitations->acceptFor($id, 'acme', ['x@example.com']))->toBeNull()
+            ->and($invitations->open(tokenOf($sent['url']), ORIGIN, 'acme'))->toBeNull()
+            ->and($invitations->addressedTo(['x@example.com']))->toBe([])
+            ->and($invitations->pending('acme', 'staff'))->toBe([])
+            // A revoked invite is no declined one.
+            ->and($invitations->revoke(new User('boss'), $id, 'acme', 'staff'))->toBeFalse();
+    })->with('stores');
+
+    it('uses by id, and lists across tenants, only invites: never a link that signs in or proves an address', function () {
+        $links = links(new ArrayEmailLinkStore(), $this->users);
+        $signIn = $links->issue(EmailLinks::SIGN_IN, ORIGIN, '/l', 'acme', new User('u-1'))['link'];
+
+        foreach ([EmailLinks::SIGN_IN, EmailLinks::PASSWORD_RESET, EmailLinks::OPT_IN, EmailLinks::SIGN_UP] as $purpose) {
+            expect(fn () => $links->useById($signIn->id, $purpose, 'acme'))->toThrow(\InvalidArgumentException::class)
+                ->and(fn () => $links->openAcrossTenants($purpose, 10, ['email' => 'x@example.com']))->toThrow(\InvalidArgumentException::class);
+        }
+        $invite = $links->issue(EmailLinks::INVITE, ORIGIN, '/invites', 'acme', null, ['email' => 'x@example.com', 'panel' => 'staff', 'role' => 'clerk', 'inviter' => 'boss'])['link'];
+
+        expect(fn () => $links->openAcrossTenants(EmailLinks::INVITE, 10, []))->toThrow(\InvalidArgumentException::class)
+            ->and($links->byId($signIn->id, EmailLinks::SIGN_IN, 'acme')?->usedAt)->toBeNull()
+            // A revocation's note is kept beside what the record holds, never over it.
+            ->and(fn () => $links->revoke($invite->id, EmailLinks::INVITE, 'acme', ['email' => 'y@example.com']))->toThrow(\InvalidArgumentException::class)
+            ->and($links->byId($invite->id, EmailLinks::INVITE, 'acme')?->isOpen(NOW))->toBeTrue();
     });
 });
 
