@@ -25,8 +25,10 @@ use Tinvar\Jobs\Worker;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\ArrayQueue;
+use Tinvar\Jobs\PruneQueue;
 use Tinvar\Queue\Coordination;
 use Tinvar\Queue\DatabaseQueue;
+use Tinvar\Queue\ForgetsFailed;
 use Tinvar\Queue\RedisQueue;
 use Tinvar\Tests\Support\Fixtures\Databases;
 use Tinvar\Jobs\Chain;
@@ -790,3 +792,25 @@ it('queues, reserves, releases and fails in memory, as every queue does', functi
     $queue = new ArrayQueue();
     behavesAsAQueue($queue, $queue);
 });
+
+// A failed job's row keeps its payload -- the job's arguments, in the
+// clear -- and its error: kept a month for queue:retry, then forgotten by
+// the nightly prune, so no store keeps every failure for good (ADR 0221).
+it('forgets failed jobs a month old, a batch at a time, keeping the newer', function (\Closure $make) {
+    $queue = $make(new TenantFixture());
+    $now = 2_000_000_000;
+    foreach (['older' => $now - PruneQueue::KEEP_FAILED - 99, 'old' => $now - PruneQueue::KEEP_FAILED - 1, 'recent' => $now - 60] as $id => $at) {
+        $queue->push(new \Tinvar\Queue\PendingJob($id, 'default', "payload of {$id}", $at - 10));
+        $reserved = $queue->reserve(['default'], $at, 60);
+        \assert($reserved !== null && $reserved->id === $id);
+        $queue->fail($reserved, 'it threw', $at);
+    }
+
+    expect($queue)->toBeInstanceOf(ForgetsFailed::class)
+        // The oldest first.
+        ->and($queue->forgetFailed($now - PruneQueue::KEEP_FAILED, 1))->toBe(1)
+        ->and(array_map(static fn ($f): string => $f->id, $queue->failed()))->toBe(['recent', 'old'])
+        ->and(PruneQueue::prune($queue, $now))->toBeGreaterThanOrEqual(1)
+        ->and(array_map(static fn ($f): string => $f->id, $queue->failed()))->toBe(['recent'])
+        ->and($queue->retry('old', $now))->toBeFalse();
+})->with(queues());

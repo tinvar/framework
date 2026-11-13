@@ -19,7 +19,9 @@ use Tinvar\Observability\Telemetry;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Jobs\Rate;
+use Tinvar\Jobs\PruneQueue;
 use Tinvar\Queue\Coordination;
+use Tinvar\Queue\ForgetsFailed;
 use Tinvar\Queue\Queue;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Queue\HeldJob;
@@ -37,7 +39,9 @@ use Tinvar\Support\KnownAttributes;
  *   queue:retry <id|all>   put failed jobs back on their queues; all is
  *                          confirmed first where a person is there, unless --force
  *   queue:hand-back <file> put back the job a killed worker held (HeldJob), for serve
- *   queue:prune [--days=N] forget batches finished N days ago (7) and lapsed unique locks
+ *   queue:prune [--days=N] [--failed-days=N]
+ *                          forget batches finished N days ago (7), lapsed unique locks,
+ *                          and jobs that failed N days ago (30)
  *   schedule:run           run the tasks due this minute, for cron
  *   schedule:work          run the schedule every minute until stopped
  *   schedule:list          every task and when it runs
@@ -416,27 +420,29 @@ final class Console
     }
 
     /**
-     * `queue:prune [--days=N]`: batches finished more than N days ago, 7
-     * unless it says, and unique locks already lapsed, forgotten.
+     * `queue:prune [--days=N] [--failed-days=N]`: batches finished more
+     * than N days ago, 7 unless it says, unique locks already lapsed, and
+     * jobs that failed more than N days ago, 30 unless it says, forgotten
+     * (PruneQueue, ADR 0221).
      *
      * @param list<string> $arguments
      */
     private function prune(array $arguments, Output $output): int
     {
         [$queue] = $this->queueParts();
-        $days = 7;
+        $days = ['days' => 7, 'failed-days' => intdiv(PruneQueue::KEEP_FAILED, 86_400)];
         foreach ($arguments as $argument) {
-            if (preg_match('/^--days=(\d{1,4})\z/', $argument, $m) !== 1) {
-                throw new \InvalidArgumentException('Usage: tinvar queue:prune [--days=N]');
+            if (preg_match('/^--(days|failed-days)=(\d{1,4})\z/', $argument, $m) !== 1) {
+                throw new \InvalidArgumentException('Usage: tinvar queue:prune [--days=N] [--failed-days=N]');
             }
-            $days = (int) $m[1];
+            $days[$m[1]] = (int) $m[2];
         }
-        if (!$queue instanceof Coordination) {
-            throw new \LogicException('This application\'s queue keeps no batches or locks to prune.');
+        if (!$queue instanceof Coordination && !$queue instanceof ForgetsFailed) {
+            throw new \LogicException('This application\'s queue keeps no batches, locks or failed jobs to prune.');
         }
 
         $now = $this->now()->getTimestamp();
-        $output->line('pruned ' . $queue->prune($now, $now - $days * 86_400));
+        $output->line('pruned ' . PruneQueue::prune($queue, $now, $days['days'] * 86_400, $days['failed-days'] * 86_400));
 
         return 0;
     }

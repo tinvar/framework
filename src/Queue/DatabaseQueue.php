@@ -33,7 +33,7 @@ use Tinvar\Orm\Schema\Table;
  * sliding window's starts are one more (defineSlidingRates()), for an
  * application that holds a rate over any $per seconds (ADR 0118).
  */
-final class DatabaseQueue implements Queue, Coordination, Wakes
+final class DatabaseQueue implements Queue, Coordination, Wakes, ForgetsFailed
 {
     /** The last enqueue time this process wrote, so its own pushes keep their order within a microsecond. */
     private static int $lastQueuedAt = 0;
@@ -360,6 +360,24 @@ final class DatabaseQueue implements Queue, Coordination, Wakes
 
             return true;
         });
+    }
+
+    public function forgetFailed(int $failedBefore, int $limit): int
+    {
+        // The ids read first, oldest first: MySQL refuses a LIMIT in a
+        // subquery naming the table it deletes from.
+        $ids = array_map(
+            static fn (array $row): string => \is_scalar($row['id'] ?? null) ? (string) $row['id'] : '',
+            $this->connection->select("SELECT id FROM {$this->failedTable} WHERE failed_at < ? ORDER BY failed_at, id LIMIT " . max(1, $limit), [$failedBefore]),
+        );
+        if ($limit < 1 || $ids === []) {
+            return 0;
+        }
+
+        return $this->connection->execute(
+            "DELETE FROM {$this->failedTable} WHERE id IN (" . implode(', ', array_fill(0, \count($ids), '?')) . ')',
+            $ids,
+        );
     }
 
     public function lock(string $key, string $job, int $until, int $now): ?string

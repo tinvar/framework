@@ -17,7 +17,7 @@ use Tinvar\Orm\Connection;
  * in-memory, and atomically() runs its work as it is: one process, one
  * thing at a time.
  */
-final class ArrayQueue implements Queue, Coordination, Wakes
+final class ArrayQueue implements Queue, Coordination, Wakes, ForgetsFailed
 {
     /** @var array<string, array{queue: string, payload: string, availableAt: int, attempts: int, reservedUntil: ?int, token: ?string}> */
     private array $jobs = [];
@@ -200,6 +200,20 @@ final class ArrayQueue implements Queue, Coordination, Wakes
         }
 
         return false;
+    }
+
+    public function forgetFailed(int $failedBefore, int $limit): int
+    {
+        $old = array_filter($this->failures, static fn (FailedJob $f): bool => $f->failedAt < $failedBefore);
+        uasort($old, static fn (FailedJob $a, FailedJob $b): int => $a->failedAt <=> $b->failedAt);
+        $forget = array_flip(\array_slice(array_keys($old), 0, max(0, $limit)));
+        $this->failures = array_values(array_filter(
+            $this->failures,
+            static fn (int $index): bool => !isset($forget[$index]),
+            ARRAY_FILTER_USE_KEY,
+        ));
+
+        return \count($forget);
     }
 
     /** @return list<PendingJob> every job pushed, in order */

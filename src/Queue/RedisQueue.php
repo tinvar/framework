@@ -46,7 +46,7 @@ use Tinvar\Orm\Connection;
  * queue whose jobs can be evicted loses them. Needs ext-redis; opened on
  * first use when given as a closure.
  */
-final class RedisQueue implements Queue, Coordination, Wakes
+final class RedisQueue implements Queue, Coordination, Wakes, ForgetsFailed
 {
     /** How many times atomically() runs its work again after a conflicting write before it gives up. */
     public const int MAX_RETRIES = 32;
@@ -404,6 +404,30 @@ final class RedisQueue implements Queue, Coordination, Wakes
 
             return true;
         });
+    }
+
+    public function forgetFailed(int $failedBefore, int $limit): int
+    {
+        if ($limit < 1) {
+            return 0;
+        }
+        $redis = $this->redis();
+        $index = $this->key('failed');
+        // Oldest first, by the score each failure was indexed under. A
+        // retry() racing this watches the failure's hash, so it finds the
+        // failure whole or not at all.
+        $ids = $redis->zRangeByScore($index, '-inf', '(' . $failedBefore, ['limit' => [0, $limit]]);
+        $forgot = 0;
+        foreach (\is_array($ids) ? $ids : [] as $id) {
+            $id = (string) $id;
+            $redis->multi();
+            $redis->del($this->key('failed:', $id));
+            $redis->zRem($index, $id);
+            $done = $redis->exec();
+            $forgot += \is_array($done) && ($done[1] ?? 0) === 1 ? 1 : 0;
+        }
+
+        return $forgot;
     }
 
     public function lock(string $key, string $job, int $until, int $now): ?string
