@@ -301,6 +301,31 @@ it('writes the fragment manifest into the build TINVAR_BUILD_DIR names, as disco
     }
 });
 
+// Review (very low, ADR 0213): an environment that says nothing boots from
+// the manifest, so the build commands an image's build stage runs before
+// there is one -- no TINVAR_ENV, no manifest yet -- read a scan of the
+// sources, as `check` does, whatever the environment says.
+it('writes the fragment manifest and then the discovery manifest where the environment says nothing', function () {
+    $build = sys_get_temp_dir() . '/tinvar-fragments-' . bin2hex(random_bytes(4));
+    mkdir("{$build}/rsc", 0o777, true);
+    copy(\dirname(__DIR__, 4) . '/examples/shop/dist/rsc/deferred.json', "{$build}/rsc/deferred.json");
+    $before = ['TINVAR_BUILD_DIR' => getenv('TINVAR_BUILD_DIR'), 'TINVAR_ENV' => getenv('TINVAR_ENV')];
+    putenv("TINVAR_BUILD_DIR={$build}");
+    putenv('TINVAR_ENV');
+    try {
+        $console = console(['kernel' => \Shop\Kernel::class, 'classes' => \Shop\Kernel::classes(...)]);
+
+        expect(ran($console, 'build:fragments')[0])->toBe(0)
+            ->and(ran($console, 'discover')[0])->toBe(0)
+            ->and(Manifest::read("{$build}/discovery.php", 'Shop')->routes)->toBe(\Shop\Kernel::classes()->routes);
+    } finally {
+        foreach ($before as $name => $value) {
+            putenv($value === false ? $name : "{$name}={$value}");
+        }
+        exec('rm -rf ' . escapeshellarg($build));
+    }
+});
+
 it('stops a command that needs the classes where discovery refuses them, saying why', function () {
     $console = console(['classes' => static fn (): DiscoveredClasses => throw new DiscoveryFailed(['Broken.php does not parse'])]);
 

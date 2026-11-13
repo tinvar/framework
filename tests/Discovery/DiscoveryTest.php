@@ -531,29 +531,48 @@ it('refuses to include a manifest where ext-posix is not loaded', function () {
         ->and($output)->not->toContain('read');
 });
 
+// Review (very low): production was read from the production markers alone,
+// so a server whose environment said nothing walked its sources, where ADR
+// 0213 holds an environment that says nothing to a server's rules. Only one
+// that says a developer's or a test's machine scans; the build's commands
+// scan inside freshly(), whatever the environment says.
+it('boots from the manifest wherever the environment does not say a developer\'s or a test\'s machine', function () {
+    $app = $this->app;
+    $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
+
+    expect(Discovery::production([]))->toBeTrue()
+        ->and(Discovery::production(['APP_ENV' => 'local']))->toBeTrue()
+        ->and(Discovery::production(['TINVAR_ENV' => 'local', 'TINVAR_PROFILE' => 'staging']))->toBeTrue()
+        ->and(Discovery::production(['TINVAR_ENV' => 'local']))->toBeFalse()
+        ->and(Discovery::production(['TINVAR_ENV' => 'development']))->toBeFalse()
+        ->and(Discovery::production(['TINVAR_ENV' => 'testing']))->toBeFalse()
+        ->and(problems(fn () => $app->discovery()->classes([])))->toContain('There is no discovery manifest')
+        ->and(Discovery::freshly(fn (): DiscoveredClasses => $app->discovery()->classes([]))->routes)->toBe([$app->name('Home')]);
+});
+
 it('keeps a scan while the files stay as they were, and scans again once one changes', function () {
     $app = $this->app;
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
     $discovery = $app->discovery();
 
-    $first = $discovery->classes([]);
+    $first = $discovery->classes(['TINVAR_ENV' => 'local']);
 
-    expect($discovery->classes([]))->toBe($first);
+    expect($discovery->classes(['TINVAR_ENV' => 'local']))->toBe($first);
 
     $app->write('About', "#[Page('/about', 'about')] final class About { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
 
-    expect($discovery->classes([])->routes)->toBe([$app->name('About'), $app->name('Home')]);
+    expect($discovery->classes(['TINVAR_ENV' => 'local'])->routes)->toBe([$app->name('About'), $app->name('Home')]);
 
     unlink("{$app->root}/app/About.php");
 
-    expect($discovery->classes([])->routes)->toBe([$app->name('Home')]);
+    expect($discovery->classes(['TINVAR_ENV' => 'local'])->routes)->toBe([$app->name('Home')]);
 });
 
 it('keeps what a scan found for the next process beside the build, while the files are as they were', function () {
     $app = $this->app;
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
     mkdir("{$app->root}/dist");
-    $app->discovery()->classes([]);
+    $app->discovery()->classes(['TINVAR_ENV' => 'local']);
     $cache = "{$app->root}/dist/discovery.dev.json";
 
     expect(is_file($cache))->toBeTrue();
@@ -597,7 +616,7 @@ it('scans afresh inside freshly(), believing neither the scan it keeps nor the o
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
     mkdir("{$app->root}/dist");
     $discovery = new Discovery($app->namespace, [$app->namespace . '\\' => ["{$app->root}/app"]], "{$app->root}/dist/" . Manifest::FILE, $app->root, recheck: 60.0);
-    $discovery->classes([]);
+    $discovery->classes(['TINVAR_ENV' => 'local']);
     $cache = "{$app->root}/dist/discovery.dev.json";
     $data = json_decode((string) file_get_contents($cache), true);
     $data['classes']['routes'] = [];
@@ -608,10 +627,10 @@ it('scans afresh inside freshly(), believing neither the scan it keeps nor the o
     \Closure::bind(static function (): void {
         Discovery::$live = [];
     }, null, Discovery::class)();
-    expect($next->classes([])->routes)->toBe([]);
+    expect($next->classes(['TINVAR_ENV' => 'local'])->routes)->toBe([]);
 
-    expect(Discovery::freshly(static fn (): DiscoveredClasses => $next->classes([]))->routes)->toBe([$app->name('Home')])
-        ->and(Discovery::freshly(static fn (): DiscoveredClasses => $discovery->classes([]))->routes)->toBe([$app->name('Home')]);
+    expect(Discovery::freshly(static fn (): DiscoveredClasses => $next->classes(['TINVAR_ENV' => 'local']))->routes)->toBe([$app->name('Home')])
+        ->and(Discovery::freshly(static fn (): DiscoveredClasses => $discovery->classes(['TINVAR_ENV' => 'local']))->routes)->toBe([$app->name('Home')]);
 });
 
 it('adds classes registered by hand after the discovered ones, each once', function () {

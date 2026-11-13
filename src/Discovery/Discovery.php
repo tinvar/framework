@@ -168,24 +168,17 @@ final class Discovery
     }
 
     /**
-     * Whether $env says production -- or staging, production's build --
-     * where the classes come from the manifest alone.
+     * Whether the classes come from the manifest alone: wherever $env does
+     * not say a developer's or a test's machine (DevMode::notDevelopment(),
+     * ADR 0213) -- production, staging, and an environment that says
+     * nothing, which is held to a server's rules. The build's own commands
+     * scan inside freshly() instead, whatever $env says.
      *
      * @param array<string, string>|null $env the environment; the process's own by default
      */
     public static function production(?array $env = null): bool
     {
-        $env ??= array_filter(getenv(), \is_string(...));
-        if (DevMode::productionMarker($env) !== null) {
-            return true;
-        }
-        foreach (['TINVAR_ENV', 'APP_ENV'] as $marker) {
-            if (strtolower(trim($env[$marker] ?? '')) === 'staging') {
-                return true;
-            }
-        }
-
-        return false;
+        return DevMode::notDevelopment($env) !== null;
     }
 
     /**
@@ -198,7 +191,7 @@ final class Discovery
      */
     public function classes(?array $env = null): DiscoveredClasses
     {
-        if (self::production($env)) {
+        if (!self::$fresh && self::production($env)) {
             if (!is_file($this->manifest)) {
                 throw new DiscoveryFailed([
                     "There is no discovery manifest at {$this->manifest}, and production boots from it alone, never "
@@ -240,11 +233,13 @@ final class Discovery
     }
 
     /**
-     * $callback's answer, with every classes() it asks outside production
-     * scanning afresh -- neither the scan this process keeps nor the one
-     * beside the build believed, each replaced by what the scan finds.
-     * `tinvar check` asks its classes this way: a check vouches for the
-     * sources as they are, not for what a cache says they were.
+     * $callback's answer, with every classes() it asks scanning afresh,
+     * whatever the environment says -- neither the manifest, nor the scan
+     * this process keeps, nor the one beside the build believed, each
+     * replaced by what the scan finds. `tinvar check` and
+     * `build:fragments` ask their classes this way: a check vouches for the
+     * sources as they are, and a build -- in an image's build stage, which
+     * says no TINVAR_ENV -- is made from them, before there is a manifest.
      *
      * @template T
      * @param \Closure(): T $callback

@@ -1447,8 +1447,11 @@ final class AppConsole
         }
         $build ??= BuildProfile::buildDirectory($this->root);
 
+        // From the sources, as the build's discover is: an image's build
+        // stage runs this before there is a manifest, and says no
+        // TINVAR_ENV, which Discovery reads as a server's (ADR 0213).
         $routes = new RouteRegistry();
-        $routes->registerAll($this->classes()->routes);
+        $routes->registerAll(Discovery::freshly($this->classes(...))->routes);
         try {
             $manifest = FragmentManifestProducer::produce($routes, "{$build}/rsc/deferred.json");
             $manifest->write("{$build}/fragments.json");
