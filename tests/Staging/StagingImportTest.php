@@ -219,6 +219,13 @@ it('refuses a plan that copies a credential table, or keeps a secret, without sa
     'a secret kept' => [static fn () => ScrubPlan::create()->table('customers', ['api_token' => Scrub::keep()]), 'named like a secret'],
     'a password kept' => [static fn () => ScrubPlan::create()->table('customers', ['password_hash' => Scrub::keep()]), 'named like a secret'],
     'a secret re-encrypted' => [static fn () => ScrubPlan::create()->table('customers', ['totp_secret' => Scrub::reencrypt()]), 'named like a secret'],
+    // Audit 2026-11-13: names the table net caught and the column net did not.
+    'an auth code kept' => [static fn () => ScrubPlan::create()->table('customers', ['auth_code' => Scrub::keep()]), 'named like a secret'],
+    'a session id kept' => [static fn () => ScrubPlan::create()->table('customers', ['session_id' => Scrub::keep()]), 'named like a secret'],
+    'a signing key kept' => [static fn () => ScrubPlan::create()->table('customers', ['signing_key' => Scrub::keep()]), 'named like a secret'],
+    'a nonce kept' => [static fn () => ScrubPlan::create()->table('customers', ['nonce' => Scrub::keep()]), 'named like a secret'],
+    'a cookie kept' => [static fn () => ScrubPlan::create()->table('customers', ['cookie_value' => Scrub::keep()]), 'named like a secret'],
+    'a remembered login kept' => [static fn () => ScrubPlan::create()->table('customers', ['remember_digest' => Scrub::keep()]), 'named like a secret'],
     'a table twice' => [static fn () => ScrubPlan::create()->drop('migrations')->ignore('migrations', because: 'x'), 'twice'],
     'a name SQL would need quoting for' => [static fn () => ScrubPlan::create()->drop('x"; DROP TABLE y; --'), 'not a table name'],
     'a tenant column scrubbed' => [static fn () => ScrubPlan::create()->table('customers', ['tenant_id' => Scrub::null()], tenant: 'tenant_id'), 'must be one it keeps'],
@@ -233,6 +240,12 @@ it('keeps a secret-looking column, or copies a credential-looking table, that sa
         ], because: 'kinds of token, none held');
 
     expect(array_keys($plan->tables()))->toBe(['token_types']);
+});
+
+it('keeps an author and a keyword with no reason: the column net is no wider than it must be', function () {
+    $plan = ScrubPlan::create()->table('posts', ['id' => Scrub::keep(), 'author' => Scrub::keep(), 'keyword' => Scrub::keep()]);
+
+    expect(array_keys($plan->tables()))->toBe(['posts']);
 });
 
 // Staging's own leftovers: a token table from an earlier staging life would

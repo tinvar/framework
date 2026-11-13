@@ -18,9 +18,13 @@ final readonly class Scrub
 {
     /**
      * Column names that say they hold a secret or a credential: keep() is
-     * refused for them without a reason.
+     * refused for them without a reason. As wide as the table net
+     * (ScrubPlan::CREDENTIAL_TABLES) where a column could hold what such a
+     * table does -- an auth code, a session id, a key, a nonce, a cookie,
+     * a remembered login -- but not `author` (ADR 0216).
      */
-    public const string SECRET_NAMES = '/(pass(word)?|secret|token|api_?key|private|otp|totp|salt|hash|credential|signature|mfa|recovery)/i';
+    public const string SECRET_NAMES = '/(pass(word)?|secret|token|api_?key|keys?$|private|otp|totp|salt|hash|credential|signature|mfa|2fa'
+        . '|recovery|auth(?!or)|session|nonce|cookie|remember|webauthn|bearer|jwt)/i';
 
     /** What unusablePassword() writes: a value password_verify() never accepts. */
     public const string UNUSABLE_PASSWORD = '!staging-import';
