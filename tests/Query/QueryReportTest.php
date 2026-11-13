@@ -92,3 +92,19 @@ it('reports nothing for a call the allowlist refuses', function () {
     expect($result['error']['code'])->toBe(QueryError::NOT_ALLOWED)
         ->and($reported)->toBe([]);
 });
+
+// The digest is sent to the browser: a plain hash of the exception's text
+// would let anyone holding one test guesses at what the text said -- an
+// email in a constraint violation, a row's value in a message -- offline.
+it('sends a digest no one can test a guess at the exception\'s text against', function () {
+    $detail = \RuntimeException::class . ': duplicate key alice@example.test';
+    $digest = QueryError::of(QueryError::FAILED, new \RuntimeException('duplicate key alice@example.test'), false)['digest'];
+
+    expect($digest)->toMatch('/^[0-9a-f]{16}\z/')
+        ->and($digest)->not->toBe(substr(hash('xxh128', $detail), 0, 16))
+        ->and($digest)->not->toBe(substr(hash('sha256', $detail), 0, 16))
+        // Still one failure's reference wherever this process meets it,
+        // and another failure's is another.
+        ->and(QueryError::of(QueryError::FAILED, $detail, false)['digest'])->toBe($digest)
+        ->and(QueryError::of(QueryError::FAILED, $detail . '.', false)['digest'])->not->toBe($digest);
+});

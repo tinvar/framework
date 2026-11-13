@@ -19,14 +19,29 @@ final class QueryError
     public const string NOT_FOUND = 'query_not_found';
     public const string MISCONFIGURED = 'query_misconfigured';
 
-    /** @return array{code: string, digest: string, message?: string} */
+    /** The key this process's digests are made with: see of(). */
+    private static ?string $key = null;
+
+    /**
+     * The record a failed call is sent as: its code, and a digest that is
+     * the failure's reference -- logged beside the exception where it is
+     * reported (QueryRunner's report), and shown to the visitor.
+     *
+     * The digest is keyed, with a key this process makes and never sends
+     * (ADR 0221): a plain hash of the exception's text, sent to a browser,
+     * let anyone holding it test a guess at what the text said -- an email
+     * in a constraint violation -- offline. The same failure in this
+     * process has the same digest; the log line has the text.
+     *
+     * @return array{code: string, digest: string, message?: string}
+     */
     public static function of(string $code, \Throwable|string $cause, bool $debug): array
     {
         $detail = $cause instanceof \Throwable
             ? $cause::class . ': ' . $cause->getMessage()
             : $cause;
 
-        $error = ['code' => $code, 'digest' => substr(hash('xxh128', $detail), 0, 16)];
+        $error = ['code' => $code, 'digest' => substr(hash_hmac('sha256', $detail, self::$key ??= random_bytes(32)), 0, 16)];
 
         if ($debug) {
             $error['message'] = $detail;
