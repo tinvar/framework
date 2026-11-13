@@ -388,7 +388,22 @@ it('refuses to run where the environment says production', function () {
         expect(fn () => Testing::use($app))->toThrow(\LogicException::class, 'TINVAR_ENV=production')
             ->and(fn () => $app->signedIn($demo, \Tinvar\Http\Request::get('/')))->toThrow(\LogicException::class, 'TINVAR_ENV=production');
     } finally {
-        putenv('TINVAR_ENV');
+        putenv('TINVAR_ENV=testing');
+    }
+});
+
+// Nor where the environment says nothing (ADR 0213): a server that forgot
+// its TINVAR_ENV is not a test's machine.
+it('refuses to run where nothing says this is a test\'s machine', function () {
+    $app = testing()->app;
+    $demo = customer();
+    putenv('TINVAR_ENV');
+
+    try {
+        expect(fn () => Testing::use($app))->toThrow(\LogicException::class, 'TINVAR_ENV is not local, development or testing')
+            ->and(fn () => $app->signedIn($demo, \Tinvar\Http\Request::get('/')))->toThrow(\LogicException::class, 'TINVAR_ENV is not local, development or testing');
+    } finally {
+        putenv('TINVAR_ENV=testing');
     }
 });
 

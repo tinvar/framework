@@ -56,7 +56,7 @@ final class Developer
     {
         $toolbar = $dev ? DevToolbar::fromEnvironment(
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-            env: [DevToolbar::ENV => run(), 'TINVAR_DEV' => '1'],
+            env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => run(), 'TINVAR_DEV' => '1'],
         ) : null;
         $this->kernel = Kernel::fromEnvironment($socket, key: KEY, database: Shop::database(), dev: $dev, toolbar: $toolbar);
     }
@@ -219,6 +219,7 @@ it('draws nothing and answers nothing outside dev', function () {
 
 it('refuses to boot with the toolbar asked for in production', function (string $marker) {
     $directory = run();
+    $before = getenv($marker);
     putenv(DevToolbar::ENV . "={$directory}");
     putenv("{$marker}=production");
     // A production build has its discovery manifest (ADR 0146).
@@ -228,7 +229,8 @@ it('refuses to boot with the toolbar asked for in production', function (string 
             ->toThrow(\RuntimeException::class, "TINVAR_DEV_TOOLBAR is refused: {$marker}=production");
     } finally {
         putenv(DevToolbar::ENV);
-        putenv($marker);
+        // TINVAR_ENV=testing back, as phpunit.xml set it (ADR 0213).
+        putenv($before === false ? $marker : "{$marker}={$before}");
         putenv('TINVAR_BUILD_DIR');
     }
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);

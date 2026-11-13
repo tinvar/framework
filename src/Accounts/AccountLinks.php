@@ -45,7 +45,8 @@ final readonly class AccountLinks
 
     /**
      * The origin account links are built on: $configured where it is set,
-     * else -- outside production -- $served on localhost, else
+     * else -- where the environment says it is a developer's or a test's
+     * (DevMode::notDevelopment()) -- $served on localhost, else
      * http://localhost.
      *
      * @param string|null $configured the app's own URL (APP_URL)
@@ -54,7 +55,7 @@ final readonly class AccountLinks
      */
     public static function origin(?string $configured, ?string $served = null, ?array $env = null): string
     {
-        $marker = DevMode::productionMarker($env ?? array_filter(getenv(), \is_string(...)));
+        $marker = DevMode::notDevelopment($env);
         $configured = $configured === null ? null : rtrim(trim($configured), '/');
         if ($configured !== null && $configured !== '') {
             if (BrowserOrigin::hostOf($configured) !== null) {
@@ -70,7 +71,7 @@ final readonly class AccountLinks
             );
         }
         if ($marker !== null) {
-            throw new \InvalidArgumentException("APP_URL is not set, and {$marker}=production: set it to the https origin the app is served on, as https://app.example. Sign-up, reset and change-of-address links are built on it.");
+            throw new \InvalidArgumentException("APP_URL is not set, and {$marker}: set it to the https origin the app is served on, as https://app.example. Sign-up, reset and change-of-address links are built on it.");
         }
         if ($served !== null && preg_match('#^http://(?:127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?\z#', rtrim($served, '/'), $m) === 1) {
             return 'http://localhost' . ($m[1] ?? '');

@@ -176,12 +176,14 @@ final class DevCommand
      */
     public function plan(array $arguments): array
     {
-        // First: dev never runs where the environment says production.
-        $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
-        if ($marker !== null) {
+        // First: dev runs only where the environment says it is a
+        // developer's machine (ADR 0213), never where it says nothing.
+        $why = DevMode::notDevelopment();
+        if ($why !== null) {
             throw new ServeException(
-                "tinvar serve --dev is refused: {$marker}=production. It runs Vite's dev server unsandboxed, shows raw errors "
-                . 'and every request\'s props to the browser, and never runs in production. Serve a build there.',
+                "tinvar serve --dev is refused: {$why}. It runs Vite's dev server unsandboxed, shows raw errors "
+                . 'and every request\'s props to the browser, and runs only on a developer\'s machine: set TINVAR_ENV=local '
+                . 'there (`tinvar setup` writes it into .env). Serve a build anywhere else.',
             );
         }
 

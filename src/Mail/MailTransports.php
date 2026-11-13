@@ -23,7 +23,6 @@ use Tinvar\Mail\Providers\SesConfig;
 use Tinvar\Mail\Providers\SesTransport;
 use Tinvar\Mail\Providers\SesWebhook;
 use Tinvar\Outbound\OutboundHttp;
-use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
 /**
@@ -44,8 +43,9 @@ use Tinvar\Support\DevMode;
  * the domain each has verified.
  *
  * Production -- and staging, production's build -- sends mail somewhere:
- * where TINVAR_ENV, APP_ENV or NODE_ENV says production, TINVAR_ENV or
- * APP_ENV says staging, or TINVAR_PROFILE names either, a TINVAR_MAIL_PROVIDER that is unset, or names `log` or
+ * everywhere but a machine whose TINVAR_ENV says local, development or
+ * testing (DevMode::notDevelopment(), ADR 0213), an environment that says
+ * nothing included, a TINVAR_MAIL_PROVIDER that is unset, or names `log` or
  * `array`, stops the boot. Neither is a default there: a shop whose
  * password-reset mail went quietly into a file, or into memory, is broken
  * in a way nothing reports. The log default stays for development and tests.
@@ -100,8 +100,9 @@ final readonly class MailTransports
     private const array NOWHERE = [MailProvider::Log, MailProvider::Array];
 
     /**
-     * Refuses, where the environment says production or staging, a provider
-     * list that is empty or names one of NOWHERE.
+     * Refuses, unless the environment says it is a developer's or a test's
+     * (DevMode::notDevelopment(), ADR 0213), a provider list that is empty
+     * or names one of NOWHERE.
      *
      * @param list<MailProvider> $providers
      * @param array<string, string>|null $env
@@ -109,7 +110,7 @@ final readonly class MailTransports
      */
     private static function refuseNowhereInProduction(array $providers, ?array $env): void
     {
-        $marker = self::productionMarker($env ?? array_filter(getenv(), \is_string(...)));
+        $marker = DevMode::notDevelopment($env);
         if ($marker === null) {
             return;
         }
@@ -119,37 +120,11 @@ final readonly class MailTransports
         }
         foreach ($providers as $provider) {
             if (\in_array($provider, self::NOWHERE, true)) {
-                throw new ConfigException(["TINVAR_MAIL_PROVIDER names {$provider->value}, which sends nothing, and {$marker}: name the provider that sends the application's mail (smtp, ses, postmark, mailgun, resend or sendgrid)."]);
+                throw new ConfigException(["TINVAR_MAIL_PROVIDER names {$provider->value}, which sends nothing, where {$marker}: name the provider that sends the application's mail (smtp, ses, postmark, mailgun, resend or sendgrid)."]);
             }
         }
     }
 
-    /**
-     * What says this is production or staging -- `TINVAR_ENV=production`,
-     * `TINVAR_PROFILE=staging` -- or null. The markers that rule dev mode
-     * out (DevMode: TINVAR_ENV, APP_ENV or NODE_ENV saying production),
-     * TINVAR_ENV or APP_ENV saying staging, as Discovery reads them, and
-     * TINVAR_PROFILE where it is set. An unset profile is not read as
-     * production here, as BuildProfile reads it: a developer's machine sets
-     * none.
-     *
-     * @param array<string, string> $env
-     */
-    private static function productionMarker(array $env): ?string
-    {
-        $marker = DevMode::productionMarker($env);
-        if ($marker !== null) {
-            return "{$marker}=production";
-        }
-        foreach (['TINVAR_ENV', 'APP_ENV', BuildProfile::ENV] as $variable) {
-            $value = strtolower(trim($env[$variable] ?? ''));
-            if (\in_array($value, [BuildProfile::PRODUCTION, BuildProfile::STAGING], true)) {
-                return "{$variable}={$value}";
-            }
-        }
-
-        return null;
-    }
 
     /**
      * The webhooks whose settings are set, for MailEventsEndpoint: each

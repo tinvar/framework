@@ -90,6 +90,15 @@ it('refuses wherever the environment says production, before anything else', fun
     });
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 
+it('refuses where TINVAR_ENV does not say this is a developer\'s machine (ADR 0213)', function () {
+    $app = app();
+
+    withEnv(['TINVAR_ENV' => ''], function () use ($app): void {
+        expect(fn () => command()->plan(["--app={$app}"]))
+            ->toThrow(ServeException::class, 'tinvar serve --dev is refused: TINVAR_ENV is not local, development or testing');
+    });
+});
+
 it('listens on loopback only', function (string $host) {
     expect(fn () => command()->plan(['--app=' . app(), "--host={$host}"]))
         ->toThrow(ServeException::class, "loopback only (127.0.0.1 or ::1); refusing {$host}");
@@ -346,7 +355,7 @@ function started(string $app, array $arguments = [], array $extraEnv = [], ?stri
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', "{$log}.err", 'w']],
         $pipes,
         $app,
-        [...$env, ...$extraEnv, 'DEV_TEST_LOG' => $log, 'DEV_TEST_WATCH' => $watch],
+        [...$env, 'TINVAR_ENV' => 'local', ...$extraEnv, 'DEV_TEST_LOG' => $log, 'DEV_TEST_WATCH' => $watch],
     );
     expect($process)->toBeResource();
     stream_set_blocking($pipes[1], false);

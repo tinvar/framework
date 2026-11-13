@@ -8,7 +8,6 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 use Tinvar\Orm\Connection;
 use Tinvar\Outbound\OutboundHttp;
-use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
 /**
@@ -43,7 +42,7 @@ final readonly class SearchBackends
         if ($meilisearch->url === null || $meilisearch->url === '') {
             throw new ConfigException(['TINVAR_MEILISEARCH_URL is required where TINVAR_SEARCH_BACKEND=meilisearch: name the origin Meilisearch answers at, such as https://search.internal:7700.']);
         }
-        $marker = self::productionMarker($env ?? array_filter(getenv(), \is_string(...)));
+        $marker = DevMode::notDevelopment($env);
         if ($marker !== null) {
             $problems = [];
             if (!str_starts_with(strtolower($meilisearch->url), 'https://')) {
@@ -64,25 +63,4 @@ final readonly class SearchBackends
         }
     }
 
-    /**
-     * What says this is production or staging, or null: as MailTransports
-     * reads it.
-     *
-     * @param array<string, string> $env
-     */
-    private static function productionMarker(array $env): ?string
-    {
-        $marker = DevMode::productionMarker($env);
-        if ($marker !== null) {
-            return "{$marker}=production";
-        }
-        foreach (['TINVAR_ENV', 'APP_ENV', BuildProfile::ENV] as $variable) {
-            $value = strtolower(trim($env[$variable] ?? ''));
-            if (\in_array($value, [BuildProfile::PRODUCTION, BuildProfile::STAGING], true)) {
-                return "{$variable}={$value}";
-            }
-        }
-
-        return null;
-    }
 }

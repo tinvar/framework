@@ -58,8 +58,8 @@ it('builds each provider from its own variables', function (string $provider, ar
     'mailgun' => ['mailgun', ['TINVAR_MAILGUN_KEY' => 'key-3ax6xnjp29jd6fds4gc373sgvjxteol0', 'TINVAR_MAILGUN_DOMAIN' => 'mg.pellwick.example', 'TINVAR_MAILGUN_REGION' => 'eu'], MailgunTransport::class],
     'resend' => ['resend', ['TINVAR_RESEND_KEY' => 're_live_4f9c2a1e8b7d6c5a3f2e1d0c'], ResendTransport::class],
     'sendgrid' => ['sendgrid', ['TINVAR_SENDGRID_KEY' => 'SG.ngeVfQFYQlKU0ufo8x5d1A.TwL2iGABf9DHoTf'], SendGridTransport::class],
-    'log' => ['log', [], LogTransport::class],
-    'array' => ['array', [], ArrayTransport::class],
+    'log' => ['log', ['TINVAR_ENV' => 'local'], LogTransport::class],
+    'array' => ['array', ['TINVAR_ENV' => 'testing'], ArrayTransport::class],
 ]);
 
 it('reads a secret from the file its _FILE variable names', function () {
@@ -89,8 +89,8 @@ it('makes a list a failover in its order, or a round robin where the strategy sa
 });
 
 it('takes the application\'s default where no provider is named', function () {
-    expect(transports('/tmp/never-written.log')->transport([]))->toBeInstanceOf(LogTransport::class)
-        ->and(problems([]))->toBe(['TINVAR_MAIL_LOG is required for the log provider, as an absolute path.']);
+    expect(transports('/tmp/never-written.log')->transport(['TINVAR_ENV' => 'local']))->toBeInstanceOf(LogTransport::class)
+        ->and(problems(['TINVAR_ENV' => 'local']))->toBe(['TINVAR_MAIL_LOG is required for the log provider, as an absolute path.']);
 });
 
 it('refuses production or staging with no provider, or one that sends nowhere', function (array $where, string $named) {
@@ -108,6 +108,9 @@ it('refuses production or staging with no provider, or one that sends nowhere', 
     'TINVAR_PROFILE=production, array' => [['TINVAR_PROFILE' => 'production'], 'array'],
     'TINVAR_PROFILE=staging, unset' => [['TINVAR_PROFILE' => 'staging'], ''],
     'production, a failover ending in log' => [['TINVAR_ENV' => 'production', 'TINVAR_SMTP_HOST' => 'smtp.example.test'], 'smtp,log'],
+    // ADR 0213: an environment that says nothing may be production's.
+    'nothing set, unset' => [['TINVAR_ENV' => ''], ''],
+    'TINVAR_ENV something else, log' => [['TINVAR_ENV' => 'prod'], 'log'],
 ]);
 
 it('sends to a real provider in production, and keeps the log default everywhere else', function () {
@@ -117,7 +120,7 @@ it('sends to a real provider in production, and keeps the log default everywhere
         ->and(transports()->transport(['TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'staging', ...$smtp]))->toBeInstanceOf(SmtpTransport::class)
         ->and(transports('/tmp/never-written.log')->transport(['TINVAR_ENV' => 'local']))->toBeInstanceOf(LogTransport::class)
         ->and(transports('/tmp/never-written.log')->transport(['TINVAR_ENV' => 'testing', 'TINVAR_PROFILE' => 'test']))->toBeInstanceOf(LogTransport::class)
-        ->and(transports()->transport(['APP_ENV' => 'development', 'TINVAR_MAIL_PROVIDER' => 'array']))->toBeInstanceOf(ArrayTransport::class);
+        ->and(transports()->transport(['TINVAR_ENV' => 'development', 'TINVAR_MAIL_PROVIDER' => 'array']))->toBeInstanceOf(ArrayTransport::class);
 });
 
 it('refuses an unknown provider, one named twice, or an unknown strategy', function () {

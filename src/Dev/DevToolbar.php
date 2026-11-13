@@ -133,11 +133,11 @@ final class DevToolbar implements FrameTap
             return null;
         }
 
-        $marker = DevMode::productionMarker($env);
-        if ($marker !== null) {
+        $why = DevMode::notDevelopment($env);
+        if ($why !== null) {
             throw new \RuntimeException(
-                self::ENV . " is refused: {$marker}=production. The dev toolbar shows every request's props and "
-                . 'frames, and never runs in production. Unset ' . self::ENV . '; only `tinvar serve --dev` sets it.',
+                self::ENV . " is refused: {$why}. The dev toolbar shows every request's props and "
+                . 'frames, and runs only on a developer\'s machine. Unset ' . self::ENV . '; only `tinvar serve --dev` sets it.',
             );
         }
 

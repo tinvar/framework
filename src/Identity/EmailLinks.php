@@ -133,7 +133,7 @@ final readonly class EmailLinks
      * @param bool $localHttp whether a link may be built on plain http for `localhost`
      *        and its subdomains, which resolve to this machine: development's, where the
      *        app is served on http://localhost:PORT and no TLS stands in front. Refused
-     *        wherever the environment says production
+     *        unless the environment says it is a developer's or a test's (DevMode::notDevelopment())
      */
     public function __construct(
         private Signer $signer,
@@ -143,9 +143,9 @@ final readonly class EmailLinks
         private bool $localHttp = false,
     ) {
         $this->clock = $clock ?? time(...);
-        $marker = $localHttp ? DevMode::productionMarker(array_filter(getenv(), \is_string(...))) : null;
-        if ($marker !== null) {
-            throw new \InvalidArgumentException("Emailed links are built on https alone where {$marker}=production: set the app's https URL, and links are built on it.");
+        $why = $localHttp ? DevMode::notDevelopment() : null;
+        if ($why !== null) {
+            throw new \InvalidArgumentException("Emailed links are built on https alone where {$why}: set the app's https URL, and links are built on it.");
         }
     }
 

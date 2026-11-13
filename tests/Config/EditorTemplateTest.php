@@ -106,7 +106,7 @@ it('hands the toolbar its editor, and none where TINVAR_EDITOR names none', func
 
             return $drawn instanceof EditorTemplate ? $drawn->toArray() : [];
         };
-        $env = [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1'];
+        $env = ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1'];
 
         expect($config(DevToolbar::fromEnvironment(static fn (): string => '', env: $env)))->toBe([])
             ->and($config(DevToolbar::fromEnvironment(static fn (): string => '', env: [...$env, 'TINVAR_EDITOR' => 'zed://file{file}:{line}'])))

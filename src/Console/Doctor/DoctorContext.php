@@ -10,7 +10,6 @@ use Tinvar\Discovery\DiscoveryFailed;
 use Tinvar\Orm\Connection;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Routing\Domains;
-use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
 /**
@@ -56,27 +55,16 @@ final readonly class DoctorContext
     ) {}
 
     /**
-     * What says this environment is a server's -- production's, or
+     * Why this environment may be a server's -- production's, or
      * staging's, production's build -- as `TINVAR_ENV=production`, or null
-     * on a developer's machine: the markers dev mode is refused beside
-     * (DevMode), TINVAR_ENV or APP_ENV saying staging, and TINVAR_PROFILE
-     * naming either. A fix that is safe only on a developer's machine is
+     * on a machine that says it is a developer's: DevMode::notDevelopment(),
+     * so an environment that says nothing is held to a server's checks
+     * (ADR 0213). A fix that is safe only on a developer's machine is
      * offered only where this is null.
      */
     public function production(): ?string
     {
-        $marker = DevMode::productionMarker($this->env);
-        if ($marker !== null) {
-            return "{$marker}=production";
-        }
-        foreach (['TINVAR_ENV', 'APP_ENV', BuildProfile::ENV] as $variable) {
-            $value = strtolower(trim($this->env[$variable] ?? ''));
-            if (\in_array($value, [BuildProfile::PRODUCTION, BuildProfile::STAGING], true)) {
-                return "{$variable}={$value}";
-            }
-        }
-
-        return null;
+        return DevMode::notDevelopment($this->env);
     }
 
     /**

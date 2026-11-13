@@ -808,13 +808,14 @@ final class Kernel
         $this->events = $events;
 
         // A fake answers for a query or an action without its body, so it
-        // exists only under test. Fail closed where the environment says this
-        // is production, as the testing Client does.
-        $marker = $standIns === null ? null : DevMode::productionMarker(getenv());
-        if ($marker !== null) {
+        // exists only under test. Fail closed unless the environment says
+        // this is a developer's or a test's machine, as the testing Client
+        // does (ADR 0213).
+        $why = $standIns === null ? null : DevMode::notDevelopment();
+        if ($why !== null) {
             throw new \InvalidArgumentException(
-                "A Kernel was given stand-ins for query and action bodies under {$marker}=production. "
-                . 'They are a test\'s fakes, and never answer in production.',
+                "A Kernel was given stand-ins for query and action bodies where {$why}. "
+                . 'They are a test\'s fakes, and answer only where TINVAR_ENV says testing (or local, or development).',
             );
         }
         $this->standIns = $standIns;

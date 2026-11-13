@@ -262,7 +262,7 @@ describe('dev mode, from the environment', function () {
     it('is off unless TINVAR_DEV says so', function () {
         expect(DevMode::fromEnvironment([]))->toBeFalse()
             ->and(DevMode::fromEnvironment(['TINVAR_DEV' => '0']))->toBeFalse()
-            ->and(DevMode::fromEnvironment(['TINVAR_DEV' => '1', 'NODE_ENV' => 'development']))->toBeTrue();
+            ->and(DevMode::fromEnvironment(['TINVAR_DEV' => '1', 'TINVAR_ENV' => 'local', 'NODE_ENV' => 'development']))->toBeTrue();
     });
 
     it('is refused, loudly, beside any sign of production', function (string $marker) {
@@ -280,7 +280,7 @@ describe('dev mode, from the environment', function () {
                 ->toThrow(\RuntimeException::class, 'TINVAR_DEV=1 is refused');
         } finally {
             putenv('TINVAR_DEV');
-            putenv('TINVAR_ENV');
+            putenv('TINVAR_ENV=testing');
             putenv('TINVAR_BUILD_DIR');
         }
     });

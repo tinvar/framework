@@ -1003,10 +1003,15 @@ it('ends every other session when the address changes, as a change of password d
     });
 })->with('drivers');
 
-it('builds links on the configured https origin, stands in on localhost only outside production, and fails closed in it', function () {
+it('builds links on the configured https origin, stands in on localhost only on a developer\'s machine, and fails closed elsewhere', function () {
+    $local = ['TINVAR_ENV' => 'local'];
     expect(AccountLinks::origin('https://app.example/', env: []))->toBe('https://app.example')
-        ->and(AccountLinks::origin(null, 'http://127.0.0.1:6123', []))->toBe('http://localhost:6123')
-        ->and(AccountLinks::origin(null, null, []))->toBe('http://localhost')
+        ->and(AccountLinks::origin(null, 'http://127.0.0.1:6123', $local))->toBe('http://localhost:6123')
+        ->and(AccountLinks::origin(null, null, $local))->toBe('http://localhost')
+        ->and(AccountLinks::origin('http://localhost:8080', null, $local))->toBe('http://localhost:8080')
+        // ADR 0213: an environment that says nothing is not a developer's.
+        ->and(static fn () => AccountLinks::origin(null, null, []))->toThrow(\InvalidArgumentException::class, 'APP_URL is not set, and TINVAR_ENV is not local, development or testing')
+        ->and(static fn () => AccountLinks::origin('http://localhost:8080', null, []))->toThrow(\InvalidArgumentException::class)
         ->and(static fn () => AccountLinks::origin(null, 'http://127.0.0.1:6123', ['TINVAR_ENV' => 'production']))->toThrow(\InvalidArgumentException::class, 'APP_URL is not set')
         ->and(static fn () => AccountLinks::origin('http://localhost:8080', null, ['TINVAR_ENV' => 'production']))->toThrow(\InvalidArgumentException::class)
         ->and(static fn () => AccountLinks::origin('https://app.example/path', null, []))->toThrow(\InvalidArgumentException::class);

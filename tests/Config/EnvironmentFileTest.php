@@ -61,7 +61,7 @@ it('fills only what the environment leaves unset, and nothing on a server', func
         expect(EnvironmentFile::load($file)['loaded'])->toBe([])
             ->and(getenv("{$name}_A"))->toBeFalse();
     } finally {
-        putenv('TINVAR_ENV');
+        putenv('TINVAR_ENV=testing');
         putenv("{$name}_A");
         putenv("{$name}_B");
         unlink($file);

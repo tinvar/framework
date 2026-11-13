@@ -260,8 +260,25 @@ it('refuses fakes where the environment says production', function () {
         expect(fn () => new BodyFakes())->toThrow(\LogicException::class, 'TINVAR_ENV=production')
             ->and(fn () => shop($fakes))->toThrow(\InvalidArgumentException::class, 'TINVAR_ENV=production');
     } finally {
-        putenv('TINVAR_ENV');
+        putenv('TINVAR_ENV=testing');
         putenv('TINVAR_BUILD_DIR');
+        putenv('TINVAR_MAIL_PROVIDER');
+        putenv('TINVAR_SMTP_HOST');
+    }
+});
+
+it('refuses fakes where nothing says this is a test\'s machine', function () {
+    $fakes = new BodyFakes();
+    // ADR 0213: an environment that says nothing may be production's.
+    putenv('TINVAR_ENV');
+    putenv('TINVAR_MAIL_PROVIDER=smtp');
+    putenv('TINVAR_SMTP_HOST=smtp.example.test');
+
+    try {
+        expect(fn () => new BodyFakes())->toThrow(\LogicException::class, 'TINVAR_ENV is not local, development or testing')
+            ->and(fn () => shop($fakes))->toThrow(\InvalidArgumentException::class, 'TINVAR_ENV is not local, development or testing');
+    } finally {
+        putenv('TINVAR_ENV=testing');
         putenv('TINVAR_MAIL_PROVIDER');
         putenv('TINVAR_SMTP_HOST');
     }

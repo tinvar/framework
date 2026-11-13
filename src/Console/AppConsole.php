@@ -862,15 +862,15 @@ final class AppConsole
     }
 
     /**
-     * Dev mode (DevCommand): refused where the environment says production
-     * before anything is migrated, then the schema the code expects.
+     * Dev mode (DevCommand): refused unless the environment says it is a
+     * developer's (ADR 0213) before anything is migrated, then the schema
+     * the code expects.
      *
      * @param list<string> $arguments
      */
     private function dev(array $arguments, bool $migrate): int
     {
-        $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
-        if ($migrate && $marker === null) {
+        if ($migrate && DevMode::isDevelopment()) {
             $migrated = $this->migrate('migrate', []);
             if ($migrated !== 0) {
                 return $migrated;

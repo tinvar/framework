@@ -103,7 +103,9 @@ it('keeps every refusal of the shop\'s container', function () {
 
 it('ships no secret, and keeps secrets and state out of git and the image', function () {
     foreach (assignments('packages/skeleton/.env.example') as $name => $value) {
-        expect($value)->toBe('', "{$name} has a value in .env.example");
+        // TINVAR_ENV alone has one, and no secret: a developer's machine says
+        // so, which `tinvar setup` writes into .env (ADR 0213).
+        expect($value)->toBe($name === 'TINVAR_ENV' ? 'local' : '', "{$name} has a value in .env.example");
     }
 
     foreach (['.gitignore', '.dockerignore'] as $ignore) {

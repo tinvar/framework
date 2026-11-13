@@ -298,7 +298,7 @@ describe('the backend the environment names', function () {
         $backends = new SearchBackends(new FakeOutboundHttp());
 
         expect($backends->backend($connection, []))->toBeInstanceOf(SqliteSearch::class)
-            ->and($backends->backend($connection, ['TINVAR_SEARCH_BACKEND' => 'meilisearch', 'TINVAR_MEILISEARCH_URL' => 'http://localhost:7700']))->toBeInstanceOf(MeilisearchSearch::class);
+            ->and($backends->backend($connection, ['TINVAR_SEARCH_BACKEND' => 'meilisearch', 'TINVAR_MEILISEARCH_URL' => 'http://localhost:7700', 'TINVAR_ENV' => 'local']))->toBeInstanceOf(MeilisearchSearch::class);
     });
 
     it('stops the boot where Meilisearch is named without a URL, or in production without TLS or a key', function () {
@@ -311,7 +311,10 @@ describe('the backend the environment names', function () {
             ->and(fn () => $backends->backend($connection, ['TINVAR_SEARCH_BACKEND' => 'meilisearch', 'TINVAR_MEILISEARCH_URL' => 'https://search.internal', 'TINVAR_ENV' => 'production']))
             ->toThrow(ConfigException::class, 'TINVAR_MEILISEARCH_KEY is required')
             ->and($backends->backend($connection, ['TINVAR_SEARCH_BACKEND' => 'meilisearch', 'TINVAR_MEILISEARCH_URL' => 'https://search.internal', 'TINVAR_MEILISEARCH_KEY' => KEY, 'TINVAR_ENV' => 'production']))
-            ->toBeInstanceOf(MeilisearchSearch::class);
+            ->toBeInstanceOf(MeilisearchSearch::class)
+            // An environment that says nothing is held to production's rules (ADR 0213).
+            ->and(fn () => $backends->backend($connection, ['TINVAR_SEARCH_BACKEND' => 'meilisearch', 'TINVAR_MEILISEARCH_URL' => 'http://search.internal:7700']))
+            ->toThrow(ConfigException::class, 'must be https where TINVAR_ENV is not local, development or testing');
     });
 
     it('refuses a remote backend with no Dispatcher to queue its writes', function () {

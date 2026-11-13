@@ -297,7 +297,7 @@ final readonly class AccountsKit
     /**
      * The cookies a browser signed in as $user sends with $request, with no
      * password asked: for tests, through the application's signedIn(). Refused
-     * wherever the environment says production. Signed in with $factors --
+     * unless the environment says it is a test's or a developer's (ADR 0213). Signed in with $factors --
      * none unless given -- as a test of a page that asks for two hands in a
      * passkey, say.
      *
@@ -305,9 +305,9 @@ final readonly class AccountsKit
      */
     public function signedIn(Authenticatable $user, Request $request, ?SessionFactors $factors = null): array
     {
-        $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
-        if ($marker !== null) {
-            throw new \LogicException("Signing in without a password is refused: {$marker}=production.");
+        $why = DevMode::notDevelopment();
+        if ($why !== null) {
+            throw new \LogicException("Signing in without a password is refused: {$why}.");
         }
         if (!$user instanceof AccountUser) {
             throw new \InvalidArgumentException('The accounts kit signs in an AccountUser, and was handed ' . get_debug_type($user) . '.');

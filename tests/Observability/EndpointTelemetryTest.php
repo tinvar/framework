@@ -202,7 +202,7 @@ describe('the dev toolbar', function () {
         $directory = PrivateDirectory::create('tinvar-dev-tel');
         DevToolbar::prepare($directory);
         register_shutdown_function(static fn () => PrivateDirectory::remove($directory));
-        $toolbar = DevToolbar::fromEnvironment(static fn (Request $r): string => $r->cookie('sid') ?? '', env: [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1']);
+        $toolbar = DevToolbar::fromEnvironment(static fn (Request $r): string => $r->cookie('sid') ?? '', env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1']);
         \assert($toolbar instanceof DevToolbar);
 
         return $toolbar;

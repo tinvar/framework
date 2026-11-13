@@ -388,6 +388,18 @@ describe('--dev', function () {
         });
     })->with(['NODE_ENV', 'TINVAR_ENV', 'APP_ENV']);
 
+    // ADR 0213: an environment that says nothing is not a developer's.
+    it('is refused where TINVAR_ENV does not say this is a developer\'s machine', function (string $value) {
+        withoutEnvironmentBinary(function () use ($value) {
+            [$command, $errors] = command(project());
+
+            $status = withEnvironment(['TINVAR_ENV' => $value], fn () => $command->run(['--dev', '--app=' . devApp()]));
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('tinvar serve --dev is refused: TINVAR_ENV is not local, development or testing');
+        });
+    })->with(['nothing set' => [''], 'something else' => ['prod']]);
+
     it('listens on loopback only', function (string $host) {
         withoutEnvironmentBinary(function () use ($host) {
             [$command, $errors] = command(project());

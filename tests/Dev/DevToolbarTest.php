@@ -115,7 +115,7 @@ function toolbar(string $directory, array $env = []): DevToolbar
 {
     $toolbar = DevToolbar::fromEnvironment(
         static fn (Request $r): string => $r->cookie('sid') ?? '',
-        env: [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1', ...$env],
+        env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1', ...$env],
     );
     expect($toolbar)->toBeInstanceOf(DevToolbar::class);
     \assert($toolbar instanceof DevToolbar);
@@ -241,9 +241,16 @@ it('refuses the toolbar beside any production marker, before anything else, dev 
 
     expect(fn () => DevToolbar::fromEnvironment(static fn (): string => '', env: [DevToolbar::ENV => $directory, $marker => 'production']))
         ->toThrow(\RuntimeException::class, "TINVAR_DEV_TOOLBAR is refused: {$marker}=production")
-        ->and(fn () => DevToolbar::fromEnvironment(static fn (): string => '', env: [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1', $marker => ' Production ']))
+        ->and(fn () => DevToolbar::fromEnvironment(static fn (): string => '', env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1', $marker => ' Production ']))
         ->toThrow(\RuntimeException::class, 'is refused');
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
+
+it('refuses the toolbar where nothing says this is a developer\'s machine (ADR 0213)', function () {
+    $directory = run();
+
+    expect(fn () => DevToolbar::fromEnvironment(static fn (): string => '', env: [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1']))
+        ->toThrow(\RuntimeException::class, 'TINVAR_DEV_TOOLBAR is refused: TINVAR_ENV is not local, development or testing');
+});
 
 it('is not there unless `tinvar serve --dev` asked for it, in dev', function () {
     $directory = run();
@@ -251,8 +258,8 @@ it('is not there unless `tinvar serve --dev` asked for it, in dev', function () 
     expect(DevToolbar::fromEnvironment(static fn (): string => '', env: []))->toBeNull()
         ->and(DevToolbar::fromEnvironment(static fn (): string => '', env: ['TINVAR_DEV' => '1']))->toBeNull()
         // Asked for outside dev: a serve without --dev, which keeps TINVAR_DEV out.
-        ->and(DevToolbar::fromEnvironment(static fn (): string => '', env: [DevToolbar::ENV => $directory]))->toBeNull()
-        ->and(DevToolbar::fromEnvironment(static fn (): string => '', env: [DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1'], dev: false))->toBeNull();
+        ->and(DevToolbar::fromEnvironment(static fn (): string => '', env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory]))->toBeNull()
+        ->and(DevToolbar::fromEnvironment(static fn (): string => '', env: ['TINVAR_ENV' => 'local', DevToolbar::ENV => $directory, 'TINVAR_DEV' => '1'], dev: false))->toBeNull();
 });
 
 it('refuses a Kernel not built for dev', function () {

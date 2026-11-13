@@ -69,7 +69,7 @@ final readonly class CanonicalOrigins
      *        user holds is in that tenant or below it: only then is their reset built on its domain
      * @param bool $localHttp whether the platform's origin may be plain http on `localhost` or a
      *        subdomain of it -- development's, as EmailLinks(localHttp:) builds links on it. Refused
-     *        wherever the environment says production. A custom domain is https whatever this says
+     *        unless the environment says it is a developer's or a test's (DevMode::notDevelopment()). A custom domain is https whatever this says
      */
     public function __construct(
         string $platform,
@@ -81,9 +81,9 @@ final readonly class CanonicalOrigins
         private ?\Closure $confined = null,
         bool $localHttp = false,
     ) {
-        $marker = $localHttp ? DevMode::productionMarker(array_filter(getenv(), \is_string(...))) : null;
-        if ($marker !== null) {
-            throw new \InvalidArgumentException("Emailed links are built on https alone where {$marker}=production: set the app's https URL, and links are built on it.");
+        $why = $localHttp ? DevMode::notDevelopment() : null;
+        if ($why !== null) {
+            throw new \InvalidArgumentException("Emailed links are built on https alone where {$why}: set the app's https URL, and links are built on it.");
         }
         $this->platform = self::origin($platform, $localHttp);
         if ($primaryDomain !== null && ($domains === null || $realms === null)) {

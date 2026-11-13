@@ -75,13 +75,24 @@ final class Made
 }
 
 /**
+ * A developer's machine unless $env says otherwise: TINVAR_ENV=local, which
+ * $env overrides, and beside which a production marker still wins.
+ *
  * @param array<string, string> $env
  * @param array<string, mixed> $more
  */
 function context(string $root, array $env = [], array $more = []): DoctorContext
 {
-    return new DoctorContext(...['root' => $root, 'env' => $env, ...$more]);
+    return new DoctorContext(...['root' => $root, 'env' => ['TINVAR_ENV' => 'local', ...$env], ...$more]);
 }
+
+// ADR 0213: a machine whose environment says nothing is held to a server's
+// checks, never read as a developer's.
+it('reads an environment that says nothing as a server\'s', function () {
+    expect(new DoctorContext(root: app(), env: [])->production())->toBe('TINVAR_ENV is not local, development or testing')
+        ->and(new DoctorContext(root: app(), env: ['TINVAR_ENV' => 'local'])->production())->toBeNull()
+        ->and(new DoctorContext(root: app(), env: ['TINVAR_ENV' => 'local', 'APP_ENV' => 'production'])->production())->toBe('APP_ENV=production');
+});
 
 /**
  * @param list<Finding> $findings
