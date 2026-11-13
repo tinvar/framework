@@ -54,8 +54,14 @@ final readonly class PendingUpload
      * against no cap or quota -- the file kept from it is counted already.
      * Unclaimed, it is pruned as any expired upload is (Uploads::prune()):
      * its key removed, then the record.
+     *
+     * $counted, for an intent whose file never arrived whole (ADR 0206):
+     * the record keeps its owner and its size, so it goes on counting
+     * against their cap and quota until pruning removes whatever the URL
+     * still puts at its key -- or completing before the PUT gave the room
+     * back while the URL went on filling the store.
      */
-    public function consumed(int $now, int $grace): self
+    public function consumed(int $now, int $grace, bool $counted = false): self
     {
         return new self(
             id: bin2hex(random_bytes(16)),
@@ -71,9 +77,10 @@ final readonly class PendingUpload
             authHash: '',
             name: '',
             type: '',
-            size: 0,
+            size: $counted ? $this->size : 0,
             createdAt: $now,
             expiresAt: $this->expiresAt + $grace,
+            ownerHash: $counted ? $this->ownerHash : '',
         );
     }
 

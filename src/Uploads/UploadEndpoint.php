@@ -502,6 +502,7 @@ final class UploadEndpoint
             throw new \RuntimeException('No temporary file to fetch an upload into.');
         }
 
+        $arrived = false;
         try {
             try {
                 $out = fopen($path, 'wb');
@@ -519,6 +520,7 @@ final class UploadEndpoint
                         }
                         self::writeWhole($out, $chunk);
                     });
+                    $arrived = $found && $bytes === $intent->size;
                 } finally {
                     fclose($out);
                 }
@@ -534,8 +536,12 @@ final class UploadEndpoint
                 // under it puts the file there again: the intent is kept,
                 // consumed, and pruning removes its key once the URL is dead
                 // and INCOMING_GRACE has passed -- the intent's own expiry,
-                // which COMPLETE_TTL already puts that far out.
-                $this->uploads->store->add($intent->consumed($now, 0));
+                // which COMPLETE_TTL already puts that far out. A file that
+                // did not arrive whole is counted no less until then (ADR
+                // 0206): the URL may yet fill the bucket with it, so the
+                // record stays its owner's, at its size, against the cap
+                // and the quota. One kept is counted by the upload instead.
+                $this->uploads->store->add($intent->consumed($now, 0, counted: !$arrived));
                 $this->uploads->store->forget($intent->id);
             }
             if (!$found || $bytes !== $intent->size) {

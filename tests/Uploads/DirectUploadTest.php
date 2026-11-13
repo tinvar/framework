@@ -344,3 +344,31 @@ it('refuses to go on with a chunk the temporary file took only part of', functio
         stream_wrapper_unregister('tinvar-short-write');
     }
 })->throws(Tinvar\Storage\StorageException::class);
+
+// Audit 2026-11-13 M4: completing before the PUT left an ownerless, sizeless
+// record while the URL stayed good for ten minutes, so the quota and the cap
+// were given back and the PUT then filled the bucket outside both, again and
+// again. What did not arrive stays counted, owned and sized, until pruning
+// removes whatever the URL put there.
+it('keeps an intent completed before its file arrived counted against the quota and the cap until pruning', function () {
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(4000));
+    $s3->listing = false;
+    $bytes = str_repeat('x', 4000);
+    [$ticket, $intent] = begun($app, strlen($bytes));
+    $owner = $app->uploads->ownerHash('u-1');
+
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(422)
+        ->and($app->store->pendingCount($owner, $app->now))->toBe(1)
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(4000)
+        ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 1])->status)->toBe(507);
+
+    // The URL still takes the PUT; what it leaves is pruned, and only then is the room given back.
+    expect($s3->browser('PUT', $intent['url'], $bytes, $intent['headers'])->status)->toBe(200)
+        ->and(incoming($s3))->toHaveCount(1);
+    $app->now += UploadEndpoint::COMPLETE_TTL + Uploads::PRUNE_GRACE + 1;
+    $s3->now = $app->now;
+    expect($app->uploads->prune())->toBe(1)
+        ->and(incoming($s3))->toBe([])
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(0)
+        ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(201);
+});
