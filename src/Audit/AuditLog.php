@@ -614,6 +614,12 @@ final class AuditLog implements ModelChanges, ActionObserver
      */
     private function pruneBatch(Connection $connection, string $tenant, int $upto, int $batch): ?int
     {
+        // The head row's lock first, as an append takes it (advance()): a
+        // second prune of this log waits here for the first to commit, and
+        // reads the head as that one left it. Read before, the entries the
+        // first took were missing from its walk, and an intact log was
+        // refused as broken (ADR 0209).
+        $connection->execute('UPDATE ' . AuditTable::HEADS . ' SET pruned_through = pruned_through WHERE tenant = ?', [$tenant]);
         $head = $connection->select('SELECT pruned_through, anchor, anchor_mac FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
         if ($head === []) {
             throw new ChainBroken('The log has entries and no head.');
