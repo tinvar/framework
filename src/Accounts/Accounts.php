@@ -108,6 +108,16 @@ final class Accounts
 
     public const string SECOND_FACTOR_EXPIRED = 'Your sign-in waited too long for its code. Sign in again.';
 
+    /** On `code`: the wrong code that ended the sign-in waiting on it (SECOND_FACTOR_TRIES). */
+    public const string TOO_MANY_CODES = 'That code didn\'t work either, and that was too many tries. Sign in again.';
+
+    /**
+     * Wrong codes one sign-in waiting on its second factor takes before it
+     * is ended, its owner told (ADR 0203): whoever typed the password must
+     * type it again, and is counted again.
+     */
+    public const int SECOND_FACTOR_TRIES = 5;
+
     public const string ALREADY_REGISTERED = 'That address already has an account. Sign in, or reset its password.';
 
     public const string ADDRESS_TAKEN = 'That address belongs to another account now, so this one keeps its address. Ask for the change again with another.';
@@ -345,7 +355,10 @@ final class Accounts
     /**
      * The second factor of a sign-in waiting on one: a code from the
      * account's authenticator app, or a recovery code, each good once.
-     * Counted per account and per address, as passwords are.
+     * Counted per account and per address, as passwords are, and per
+     * account in a day (ADR 0203). Each wrong one is in the account's log;
+     * the SECOND_FACTOR_TRIES-th ends the sign-in, and tells the owner by
+     * email -- whoever it was holds the password.
      */
     public function completeSecondFactor(Request $http, #[\SensitiveParameter] string $code): AccountUser
     {
@@ -358,6 +371,14 @@ final class Accounts
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
         $factor = $this->twoFactor->spend($user->authIdentifier(), $code);
         if ($factor === null) {
+            $this->record(SecurityEvent::SecondFactorFailed, $user);
+            if ($this->secondFactorThrottle->strike('stage:' . $state->id, Sessions::SECOND_FACTOR_LIFETIME) >= self::SECOND_FACTOR_TRIES) {
+                $this->sessions->signOut($state);
+                $this->jobs->dispatch(new SendAccountMail(AccountMailKind::SecondFactorFailures, userId: $user->authIdentifier()));
+
+                throw new ValidationException(['code' => [self::TOO_MANY_CODES]]);
+            }
+
             throw new ValidationException(['code' => [self::CODE_REFUSED]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
@@ -620,6 +641,8 @@ final class Accounts
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
         $compact = (string) preg_replace('/\s+/', '', $code);
         if (preg_match('/^\d{' . Totp::DIGITS . '}\z/', $compact) !== 1 || !$this->twoFactor->verify($user->authIdentifier(), $compact)) {
+            $this->record(SecurityEvent::SecondFactorFailed, $user);
+
             throw new ValidationException(['code' => ["That code didn't work. Type the code your authenticator app shows now."]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
@@ -1096,6 +1119,7 @@ final class Accounts
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::PasskeyRemoved => $user === null ? null : $this->mails->passkeyRemoved($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::TwoFactorDisabled => $user === null ? null : $this->mails->twoFactorDisabled($user, $resetPage),
+            AccountMailKind::SecondFactorFailures => $user === null ? null : $this->mails->secondFactorFailures($user, $resetPage),
             AccountMailKind::ApiTokenCreated => $user === null ? null : $this->mails->apiTokenCreated($user, $job->name, $this->links->page($this->links->paths->apiTokens), $resetPage),
         };
 

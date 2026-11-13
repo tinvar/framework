@@ -16,6 +16,7 @@ enum SecurityEvent: string
     case SignedOut = 'auth.signed_out';
     case SignedOutEverywhere = 'auth.signed_out_everywhere';
     case SignInFailed = 'auth.sign_in_failed';
+    case SecondFactorFailed = 'auth.second_factor_failed';
     case PasswordChanged = 'auth.password_changed';
     case PasswordResetRequested = 'auth.password_reset_requested';
     case EmailChanged = 'auth.email_changed';

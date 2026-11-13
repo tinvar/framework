@@ -430,6 +430,104 @@ it('counts second-factor guesses per account, five to a window', function () {
     });
 });
 
+/** Turns two-factor on for $owner's account; its secret. */
+function twoFactorOn(MemberApp $app, Visitor $owner): string
+{
+    $user = $owner->state()->user() ?? throw new \LogicException('Nobody is signed in.');
+    $owner->confirm();
+    $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+    $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+    return $secret;
+}
+
+// Audit 2026-11-13 (M2, ADR 0203): someone holding the password had fifty
+// guesses at the code every fifteen minutes, spread over addresses, with
+// no end to the sign-in waiting on them, nothing in the log and nothing
+// told to the owner -- about 1.4% a day.
+it('ends a sign-in waiting on its code after five wrong ones, records each, and tells the owner', function () {
+    onDriver('sqlite', function (MemberApp $plain): void {
+        $app = new MemberApp($plain->orm->connection(), audit: true);
+        $owner = member($app);
+        $secret = twoFactorOn($app, $owner);
+        $id = (string) $owner->state()->user()?->authIdentifier();
+
+        // From a new address for every guess, past the per-address count.
+        $guesser = new Visitor($app);
+        $guesser->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        for ($i = 1; $i < Accounts::SECOND_FACTOR_TRIES; $i++) {
+            $guesser->address = "198.51.100.{$i}";
+            expect(refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, sprintf('%06d', $i)))))->toBe(['code' => [Accounts::CODE_REFUSED]])
+                ->and($guesser->state()->pending()?->accountEmail())->toBe('ada@example.com');
+        }
+        $guesser->address = '198.51.100.99';
+        expect(refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, '999999'))))->toBe(['code' => [Accounts::TOO_MANY_CODES]])
+            ->and($guesser->state()->pending())->toBeNull();
+        // The sign-in is over: even the right code now signs nobody in.
+        $app->now += Totp::PERIOD;
+        expect(refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)))))->toBe(['code' => [Accounts::SECOND_FACTOR_EXPIRED]])
+            ->and($guesser->who())->toBeNull();
+
+        // The owner hears of it, once for the sign-in ended, with where to reset from.
+        $app->work();
+        expect($app->links('second-factor-failures', 'ada@example.com'))->toHaveCount(1);
+        $failed = $app->orm->connection()->select("SELECT actor_id, subject_id FROM audit_entries WHERE event = 'auth.second_factor_failed'");
+        expect($failed)->toHaveCount(Accounts::SECOND_FACTOR_TRIES)
+            ->and(array_unique(array_map(static fn (array $row): string => (string) $row['subject_id'], $failed)))->toBe([$id])
+            ->and(array_filter(array_column($failed, 'actor_id')))->toBe([]);
+
+        // The owner's own sign-in, from their own browser, is not held up by it.
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $app->now += Totp::PERIOD;
+        $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($own->who())->toBe('ada@example.com');
+    });
+});
+
+it('caps the wrong codes an account takes in a day, from every address and sign-in together', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        // Early in a day, as the stores keep their windows: aligned to the clock.
+        $app->now = (intdiv($app->now, SignInThrottle::DAY) + 1) * SignInThrottle::DAY + 60;
+        $owner = member($app);
+        $secret = twoFactorOn($app, $owner);
+
+        $guesses = 0;
+        $refused = false;
+        for ($round = 0; $round < 10 && !$refused; $round++) {
+            // A new sign-in from a new address each round, once fifteen minutes have passed.
+            $app->now += SignInThrottle::ACCOUNT_WINDOW + 1;
+            $guesser = new Visitor($app, address: "198.51.100.{$round}");
+            $guesser->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+            for ($i = 0; $i < Accounts::SECOND_FACTOR_TRIES; $i++) {
+                $guesser->address = "198.51.{$round}.{$i}";
+                try {
+                    refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, '000000')));
+                    $guesses++;
+                } catch (HttpException $e) {
+                    expect($e->status)->toBe(429);
+                    $refused = true;
+
+                    break;
+                }
+            }
+        }
+        expect($guesses)->toBe(SignInThrottle::DAILY_CEILING);
+
+        // Still within the day, the right code from the owner is refused too: the account is paused.
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect(static fn () => $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now + Totp::PERIOD))))->toThrow(HttpException::class);
+
+        // A day on, it takes codes again.
+        $app->now += SignInThrottle::DAY;
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($own->who())->toBe('ada@example.com');
+    });
+});
+
 it('adds a passkey and signs in with it, for this host and this session alone', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $owner = member($app);

@@ -105,7 +105,8 @@ final readonly class AccountsKit
      *        authenticator app files codes under
      * @param array<string, int> $limits sign-in throttle limits by bucket over the
      *        defaults -- `sign-in`, `sign-in.address`, `sign-in.account`,
-     *        `two-factor`, `email-link`, `email-link.recipient`; 0 turns one off
+     *        `two-factor`, `two-factor.account`, `two-factor.daily` (ADR 0203),
+     *        `email-link`, `email-link.recipient`; 0 turns one off
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param Realms|null $realms the app's hosts, where it has more than one (ADR 0039): a
      *        signed-in page on another of them starts a handoff rather than asking anyone to
@@ -207,7 +208,8 @@ final readonly class AccountsKit
                 perAddress: $limits['sign-in.address'] ?? SignInThrottle::PER_ADDRESS,
                 accountCeiling: $limits['sign-in.account'] ?? SignInThrottle::ACCOUNT_CEILING,
             ),
-            // A code is six digits: a million guesses, so fewer of them.
+            // A code is six digits: a million guesses, so fewer of them, and
+            // a ceiling a day across every address (ADR 0203).
             secondFactorThrottle: new SignInThrottle(
                 $throttles,
                 $throttle,
@@ -215,6 +217,7 @@ final readonly class AccountsKit
                 perAddress: $limits['sign-in.address'] ?? SignInThrottle::PER_ADDRESS,
                 accountCeiling: $limits['two-factor.account'] ?? 50,
                 prefix: 'two-factor',
+                dailyCeiling: $limits['two-factor.daily'] ?? SignInThrottle::DAILY_CEILING,
             ),
             linkThrottle: new LinkRequestThrottle(
                 $throttles,

@@ -30,7 +30,11 @@ use Tinvar\Http\ThrottleStore;
  *   pause the account for everyone, but it takes that many addresses to
  *   reach -- the trade any limit on guessing makes;
  * - attempts from one address on any account, so one address cannot try
- *   many accounts.
+ *   many accounts;
+ * - where asked (`dailyCeiling`), failures on one account from every
+ *   address together in a day, which the second factor counts (ADR 0203):
+ *   a code is six digits, and fifty guesses every fifteen minutes from
+ *   someone holding the password came to about 1.4% a day.
  *
  * Only failures count against an account. An attempt is counted BEFORE its
  * password is checked, since concurrent attempts must not all pass a check
@@ -60,6 +64,15 @@ final class SignInThrottle
     public const int ADDRESS_WINDOW = 60;
 
     /**
+     * Failures on one account from all addresses together, per day, where a
+     * throttle counts them: the second factor's default (ADR 0203). Twenty
+     * guesses at a code a TOTP check takes three of -- the step before, now
+     * and the step after -- is about one in 17,000 a day.
+     */
+    public const int DAILY_CEILING = 20;
+    public const int DAY = 86_400;
+
+    /**
      * @param ThrottleStore $store where every sign-in count is kept: one a flood of
      *        other keys cannot clear, so never APCu
      * @param Throttle $throttle names the address a request comes from, as every
@@ -67,6 +80,8 @@ final class SignInThrottle
      * @param int $perAccount 0 turns the per-account limit off
      * @param int $perAddress 0 turns the per-address limit off
      * @param int $accountCeiling 0 turns the account's ceiling across addresses off
+     * @param int $dailyCeiling failures on one account from every address in a day;
+     *        0, the default, counts none
      * @param string $prefix what the counts are kept under: `sign-in` for passwords,
      *        another for each other kind of guess, so one never spends another's budget
      */
@@ -77,6 +92,7 @@ final class SignInThrottle
         private readonly int $perAddress = self::PER_ADDRESS,
         private readonly int $accountCeiling = self::ACCOUNT_CEILING,
         private readonly string $prefix = 'sign-in',
+        private readonly int $dailyCeiling = 0,
     ) {
         if (preg_match('/^[a-z][a-z-]{0,31}\z/', $prefix) !== 1) {
             throw new \InvalidArgumentException("'{$prefix}' is not a throttle prefix: lowercase letters and dashes, as `two-factor`.");
@@ -106,12 +122,17 @@ final class SignInThrottle
         // Each account budget only once the ones before it allowed the
         // attempt: one refused earlier is never checked, so is no failure.
         $counted = [];
-        foreach ([[$this->fromHere($request, $email), $this->perAccount], [$this->account($email), $this->accountCeiling]] as [$key, $limit]) {
+        $budgets = [
+            [$this->fromHere($request, $email), $this->perAccount, self::ACCOUNT_WINDOW],
+            [$this->account($email), $this->accountCeiling, self::ACCOUNT_WINDOW],
+            [$this->accountDaily($email), $this->dailyCeiling, self::DAY],
+        ];
+        foreach ($budgets as [$key, $limit, $window]) {
             if ($limit <= 0 || ($results !== [] && !Throttle::strictest($results)->allowed)) {
                 continue;
             }
-            $results[] = $this->count($key, $limit, self::ACCOUNT_WINDOW);
-            $counted[] = $key;
+            $results[] = $this->count($key, $limit, $window);
+            $counted[] = [$key, $window];
         }
 
         if ($results === []) {
@@ -123,8 +144,8 @@ final class SignInThrottle
             // Refused before its password was checked, so taken back: an
             // account's budgets count guesses that were tried, and nothing
             // else.
-            foreach ($counted as $key) {
-                $this->store->release($key, self::ACCOUNT_WINDOW);
+            foreach ($counted as [$key, $window]) {
+                $this->store->release($key, $window);
             }
 
             throw new HttpException(429, 'Too many sign-in attempts.', 'too_many_attempts', $verdict->headers());
@@ -144,6 +165,22 @@ final class SignInThrottle
         if ($this->accountCeiling > 0) {
             $this->store->release($this->account($email), self::ACCOUNT_WINDOW);
         }
+
+        if ($this->dailyCeiling > 0) {
+            $this->store->release($this->accountDaily($email), self::DAY);
+        }
+    }
+
+    /**
+     * Counts one failed guess against $scope -- one sign-in waiting on its
+     * second factor, named by its session (ADR 0203) -- and says how many it
+     * has had in $window: what the caller ends the scope at. Kept in the
+     * same store as every other count here, hashed, so the scope's name is
+     * not listed in it.
+     */
+    public function strike(#[\SensitiveParameter] string $scope, int $window): int
+    {
+        return $this->store->increment($this->prefix . '|scope|' . hash('sha256', $scope), $window)[0];
     }
 
     private function count(string $key, int $limit, int $window): ThrottleResult
@@ -175,6 +212,12 @@ final class SignInThrottle
     private function account(string $email): string
     {
         return $this->prefix . '|account|' . hash('sha256', self::folded($email));
+    }
+
+    /** As account(), counted over a day. */
+    private function accountDaily(string $email): string
+    {
+        return $this->prefix . '|account-day|' . hash('sha256', self::folded($email));
     }
 
     private static function folded(string $email): string

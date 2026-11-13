@@ -227,6 +227,11 @@ final readonly class MemberMails implements AccountMails, SignInLinkMails, \Tinv
         return new MemberMail($user->accountEmail(), 'two-factor-disabled', $resetUrl);
     }
 
+    public function secondFactorFailures(AccountUser $user, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'second-factor-failures', $resetUrl);
+    }
+
     public function apiTokenCreated(AccountUser $user, string $tokenName, string $tokensUrl, string $resetUrl): Mailable
     {
         return new MemberMail($user->accountEmail(), 'api-token-created', $tokensUrl);
@@ -286,6 +291,11 @@ final readonly class PlainMemberMails implements AccountMails
     public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
     {
         return $this->mails->twoFactorDisabled($user, $resetUrl);
+    }
+
+    public function secondFactorFailures(AccountUser $user, string $resetUrl): Mailable
+    {
+        return $this->mails->secondFactorFailures($user, $resetUrl);
     }
 
     public function apiTokenCreated(AccountUser $user, string $tokenName, string $tokensUrl, string $resetUrl): Mailable

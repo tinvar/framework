@@ -17,5 +17,6 @@ enum AccountMailKind: string
     case PasskeyAdded = 'passkey-added';
     case PasskeyRemoved = 'passkey-removed';
     case TwoFactorDisabled = 'two-factor-disabled';
+    case SecondFactorFailures = 'second-factor-failures';
     case ApiTokenCreated = 'api-token-created';
 }
