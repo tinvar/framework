@@ -93,6 +93,7 @@ final class Manifest
         if ($stat === false) {
             throw new DiscoveryFailed(["There is no discovery manifest at {$file}."], 'Discovery refused to boot:');
         }
+        self::assertTrusted($file);
         $stamp = "{$stat['ino']}:{$stat['mtime']}:{$stat['size']}";
         $kept = self::$read[$file] ?? null;
         if ($kept !== null && $kept[0] === $stamp) {
@@ -122,5 +123,36 @@ final class Manifest
         self::$read[$file] = [$stamp, $classes];
 
         return $classes;
+    }
+
+    /**
+     * The manifest is PHP, and included: whoever can write it, or replace
+     * it in its directory, runs code in every worker. So it is a regular
+     * file, not a link, owned by this user or root, as is its directory,
+     * and neither is writable by anyone but its owner -- or a group this
+     * process is itself in (ADR 0218). Skipped where there is no POSIX
+     * ownership to read.
+     *
+     * @throws DiscoveryFailed
+     */
+    private static function assertTrusted(string $file): void
+    {
+        if (\PHP_OS_FAMILY === 'Windows' || !\function_exists('posix_geteuid')) {
+            return;
+        }
+        if (is_link($file)) {
+            throw new DiscoveryFailed(["{$file} is a symbolic link; the discovery manifest is only read as the build wrote it."], 'Discovery refused to boot:');
+        }
+        $trusted = [posix_geteuid(), 0];
+        foreach ([$file, \dirname($file)] as $path) {
+            $stat = @stat($path);
+            if ($stat === false || !\in_array($stat['uid'], $trusted, true)) {
+                throw new DiscoveryFailed(["{$path} is owned by someone other than this user or root: the discovery manifest is PHP, and is included."], 'Discovery refused to boot:');
+            }
+            $others = ($stat['mode'] & 0o002) !== 0 || (($stat['mode'] & 0o020) !== 0 && $stat['gid'] !== posix_getegid());
+            if ($others) {
+                throw new DiscoveryFailed(["{$path} is writable by someone other than its owner: the discovery manifest is PHP, and is included."], 'Discovery refused to boot:');
+            }
+        }
     }
 }

@@ -447,6 +447,30 @@ it('refuses a manifest naming a class outside the application, or another applic
     expect(problems(fn () => $app->discovery()->classes(['TINVAR_ENV' => 'production'])))->toContain('is not a discovery manifest');
 });
 
+// The manifest is PHP, included: whoever can write it runs code in every
+// worker. So it is read only where its owner is this user or root and
+// nobody else can change it or its directory (ADR 0218).
+it('refuses to include a manifest, or one in a directory, that someone else could have written', function () {
+    $app = $this->app;
+    $file = "{$app->root}/dist/" . Manifest::FILE;
+    Manifest::write($file, $app->namespace, new DiscoveredClasses());
+    $boot = fn () => $app->discovery()->classes(['TINVAR_ENV' => 'production']);
+    $boot();
+
+    chmod($file, 0o666);
+    expect(problems($boot))->toContain('writable by someone other than its owner');
+
+    chmod($file, 0o644);
+    chmod(\dirname($file), 0o777);
+    expect(problems($boot))->toContain('writable by someone other than its owner');
+
+    chmod(\dirname($file), 0o755);
+    unlink($file);
+    symlink("{$app->root}/elsewhere.php", $file);
+    file_put_contents("{$app->root}/elsewhere.php", "<?php\nreturn [];\n");
+    expect(problems($boot))->toContain('is a symbolic link');
+})->skip(!\function_exists('posix_geteuid'), 'POSIX ownership.');
+
 it('keeps a scan while the files stay as they were, and scans again once one changes', function () {
     $app = $this->app;
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
