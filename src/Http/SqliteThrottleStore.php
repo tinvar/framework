@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Support\Posix;
+
 /**
  * Throttle counters in a SQLite file, shared by every process that opens it.
  *
@@ -180,7 +182,7 @@ final class SqliteThrottleStore implements ThrottleStore
             }
         }
 
-        $owner = \function_exists('posix_geteuid') ? posix_geteuid() : null;
+        $owner = Posix::effectiveUser("the throttle file {$this->path}");
         foreach (['', '-wal', '-shm', '-journal'] as $suffix) {
             $file = $this->path . $suffix;
             clearstatcache(true, $file);
@@ -197,7 +199,7 @@ final class SqliteThrottleStore implements ThrottleStore
             if ($named['nlink'] !== 1) {
                 throw new \RuntimeException("The throttle file {$file} has another name, a hard link; it must be a file of its own.");
             }
-            if ($owner !== null && $named['uid'] !== $owner) {
+            if ($named['uid'] !== $owner) {
                 throw new \RuntimeException("The throttle file {$file} belongs to another user; it must be this one's.");
             }
             if (($named['mode'] & 0o077) !== 0 && !@chmod($file, 0o600)) {

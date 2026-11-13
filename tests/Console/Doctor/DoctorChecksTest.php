@@ -379,6 +379,12 @@ describe('the build, the renderers and production', function () {
         $root = app();
         $socket = "{$root}/pool";
 
+        // Unset, the pool is looked for in this user's state directory,
+        // never in /tmp (ADR 0212).
+        $state = app();
+        expect(new RendererCheck()->run(context($root, ['XDG_STATE_HOME' => $state]))[0]->message)
+            ->toContain("{$state}/tinvar/")
+            ->not->toContain('/tmp/tinvar.sock');
         expect(severities(new RendererCheck()->run(context($root, ['TINVAR_SOCKET' => $socket]))))->toBe(['ok'])
             ->and(severities(new RendererCheck()->run(context($root, ['TINVAR_SOCKET' => $socket, 'TINVAR_ENV' => 'production']))))->toBe(['problem']);
         mkdir($socket);

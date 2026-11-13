@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Observability;
 
+use Tinvar\Support\Posix;
+
 /**
  * Counts in a SQLite file, shared by every process and thread that opens
  * it: the fallback where APCu is missing, as SqliteThrottleStore is the
@@ -87,7 +89,7 @@ final class SqliteMetricsStore implements MetricsStore
             throw new \RuntimeException("The metrics file's directory {$directory} is writable by anyone, and not sticky; it must not be.");
         }
 
-        $owner = \function_exists('posix_geteuid') ? posix_geteuid() : null;
+        $owner = Posix::effectiveUser("the metrics file {$this->path}");
         foreach (['', '-wal', '-shm', '-journal'] as $suffix) {
             $file = $this->path . $suffix;
             $mode = file_exists($file) ? fileperms($file) : false;
@@ -97,7 +99,7 @@ final class SqliteMetricsStore implements MetricsStore
             if (($mode & 0o022) !== 0) {
                 throw new \RuntimeException("The metrics file {$file} is writable by its group or by anyone; it must be its owner's alone.");
             }
-            if ($owner !== null && fileowner($file) !== $owner) {
+            if (fileowner($file) !== $owner) {
                 throw new \RuntimeException("The metrics file {$file} belongs to another user; it must be this one's.");
             }
         }

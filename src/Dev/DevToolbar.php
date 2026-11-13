@@ -21,6 +21,7 @@ use Tinvar\Render\TokenError;
 use Tinvar\Routing\CompiledRoute;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Support\DevMode;
+use Tinvar\Support\Posix;
 use Tinvar\Support\Signer;
 
 /**
@@ -527,7 +528,7 @@ final class DevToolbar implements FrameTap
 
         $stat = @stat($path);
         if ($stat === false
-            || (\function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid())
+            || $stat['uid'] !== Posix::effectiveUser("the dev toolbar's {$kind} {$path}")
             || ($stat['mode'] & 0077) !== 0) {
             throw new \RuntimeException("The dev toolbar's {$kind} {$path} is not private to this user; refusing it.");
         }

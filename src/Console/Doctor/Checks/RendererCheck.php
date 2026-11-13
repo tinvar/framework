@@ -8,6 +8,7 @@ use Tinvar\Console\Doctor\DoctorCheck;
 use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Console\Doctor\Finding;
 use Tinvar\Observability\RendererCheck as RendererHealthCheck;
+use Tinvar\Support\StateFile;
 
 /**
  * The renderer pool: asked as `/_ready` and `renderer:check` ask it
@@ -18,8 +19,8 @@ use Tinvar\Observability\RendererCheck as RendererHealthCheck;
  */
 final readonly class RendererCheck implements DoctorCheck
 {
-    /** Where the pool is when TINVAR_SOCKET names none, as the skeleton's config has it. */
-    public const string DEFAULT_SOCKET = '/tmp/tinvar.sock';
+    /** The state file a renderer's socket is when TINVAR_SOCKET names none, as the skeleton's Kernel has it. */
+    public const string DEFAULT_SOCKET = 'renderer.sock';
 
     public function title(): string
     {
@@ -28,7 +29,11 @@ final readonly class RendererCheck implements DoctorCheck
 
     public function run(DoctorContext $context): array
     {
-        $socket = $context->variable('TINVAR_SOCKET') ?? self::DEFAULT_SOCKET;
+        // Never /tmp, where any local user could put one (ADR 0212): this
+        // user's state directory, as the skeleton's Kernel looks.
+        $socket = $context->variable('TINVAR_SOCKET')
+            ?? StateFile::of($context->root, self::DEFAULT_SOCKET, $context->env)
+            ?? 'TINVAR_SOCKET (unset, and no state directory)';
         if (!file_exists($socket)) {
             return $context->production() === null
                 ? [Finding::passed("No pool at {$socket}: `php tinvar serve --dev` and `php tinvar serve` start one, `{$context->console} renderer:start` by hand.")]

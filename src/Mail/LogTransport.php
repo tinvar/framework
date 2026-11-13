@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Mail;
 
+use Tinvar\Support\Posix;
+
 /**
  * Appends every message to a file, one JSON object a line, instead of
  * sending it: for development, where nothing should leave the machine, and
@@ -138,7 +140,7 @@ final readonly class LogTransport implements Transport
         if ($stat === false) {
             throw new \RuntimeException("Cannot read the mail log's directory, {$directory}.");
         }
-        if (\function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid()) {
+        if ($stat['uid'] !== Posix::effectiveUser("the mail log's directory, {$directory}")) {
             throw new \RuntimeException(
                 "The mail log's directory, {$directory}, is not this user's, so its owner could put a file or a link "
                 . "at its name: keep the log in a directory of this user's alone.",
@@ -159,7 +161,7 @@ final readonly class LogTransport implements Transport
     {
         return ($stat['mode'] & 0o170000) === 0o100000
             && $stat['nlink'] === 1
-            && (!\function_exists('posix_geteuid') || $stat['uid'] === posix_geteuid());
+            && $stat['uid'] === Posix::effectiveUser('the mail log');
     }
 
     private static function refused(string $path): \RuntimeException

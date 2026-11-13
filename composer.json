@@ -7,6 +7,7 @@
     "php": ">=8.5",
     "ext-dom": "*",
     "ext-json": "*",
+    "ext-posix": "*",
     "ext-sockets": "*",
     "tinvar/database": "0.4.*",
     "tinvar/support": "0.4.*"

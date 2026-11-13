@@ -6,6 +6,7 @@ namespace Tinvar\Render;
 
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\FrameworkConfig;
+use Tinvar\Support\Posix;
 
 /**
  * The OS user the renderers run as, where that is not PHP's own: the
@@ -87,7 +88,7 @@ final readonly class RendererUser
      */
     public function assertNotThisProcess(): void
     {
-        if (\function_exists('posix_geteuid') && posix_geteuid() === $this->uid) {
+        if (Posix::effectiveUser('the renderers\' own user') === $this->uid) {
             throw new \InvalidArgumentException(
                 self::ENV . " names {$this->name}, the user this process runs as. It names the renderers' own user, "
                 . 'which PHP must not be.',

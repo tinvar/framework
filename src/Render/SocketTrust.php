@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Render;
 
 use Tinvar\Codec\FrameCodec;
+use Tinvar\Support\Posix;
 
 /**
  * Whether a renderer socket, or a pool's directory of them, is one this
@@ -61,13 +62,9 @@ final class SocketTrust
      */
     public function assertSocket(string $socketPath): bool
     {
-        if (!\function_exists('posix_geteuid')) {
-            if ($this->separateUser()) {
-                throw RendererException::untrusted($socketPath, 'the renderer is to run as a user of its own, and without POSIX functions PHP cannot check who owns what');
-            }
-
-            return file_exists($socketPath);
-        }
+        // Never skipped: without ext-posix nothing here can be checked, and
+        // a socket nobody checked is refused (ADR 0212).
+        $self = $this->self($socketPath);
 
         clearstatcache(true, $socketPath);
         // A path that is not there is an answer, so the warning lstat()
@@ -87,7 +84,7 @@ final class SocketTrust
             throw RendererException::cannotConnect($socketPath, 'cannot inspect the socket or its directory');
         }
 
-        $trusted = $this->trusted();
+        $trusted = $this->trusted($self);
         if (!\in_array($directory['uid'], $trusted, true)) {
             throw RendererException::untrusted($socketPath, 'its directory belongs to another user');
         }
@@ -100,7 +97,7 @@ final class SocketTrust
                 'its directory is writable by other users, who could replace the socket',
             );
         }
-        if (($shared || $directory['uid'] !== posix_geteuid()) && !\in_array($socket['uid'], $trusted, true)) {
+        if (($shared || $directory['uid'] !== $self) && !\in_array($socket['uid'], $trusted, true)) {
             throw RendererException::untrusted(
                 $socketPath,
                 'it belongs to another user, in a directory any user can write to',
@@ -174,13 +171,7 @@ final class SocketTrust
      */
     public function assertPool(string $directory): void
     {
-        if (!\function_exists('posix_geteuid')) {
-            if ($this->separateUser()) {
-                throw RendererException::untrusted($directory, 'the renderer is to run as a user of its own, and without POSIX functions PHP cannot check who owns what');
-            }
-
-            return;
-        }
+        $self = $this->self($directory);
 
         // Without a trailing slash, which would have lstat() follow a link
         // at the last step after all.
@@ -196,7 +187,7 @@ final class SocketTrust
         if ($stat === false || ($stat['mode'] & 0170000) !== 0040000) {
             throw RendererException::cannotConnect($directory, 'cannot inspect the pool directory, or it is not a directory');
         }
-        if (!\in_array($stat['uid'], $this->trusted(), true)) {
+        if (!\in_array($stat['uid'], $this->trusted($self), true)) {
             throw RendererException::untrusted($directory, 'the pool directory belongs to another user');
         }
         if (($stat['mode'] & 0022) !== 0) {
@@ -208,8 +199,21 @@ final class SocketTrust
     }
 
     /** @return list<int> */
-    private function trusted(): array
+    private function trusted(int $self): array
     {
-        return [posix_geteuid(), 0, ...$this->trustedOwners];
+        return [$self, 0, ...$this->trustedOwners];
+    }
+
+    /**
+     * This process's user, or $path refused: without ext-posix PHP cannot
+     * say who owns what, and an unchecked socket or pool is never trusted.
+     */
+    private function self(string $path): int
+    {
+        try {
+            return Posix::effectiveUser("the renderer at {$path}");
+        } catch (\RuntimeException) {
+            throw RendererException::untrusted($path, 'ext-posix is not loaded, so PHP cannot check who owns the socket or its directory');
+        }
     }
 }
