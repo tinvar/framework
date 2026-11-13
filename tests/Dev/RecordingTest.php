@@ -146,6 +146,39 @@ it('takes out a secret-named value given as a list', function () {
     expect((string) json_encode($detail))->not->toContain('reset-secret-0123456789');
 });
 
+// The audit of 2026-11-13 (ADR 0218): a secret-named value given as a map,
+// or a list of lists, was walked into by keys that name nothing; and the
+// URL's query took fewer names than a frame did.
+it('takes out a secret-named value however it nests', function () {
+    expect(Recording::redact([
+        'password' => ['new' => 'hunter2-new', 'old' => ['hunter2-old']],
+        'token' => [['a' => 'tok-inner']],
+        'tokens' => ['a' => 'tok-map'],
+        'secret' => null,
+        'session' => ['theme' => 'dark'],
+    ]))->toBe([
+        'password' => Recording::REDACTED,
+        'token' => Recording::REDACTED,
+        'tokens' => Recording::REDACTED,
+        'secret' => null,
+        'session' => ['theme' => 'dark'],
+    ]);
+
+    $recording = recording(new Request('GET', '/reset', ['accept' => 'text/html'], ['token' => ['a' => 'reset-secret-0123456789']]));
+    $recording->frame(FrameTap::TO_RENDERER, ['t' => 'render', 'page' => ['url' => '/reset?token[a]=reset-secret-0123456789']]);
+    expect((string) json_encode(detail($recording)))->not->toContain('reset-secret-0123456789');
+});
+
+it('takes every name out of the URL\'s query that it takes out of a frame', function () {
+    $query = ['jwt' => 'eyJ-query-secret-1', 'passphrase' => 'query-secret-2', 'pwd' => 'query-secret-3', 'dsn' => 'query-secret-4', 'bearer' => 'query-secret-5', 'page' => '2'];
+    $detail = detail(recording(new Request('GET', '/x', ['accept' => 'text/html'], $query)));
+
+    expect($detail['query'])->toBe([
+        'jwt' => Recording::REDACTED, 'passphrase' => Recording::REDACTED, 'pwd' => Recording::REDACTED,
+        'dsn' => Recording::REDACTED, 'bearer' => Recording::REDACTED, 'page' => '2',
+    ]);
+});
+
 // A fragment's and a file's token are in the path, not the query.
 it('keeps no signed token a path carries', function () {
     $token = 'v1.eyJwYXlsb2FkIjoiZnJhZ21lbnQifQ.c2lnbmF0dXJlLW9mLXRoZS10b2tlbg';

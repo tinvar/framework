@@ -68,8 +68,10 @@ final class Recording
      * API token just issued (ADR 0193) -- since a browser
      * extension reads what the toolbar does (docs/devtools-protocol.md).
      */
-    private const string SECRET_KEYS = '/token|nonce|csrf|xsrf|password|passwd|passphrase|plaintext|secret|historykey|signature|cookie|authorization|bearer'
-        . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z|jwt|pwd|^pass\z|^auth\z/i';
+    private const string SECRET_KEYS = '/' . self::SECRET_NAMES . '/i';
+
+    private const string SECRET_NAMES = 'token|nonce|csrf|xsrf|password|passwd|passphrase|plaintext|secret|historykey|signature|cookie|authorization|bearer'
+        . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z|jwt|pwd|^pass\z|^auth\z';
 
     /**
      * Shapes cut out of every string kept, whatever its key: a renderer's
@@ -88,11 +90,14 @@ final class Recording
     private const array SECRET_VALUES = Redactor::SECRETS;
 
     /**
-     * And in the URL's query, the names the Redactor takes out of a query
-     * too: a handoff's one-time `code`, a `session`, a `sig`. Not in frames,
-     * where `code` is an error's and `key` a list item's.
+     * And in the URL's query, every name a frame's are taken out by, and
+     * the names the Redactor takes out of a query too: a handoff's one-time
+     * `code`, a `session`, a `sig`, any `auth` or `passw`. Not in frames,
+     * where `code` is an error's and `key` a list item's. Built on the
+     * frames' list, not beside it: a list of its own lacked `jwt`, `dsn`
+     * and `passphrase` (ADR 0218).
      */
-    private const string QUERY_SECRET_KEYS = '/token|nonce|csrf|xsrf|passw|secret|historykey|signature|sig|cookie|auth|credential|(?:api|app|private|access)[_-]?key|code|session|^otp|otp\z/i';
+    private const string QUERY_SECRET_KEYS = '/' . self::SECRET_NAMES . '|passw|sig|auth|code|session/i';
 
     /** A signed token (Render\SignedToken) -- a fragment's or a file's, in a path. */
     private const string SIGNED_TOKEN = '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/';
@@ -579,19 +584,27 @@ final class Recording
      */
     private static function walk(mixed $value, ?string $key, int $depth, array &$found, string $secretKeys = self::SECRET_KEYS): mixed
     {
-        if ($key !== null && preg_match($secretKeys, $key) === 1) {
-            if (\is_string($value) || \is_int($value)) {
+        // Whatever a secret's name holds, however it nests -- `?token[]=`,
+        // `?token[a]=`, a map of passwords -- is taken out whole, and every
+        // string in it remembered (ADR 0218): walked into, its keys name
+        // nothing, and it was kept.
+        // A float is a count (`tokenCount`), and a fragment frame's `tokens`
+        // -- a list of maps, each a component and its props -- what the
+        // tokens verified to, not a credential: both walked as before.
+        $frame = $key === 'tokens' && \is_array($value) && array_is_list($value)
+            && array_filter($value, static fn (mixed $item): bool => \is_array($item) && !array_is_list($item)) === $value;
+        if ($key !== null && !$frame && preg_match($secretKeys, $key) === 1 && $value !== null && !\is_bool($value) && !\is_float($value) && $value !== []) {
+            if (\is_array($value)) {
+                array_walk_recursive($value, static function (mixed $item) use (&$found): void {
+                    if (\is_string($item) || \is_int($item)) {
+                        $found[] = (string) $item;
+                    }
+                });
+            } elseif (\is_string($value) || \is_int($value)) {
                 $found[] = (string) $value;
-
-                return self::REDACTED;
             }
-            // `?token[]=...` is a secret too, given as a list.
-            if (\is_array($value) && $value !== [] && array_is_list($value)
-                && array_filter($value, static fn (mixed $item): bool => \is_string($item) || \is_int($item)) === $value) {
-                array_push($found, ...array_map(strval(...), $value));
 
-                return self::REDACTED;
-            }
+            return self::REDACTED;
         }
 
         if (\is_array($value)) {
