@@ -183,7 +183,8 @@ final readonly class CompiledEndpoint
                 $parameters[trim($segment, '{}')] = rawurldecode($part);
                 continue;
             }
-            if ($segment !== $part) {
+            // Decoded, as a parameter's value is (CompiledRoute::matchParts()).
+            if ($segment !== rawurldecode($part)) {
                 return null;
             }
         }

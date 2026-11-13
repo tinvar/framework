@@ -653,7 +653,8 @@ final class EndpointRegistry
      */
     public function matchMethod(string $path, string $method, ?HostMatch $host = null): ?array
     {
-        $first = CompiledRoute::split($path)[0] ?? '';
+        // Decoded: `%5F` is an underscore too.
+        $first = rawurldecode(CompiledRoute::split($path)[0] ?? '');
         if (str_starts_with($first, '_')) {
             return null;
         }

@@ -205,6 +205,18 @@ function phpHandler(string $file): string
     return implode("\n", $lines);
 }
 
+// Audit 2026-11-13 (low): the skeleton sent no nosniff, Referrer-Policy or
+// HSTS. Its Caddyfile now names each for every response that does not set
+// its own -- one header directive each, since `?` in a block of several
+// skips them all once any one is set (ADR 0217).
+it('sends nosniff, a Referrer-Policy and HSTS on every response that sets none of its own', function () {
+    $caddyfile = read('packages/skeleton/Caddyfile');
+
+    expect($caddyfile)->toContain("\n\theader ?X-Content-Type-Options nosniff\n")
+        ->and($caddyfile)->toContain("\n\theader ?Referrer-Policy strict-origin-when-cross-origin\n")
+        ->and($caddyfile)->toContain("\n\theader ?Strict-Transport-Security \"max-age=31536000\"\n");
+});
+
 // ADR 0081: no worker writes to a client. The skeleton's Caddyfile holds
 // every response whole and hands stored files over exactly as the shop's
 // does, from a storage directory of its own, and its check says so.

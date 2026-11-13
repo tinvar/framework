@@ -83,3 +83,36 @@ it('reports one to tinvar check, and registers the rest', function () {
         ->and($violations[0]->where)->toBe(UnderscorePage::class)
         ->and($routes->match('/a/b')?->page->class)->toBe(CatchAll::class);
 });
+
+#[Page('/users/new', view: 'users/new')]
+final class NewUserPage {}
+
+#[Page('/users/{user}', view: 'users/show')]
+final class UserPage {}
+
+final class UserEndpoints
+{
+    #[\Tinvar\Attributes\Get('/api/users/new'), \Tinvar\Attributes\NoAuthorization(reason: 'test')]
+    public function fresh(): void {}
+
+    #[\Tinvar\Attributes\Get('/api/users/{user}'), \Tinvar\Attributes\NoAuthorization(reason: 'test')]
+    public function show(string $user): void {}
+}
+
+// Audit 2026-11-13 (low): a literal segment sent percent-encoded -- `n` as
+// `%6E` -- matched no literal and fell through to the parameter beside it,
+// which took `new` as its value; and `/%5Fexport` was not under /_. A
+// segment is compared decoded, as a parameter's value always was.
+it('reads a literal segment sent percent-encoded as the literal, and /%5F as under /_', function () {
+    $routes = new RouteRegistry();
+    $routes->registerAll([NewUserPage::class, UserPage::class, CatchAll::class]);
+    $endpoints = new \Tinvar\Endpoints\EndpointRegistry();
+    $endpoints->register(UserEndpoints::class);
+
+    expect($routes->match('/users/%6Eew')?->page->class)->toBe(NewUserPage::class)
+        ->and($routes->match('/users/n%65w')?->page->class)->toBe(NewUserPage::class)
+        ->and($routes->match('/users/u-1')?->parameters)->toBe(['user' => 'u-1'])
+        ->and($routes->match('/%5Fexport/orders'))->toBeNull()
+        ->and($endpoints->matchMethod('/api/users/%6Eew', 'GET')['endpoint']->method ?? null)->toBe('fresh')
+        ->and($endpoints->matchMethod('/%5Fapi/users/x', 'GET'))->toBeNull();
+});

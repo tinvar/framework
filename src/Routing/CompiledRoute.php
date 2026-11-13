@@ -129,7 +129,9 @@ final readonly class CompiledRoute
                 continue;
             }
 
-            if ($segment !== $part) {
+            // Decoded, as a parameter's value is: `%6Eew` is `new`, and
+            // never falls through to the parameter beside the literal.
+            if ($segment !== rawurldecode($part)) {
                 return null;
             }
         }

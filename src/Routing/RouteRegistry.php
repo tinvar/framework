@@ -1051,7 +1051,8 @@ final class RouteRegistry
             // A doubled slash splits into an empty segment; the first that
             // is not empty is the one a request is routed by.
             if ($segment !== '') {
-                return str_starts_with($segment, '_');
+                // `%5F` is an underscore too.
+                return str_starts_with(rawurldecode($segment), '_');
             }
         }
 
