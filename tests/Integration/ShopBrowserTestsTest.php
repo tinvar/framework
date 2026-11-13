@@ -68,7 +68,7 @@ beforeEach(function () {
         mailRenderer: $mail,
     );
     environment(['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => Served::$run]);
-    Served::$tests = BrowserTests::around(Served::$kernel);
+    Served::$tests = BrowserTests::around(Served::$kernel, build('test'));
 });
 
 afterEach(function () {
