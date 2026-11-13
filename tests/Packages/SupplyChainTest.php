@@ -423,6 +423,44 @@ describe('install scripts and plugins', function () {
         ]);
     });
 
+    // The review of the audit's fixes: --ignore-scripts turned off by its
+    // value or passed after `--`, where npm reads it as no option; and an
+    // option whose value is a command's name, read as that command (ADR
+    // 0218).
+    it('finds an npm install whose --ignore-scripts is off, or whose option takes a command\'s name', function () {
+        $this->workspace->workflows['ci.yml'] = <<<'YAML'
+        on: [push]
+        jobs:
+          test:
+            steps:
+              - run: npm ci --ignore-scripts false
+              - run: npm ci -- --ignore-scripts
+              - run: npm --prefix run ci
+              - run: npm -C exec install
+              - run: npm --userconfig test ci
+              - run: npm --cache view ci && npm -w run ci && npm --workspace test i
+              - run: npm ci --no-ignore-scripts && npm ci --ignore-scripts --ignore-scripts=false
+              - run: npm --some-new-option run ci
+              - run: npm ci --ignore-scripts true && npm ci --ignore-scripts=true && npm --prefix web run ci && npm --silent run ci && npm -s run ci
+        YAML;
+
+        $because = 'which runs every package\'s install scripts before tinvar check holds them to PackagePolicy::$installScripts: add --ignore-scripts.';
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/ci.yml jobs.test.steps[0] runs `npm ci --ignore-scripts false`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[1] runs `npm ci -- --ignore-scripts`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[2] runs `npm --prefix run ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[3] runs `npm -C exec install`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[4] runs `npm --userconfig test ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[5] runs `npm --cache view ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[5] runs `npm -w run ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[5] runs `npm --workspace test i`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[6] runs `npm ci --no-ignore-scripts`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[6] runs `npm ci --ignore-scripts --ignore-scripts=false`, {$because}",
+            // An option the check does not know may take a value: held.
+            ".github/workflows/ci.yml jobs.test.steps[7] runs `npm --some-new-option run ci`, {$because}",
+        ]);
+    });
+
     it('asks why an install script is allowed', function () {
         new PackagePolicy(installScripts: ['native' => ' ']);
     })->throws(\InvalidArgumentException::class, 'Say why native may run an install script');
@@ -853,6 +891,20 @@ describe('workflows', function () {
 
         expect(violations($this->workspace))->toBe([
             ".github/workflows/a.yml triggers on issue_comment, which runs on a fork's behalf with the repository's secrets.",
+        ]);
+    });
+
+    // An issue or a discussion, and a comment on one, is anyone's to open,
+    // and the workflow it triggers runs with the repository's secrets, its
+    // title and body the opener's text (review of ADR 0218).
+    it('refuses a workflow an issue or a discussion triggers', function () {
+        $this->workspace->workflows['a.yml'] = "on:\n  issues:\n    types: [opened]\n";
+        $this->workspace->workflows['b.yml'] = "on: [discussion, discussion_comment]\n";
+
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/a.yml triggers on issues, which anyone may start, and which runs with the repository's secrets.",
+            ".github/workflows/b.yml triggers on discussion, which anyone may start, and which runs with the repository's secrets.",
+            ".github/workflows/b.yml triggers on discussion_comment, which anyone may start, and which runs with the repository's secrets.",
         ]);
     });
 

@@ -483,6 +483,12 @@ final class SupplyChain
                     if (\in_array(strtolower($event), ['pull_request_target', 'workflow_run', 'issue_comment'], true)) {
                         $violations[] = "{$name} triggers on {$event}, which runs on a fork's behalf with the repository's secrets.";
                     }
+                    // And an issue or a discussion, or a comment on one:
+                    // anyone's to open, its text the opener's, and its run
+                    // has the secrets (review of ADR 0218).
+                    if (\in_array(strtolower($event), ['issues', 'discussion', 'discussion_comment'], true)) {
+                        $violations[] = "{$name} triggers on {$event}, which anyone may start, and which runs with the repository's secrets.";
+                    }
                 }
             }
 
@@ -762,6 +768,7 @@ final class SupplyChain
      * one of those is quoted -- with a line continued read as one, and each
      * word with its quotes and escapes gone, so neither `"npm" ci`, nor
      * `npm --prefix web ci`, nor `/usr/bin/npm ci` passes (ADR 0218).
+     * npm's own arguments are read as npm reads them (npmInstalls()).
      *
      * @return list<string>
      */
@@ -775,34 +782,98 @@ final class SupplyChain
             // Each word as the shell hands it on, its quotes and escapes
             // gone: `"npm"`, `n'p'm` and `\npm` are all npm.
             $words = array_map(static fn (string $word): string => str_replace(['"', "'", '\\'], '', $word), self::shellWords($command));
-            if (array_intersect($words, ['--ignore-scripts', '--ignore-scripts=true']) !== []) {
-                continue;
-            }
             foreach ($words as $i => $word) {
-                if (basename($word) !== 'npm') {
-                    continue;
-                }
-                // npm's command is its first word that is no option; a word
-                // that is neither an option nor a command npm has is read
-                // as an option's value (`--prefix web`), and passed over.
-                foreach (\array_slice($words, $i + 1) as $next) {
-                    if (str_starts_with($next, '-')) {
-                        continue;
-                    }
-                    if (\in_array($next, self::NPM_INSTALLS, true)) {
-                        $violations[] = "{$at} runs `{$command}`, which runs every package's install scripts before tinvar check holds them to PackagePolicy::\$installScripts: add --ignore-scripts.";
+                if (basename($word) === 'npm' && self::npmInstalls(\array_slice($words, $i + 1))) {
+                    $violations[] = "{$at} runs `{$command}`, which runs every package's install scripts before tinvar check holds them to PackagePolicy::\$installScripts: add --ignore-scripts.";
 
-                        break 2;
-                    }
-                    if (\in_array($next, self::NPM_COMMANDS, true)) {
-                        break;
-                    }
+                    break;
                 }
             }
         }
 
         return $violations;
     }
+
+    /**
+     * Whether npm, given $args, installs with its packages' scripts run.
+     *
+     * Its command is its first word that is no option and no option's
+     * value. An option npm knows to take a value takes the next word,
+     * whatever it is (`--prefix run ci` is `ci` in a directory named
+     * run); one it knows to take none takes none; one the check does not
+     * know may take one, so a command after it may be its value, and the
+     * words after are read too -- held where any could be an install.
+     * `--ignore-scripts` holds it off only where it is on as npm reads it:
+     * not `--ignore-scripts false` (nopt takes a boolean's `true` or
+     * `false` after it), `=false`, `--no-ignore-scripts` after it, nor
+     * after `--`, past which npm reads no option (review of ADR 0218).
+     *
+     * @param list<string> $args
+     */
+    private static function npmInstalls(array $args): bool
+    {
+        $install = false;
+        $ignored = false;
+        $unknown = false;
+        $count = \count($args);
+        for ($j = 0; $j < $count; $j++) {
+            $arg = $args[$j];
+            if ($arg === '--') {
+                break;
+            }
+            if (str_starts_with($arg, '-') && $arg !== '-') {
+                $pair = explode('=', $arg, 2);
+                $flag = $pair[0];
+                $value = $pair[1] ?? null;
+                $unknown = false;
+                if ($flag === '--ignore-scripts') {
+                    if ($value === null && \in_array($args[$j + 1] ?? null, ['true', 'false'], true)) {
+                        $value = $args[++$j];
+                    }
+                    $ignored = $value === null || $value === 'true';
+                } elseif ($flag === '--no-ignore-scripts') {
+                    $ignored = false;
+                } elseif ($value === null && \in_array($flag, self::NPM_VALUE_OPTIONS, true)) {
+                    if (($args[$j + 1] ?? '--') !== '--') {
+                        $j++;
+                    }
+                } elseif ($value === null && !\in_array($flag, self::NPM_FLAGS, true)) {
+                    $unknown = true;
+                }
+
+                continue;
+            }
+
+            $after = $unknown;
+            $unknown = false;
+            if ($install) {
+                continue;
+            }
+            if (\in_array($arg, self::NPM_INSTALLS, true)) {
+                $install = true;
+            } elseif (\in_array($arg, self::NPM_COMMANDS, true) && !$after) {
+                return false;
+            }
+            // Else neither a command npm has nor one that is surely npm's:
+            // an option's value, passed over.
+        }
+
+        return $install && !$ignored;
+    }
+
+    /** npm's options that take a value as the next word, and their short aliases. */
+    private const array NPM_VALUE_OPTIONS = ['--prefix', '-C', '--userconfig', '--globalconfig', '--cache', '--workspace', '-w', '--registry',
+        '--loglevel', '--tag', '--otp', '--script-shell', '--include', '--omit', '--before', '--access', '--scope', '--location', '-L',
+        '--install-strategy', '--node-options', '--shell', '--editor', '--auth-type', '--cafile', '--ca', '--cert', '--key', '--proxy',
+        '--https-proxy', '--noproxy', '--fetch-retries', '--fetch-timeout', '--maxsockets', '--depth', '--os', '--cpu', '--libc', '--call', '-c',
+        '--package', '--save-prefix', '--logs-dir', '--logs-max', '--umask', '--user-agent', '--replace-registry-host', '--init-module'];
+
+    /** npm's options that take no value: a word after one is npm's command or another argument. */
+    private const array NPM_FLAGS = ['--silent', '-s', '--quiet', '-q', '--verbose', '-d', '-dd', '-ddd', '--global', '-g', '--json', '--yes', '-y',
+        '--force', '-f', '--offline', '--prefer-offline', '--prefer-online', '--dry-run', '--if-present', '--workspaces', '-ws',
+        '--include-workspace-root', '--legacy-peer-deps', '--strict-peer-deps', '--foreground-scripts', '--audit', '--no-audit', '--fund', '--no-fund',
+        '--save', '--no-save', '-S', '--save-dev', '-D', '--save-exact', '-E', '--save-optional', '-O', '--save-peer', '--save-prod', '-P',
+        '--production', '--progress', '--no-progress', '--package-lock', '--no-package-lock'];
 
     /** npm's commands that install, with their aliases and the misspellings npm takes for them. */
     private const array NPM_INSTALLS = ['ci', 'clean-install', 'install', 'i', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal', 'isntall',
