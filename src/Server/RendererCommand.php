@@ -10,6 +10,7 @@ use Tinvar\Render\RendererUser;
 use Tinvar\Render\SocketTrust;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\ChildDescriptors;
+use Tinvar\Support\Posix;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -151,10 +152,17 @@ final class RendererCommand
 
         // Started as the user PHP holds every socket to, or not at all: a
         // pool of PHP's own user would be refused by every render.
+        // Never skipped: where PHP cannot say who this is, nothing starts
+        // (ADR 0212).
         $user = self::rendererUser();
-        if ($user !== null && \function_exists('posix_geteuid') && posix_geteuid() !== $user->uid) {
+        try {
+            $self = $user === null ? null : Posix::effectiveUser("to start the renderers as {$user->name}");
+        } catch (\RuntimeException $e) {
+            throw new ServeException($e->getMessage());
+        }
+        if ($user !== null && $self !== $user->uid) {
             throw new ServeException(
-                RendererUser::ENV . " says the renderers run as {$user->name}, and this is uid " . posix_geteuid()
+                RendererUser::ENV . " says the renderers run as {$user->name}, and this is uid {$self}"
                 . ". Start the pool as {$user->name} -- its service manager's User= -- with --socket-group naming the group it shares with PHP's user.",
             );
         }

@@ -227,6 +227,27 @@ describe('renderer:start', function () use ($root) {
             ->and($shared)->toBe(0)
             ->and($execs)->toHaveCount(1);
     })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || posix_geteuid() === 0, 'the shop is not built');
+
+    // Review S8/C5: the check that it runs as the renderers' named user was
+    // skipped where ext-posix was not loaded, starting a pool of whatever
+    // user ran it. ADR 0212: never skipped.
+    it('refuses to start where it cannot say who it runs as, a renderers\' user named', function () use ($root) {
+        $autoload = realpath(\Composer\InstalledVersions::getRootPackage()['install_path']) . '/vendor/autoload.php';
+        $arguments = ["--app={$root}/examples/shop", '--socket=' . poolPath(), '--processes=1', '--socket-group=' . posix_getegid()];
+        $code = 'require ' . var_export($autoload, true) . '; putenv("TINVAR_RENDERER_USER=' . posix_geteuid() . '"); $err = [];'
+            . ' $command = new Tinvar\Server\RendererCommand(' . var_export($root, true) . ', static function (string $l): void {},'
+            . ' static function (string $l) use (&$err): void { $err[] = $l; }, null, static function (): int { echo "STARTED\n"; return 0; });'
+            . ' $status = $command->run("renderer:start", ' . var_export($arguments, true) . ');'
+            . ' echo "status ", $status, "\n", implode("\n", $err);';
+        $process = proc_open([PHP_BINARY, '-d', 'disable_functions=posix_geteuid', '-r', $code], [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+        $output = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        proc_close($process);
+
+        expect($output)->not->toContain('STARTED')
+            ->and($output)->toContain('status ' . RendererCommand::USAGE)
+            ->and($output)->toContain('ext-posix is not loaded');
+    })->skip(fn () => posix_geteuid() === 0, 'root is never the renderers\' user');
 });
 
 // For real: renderer:start becomes the pool, the shop renders through it,

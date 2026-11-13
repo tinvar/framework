@@ -429,6 +429,26 @@ describe('the build, the renderers and production', function () {
         expect(fileperms("{$root}/database/app.sqlite") & 0o777)->toBe(0o600)
             ->and(severities(new PermissionsCheck()->run(context($root, ['TINVAR_ENV' => 'production'], ['keyFile' => "{$root}/state/app.key"]))))->toBe(['problem', 'problem']);
     });
+    // Review S8/C5: without ext-posix the owner of the secrets' files went
+    // unchecked and the check passed. ADR 0212: never skipped -- it says so.
+    it('says it cannot check who owns the secrets where ext-posix is not loaded, rather than passing', function () {
+        $root = app();
+        mkdir("{$root}/state", 0o700);
+        file_put_contents("{$root}/state/app.key", str_repeat('k', 44));
+        chmod("{$root}/state/app.key", 0o600);
+        $autoload = realpath(\Composer\InstalledVersions::getRootPackage()['install_path']) . '/vendor/autoload.php';
+        $code = 'require ' . var_export($autoload, true) . '; '
+            . 'foreach (new Tinvar\Console\Doctor\Checks\PermissionsCheck()->run(new Tinvar\Console\Doctor\DoctorContext(root: ' . var_export($root, true)
+            . ', env: ["TINVAR_ENV" => "local"], keyFile: ' . var_export("{$root}/state/app.key", true) . ')) as $f) { echo $f->severity->value, ": ", $f->message, "\n"; }';
+        $process = proc_open([PHP_BINARY, '-d', 'disable_functions=posix_geteuid', '-r', $code], [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+        $output = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        proc_close($process);
+
+        expect($output)->toContain('problem: ')
+            ->and($output)->toContain('ext-posix is not loaded')
+            ->and($output)->not->toContain('ok: ');
+    });
     it('finds the database where the app keeps it, not only where the skeleton does', function () {
         $root = app();
         mkdir("{$root}/database");

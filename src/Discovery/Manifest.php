@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Discovery;
 
+use Tinvar\Support\Posix;
+
 /**
  * The discovered classes, written into the build (ADR 0146): what a
  * production Kernel boots from, so it never walks its sources.
@@ -31,13 +33,21 @@ final class Manifest
 
     /**
      * Writes $classes, found under $namespace, to $file: to a file beside
-     * it, renamed over it, so a worker reading it never sees half.
+     * it, renamed over it, so a worker reading it never sees half. The file
+     * is 0644, and its directory -- this user's -- loses any group or world
+     * write a umask left it, so what read() asks of both holds for what the
+     * build wrote (ADR 0218).
      */
     public static function write(string $file, string $namespace, DiscoveredClasses $classes): void
     {
         $directory = \dirname($file);
         if (!is_dir($directory) && !@mkdir($directory, 0o755, true) && !is_dir($directory)) {
             throw new \RuntimeException("Could not make {$directory} to write the discovery manifest in.");
+        }
+        clearstatcache(true, $directory);
+        $mode = @fileperms($directory);
+        if ($mode !== false && ($mode & 0o022) !== 0 && !is_link($directory) && fileowner($directory) === Posix::effectiveUser("the discovery manifest's directory {$directory}")) {
+            @chmod($directory, $mode & 0o7755);
         }
         if (is_link($file)) {
             throw new \RuntimeException("{$file} is a symbolic link; the discovery manifest is never written through one.");
@@ -48,7 +58,7 @@ final class Manifest
             . "// fails while it differs from what a scan finds. Never edited by hand.\n\n"
             . 'return ' . self::export(['version' => self::VERSION, 'namespace' => trim($namespace, '\\'), 'classes' => $classes->toArray()]) . ";\n";
         $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
-        if (file_put_contents($temporary, $source) === false || !rename($temporary, $file)) {
+        if (file_put_contents($temporary, $source) === false || !chmod($temporary, 0o644) || !rename($temporary, $file)) {
             @unlink($temporary);
 
             throw new \RuntimeException("Could not write the discovery manifest to {$file}.");
@@ -128,29 +138,32 @@ final class Manifest
     /**
      * The manifest is PHP, and included: whoever can write it, or replace
      * it in its directory, runs code in every worker. So it is a regular
-     * file, not a link, owned by this user or root, as is its directory,
-     * and neither is writable by anyone but its owner -- or a group this
-     * process is itself in (ADR 0218). Skipped where there is no POSIX
-     * ownership to read.
+     * file in a directory, neither a link, both owned by this user or root,
+     * and neither writable by anyone but its owner -- no group, whoever is
+     * in it (ADR 0218). Never skipped: where PHP cannot say who this
+     * process is -- no ext-posix -- the manifest is refused (ADR 0212).
      *
      * @throws DiscoveryFailed
      */
     private static function assertTrusted(string $file): void
     {
-        if (\PHP_OS_FAMILY === 'Windows' || !\function_exists('posix_geteuid')) {
-            return;
+        try {
+            $user = Posix::effectiveUser("the discovery manifest {$file}");
+        } catch (\RuntimeException $e) {
+            throw new DiscoveryFailed([$e->getMessage()], 'Discovery refused to boot:');
         }
-        if (is_link($file)) {
-            throw new DiscoveryFailed(["{$file} is a symbolic link; the discovery manifest is only read as the build wrote it."], 'Discovery refused to boot:');
-        }
-        $trusted = [posix_geteuid(), 0];
         foreach ([$file, \dirname($file)] as $path) {
-            $stat = @stat($path);
+            if (is_link($path)) {
+                throw new DiscoveryFailed(["{$path} is a symbolic link; the discovery manifest is only read as the build wrote it, where it wrote it."], 'Discovery refused to boot:');
+            }
+        }
+        $trusted = [$user, 0];
+        foreach ([$file, \dirname($file)] as $path) {
+            $stat = @lstat($path);
             if ($stat === false || !\in_array($stat['uid'], $trusted, true)) {
                 throw new DiscoveryFailed(["{$path} is owned by someone other than this user or root: the discovery manifest is PHP, and is included."], 'Discovery refused to boot:');
             }
-            $others = ($stat['mode'] & 0o002) !== 0 || (($stat['mode'] & 0o020) !== 0 && $stat['gid'] !== posix_getegid());
-            if ($others) {
+            if (($stat['mode'] & 0o022) !== 0) {
                 throw new DiscoveryFailed(["{$path} is writable by someone other than its owner: the discovery manifest is PHP, and is included."], 'Discovery refused to boot:');
             }
         }

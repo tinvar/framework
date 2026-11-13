@@ -471,6 +471,66 @@ it('refuses to include a manifest, or one in a directory, that someone else coul
     expect(problems($boot))->toContain('is a symbolic link');
 })->skip(!\function_exists('posix_geteuid'), 'POSIX ownership.');
 
+// Review S8/C5: a group-writable manifest or directory was believed where
+// the group was this process's own -- a group others may be in -- and a
+// build directory that was a link was followed to wherever it pointed.
+it('refuses a manifest, or its directory, writable by a group, and a directory that is a link', function () {
+    $app = $this->app;
+    $file = "{$app->root}/dist/" . Manifest::FILE;
+    Manifest::write($file, $app->namespace, new DiscoveredClasses());
+    $boot = fn () => $app->discovery()->classes(['TINVAR_ENV' => 'production']);
+    $boot();
+
+    chmod($file, 0o664);
+    expect(problems($boot))->toContain('writable by someone other than its owner');
+
+    chmod($file, 0o644);
+    chmod(\dirname($file), 0o775);
+    expect(problems($boot))->toContain('writable by someone other than its owner');
+
+    chmod(\dirname($file), 0o755);
+    rename("{$app->root}/dist", "{$app->root}/build");
+    symlink("{$app->root}/build", "{$app->root}/dist");
+    expect(problems($boot))->toContain('is a symbolic link');
+});
+
+// What the build writes passes that check whatever the umask: the file is
+// 0644, and its directory loses any group or world write.
+it('writes a manifest no group or other user can write, in a directory none can', function () {
+    $app = $this->app;
+    $file = "{$app->root}/dist/" . Manifest::FILE;
+    $umask = umask(0o002);
+    try {
+        Manifest::write($file, $app->namespace, new DiscoveredClasses());
+    } finally {
+        umask($umask);
+    }
+
+    clearstatcache();
+    expect(fileperms($file) & 0o777)->toBe(0o644)
+        ->and(fileperms(\dirname($file)) & 0o022)->toBe(0);
+    $app->discovery()->classes(['TINVAR_ENV' => 'production']);
+});
+
+// The check returned early, believing the manifest, where PHP could not
+// say who this process is (ADR 0212: never skipped).
+it('refuses to include a manifest where ext-posix is not loaded', function () {
+    $app = $this->app;
+    $file = "{$app->root}/dist/" . Manifest::FILE;
+    Manifest::write($file, $app->namespace, new DiscoveredClasses());
+    $autoload = realpath(\Composer\InstalledVersions::getRootPackage()['install_path']) . '/vendor/autoload.php';
+    $code = 'require ' . var_export($autoload, true) . '; '
+        . 'try { Tinvar\Discovery\Manifest::read(' . var_export($file, true) . ', ' . var_export($app->namespace, true) . '); echo "read"; }'
+        . ' catch (Tinvar\Discovery\DiscoveryFailed $e) { echo $e->getMessage(); }';
+    $process = proc_open([PHP_BINARY, '-d', 'disable_functions=posix_geteuid', '-r', $code], [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+    $output = (string) stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    proc_close($process);
+
+    expect($output)->toContain('ext-posix is not loaded')
+        ->and($output)->not->toContain('read');
+});
+
 it('keeps a scan while the files stay as they were, and scans again once one changes', function () {
     $app = $this->app;
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');

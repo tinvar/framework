@@ -8,6 +8,7 @@ use Tinvar\Console\Doctor\DoctorCheck;
 use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Console\Doctor\Finding;
 use Tinvar\Console\Doctor\SafeFix;
+use Tinvar\Support\Posix;
 
 /**
  * Who may read and write what holds a secret or the data: the app key's
@@ -27,7 +28,14 @@ final readonly class PermissionsCheck implements DoctorCheck
     public function run(DoctorContext $context): array
     {
         $findings = [];
-        $owner = \function_exists('posix_geteuid') ? posix_geteuid() : null;
+        // Never skipped (ADR 0212): where PHP cannot say who this is, the
+        // secrets' owners cannot be checked, and the doctor says so.
+        try {
+            $owner = Posix::effectiveUser("the check of who owns the app's secrets");
+        } catch (\RuntimeException $e) {
+            $owner = null;
+            $findings[] = Finding::problem($e->getMessage(), 'Install or enable the posix extension, then run `tinvar doctor` again.');
+        }
 
         foreach (array_filter([$context->keyFile, $context->probeTokenFile]) as $file) {
             if (!is_file($file)) {
