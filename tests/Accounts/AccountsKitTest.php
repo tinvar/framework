@@ -800,6 +800,33 @@ it('shows the secret two-factor setup waits on only to a session of its owner co
     });
 })->with('drivers');
 
+// Review of the audit fixes (S6, ADR 0202): any session of the owner's,
+// confirmed with the password, was shown the secret another had begun, and
+// held the second factor once the owner finished setting it up.
+it('shows and confirms the secret setup waits on only to the session that began it', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $setup = $owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user));
+        $code = Totp::at((string) Base32::decode($setup['secret']), $app->now);
+
+        // Another session of the account -- the password, typed there twice.
+        $other = new Visitor($app, address: '198.51.100.7');
+        $other->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $other->confirm();
+        expect($other->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull()
+            ->and(refused(static fn () => $other->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, $code))))->toHaveKey('code')
+            ->and($app->kit->accounts->twoFactorEnabled($user))->toBeFalse();
+
+        // The session that began it still sees it, and turns it on.
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBe($setup);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, $code));
+        expect($app->kit->accounts->twoFactorEnabled($user))->toBeTrue();
+    });
+})->with('drivers');
+
 // Review of the audit fixes (C10, ADR 0202): confirming wrote to whatever
 // unconfirmed secret the account had by then, not the one its code was
 // checked against -- one begun again since, or one past its ten minutes.

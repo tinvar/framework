@@ -76,14 +76,18 @@ final readonly class TwoFactorStore
     /**
      * A new secret for $user, kept unconfirmed in place of any unconfirmed
      * one before it; a confirmed one is left alone, and this refuses.
+     *
+     * @param string $session the session setting it up, by its id: the
+     *        secret is sealed to it, and shown and confirmed to it alone
+     *        (pendingSecret(), confirm(); ADR 0202)
      */
-    public function begin(string $user): string
+    public function begin(string $user, #[\SensitiveParameter] string $session): string
     {
         if ($this->enabled($user)) {
             throw new \LogicException('Two-factor sign-in is already on for this account: turn it off before setting it up again.');
         }
         $secret = Totp::generateSecret();
-        $sealed = $this->encrypter->encrypt($secret, self::context($user));
+        $sealed = $this->encrypter->encrypt($secret, self::pendingContext($user, $session));
         $now = $this->moment();
         $connection = $this->connection;
         $connection->transaction(static function () use ($connection, $user, $sealed, $now): void {
@@ -96,36 +100,40 @@ final readonly class TwoFactorStore
 
     /**
      * The secret begin() made and no code has confirmed yet, while it is
-     * younger than PENDING_LIFETIME; null with none (ADR 0202).
+     * younger than PENDING_LIFETIME, to the session that began it; null
+     * with none, or to any other session (ADR 0202).
      */
-    public function pendingSecret(string $user): ?string
+    public function pendingSecret(string $user, #[\SensitiveParameter] string $session): ?string
     {
-        return $this->pending($user)[1] ?? null;
+        return $this->pending($user, $session)[1] ?? null;
     }
 
     /**
      * Turns two-factor on with a code from the pending secret, and returns
      * the recovery codes to show once; null when the code is wrong.
      *
-     * The write confirms the secret the code was checked against, and only
-     * while it is still young enough: one begun again since, or past its
-     * ten minutes by then, is left unconfirmed, and this answers null.
+     * Only from the session that began it, and the write confirms the
+     * secret the code was checked against, while it is still young enough:
+     * one begun again since, or past its ten minutes by then, is left
+     * unconfirmed, and this answers null. Confirmed, it is sealed again to
+     * the account alone, as every sign-in reads it.
      *
      * @return list<string>|null
      */
-    public function confirm(string $user, #[\SensitiveParameter] string $code): ?array
+    public function confirm(string $user, #[\SensitiveParameter] string $session, #[\SensitiveParameter] string $code): ?array
     {
-        [$sealed, $secret] = $this->pending($user) ?? [null, null];
+        [$sealed, $secret] = $this->pending($user, $session) ?? [null, null];
         $step = $secret === null ? null : Totp::verify($secret, $code, $this->now());
-        if ($sealed === null || $step === null) {
+        if ($sealed === null || $secret === null || $step === null) {
             return null;
         }
         $connection = $this->connection;
         $now = $this->moment();
         $lapse = $this->moment(-self::PENDING_LIFETIME);
+        $resealed = $this->encrypter->encrypt($secret, self::context($user));
         $confirmed = $connection->transaction(static fn (): int => $connection->execute(
-            'UPDATE two_factor_secrets SET confirmed_at = ?, last_used_step = ? WHERE user_id = ? AND confirmed_at IS NULL AND secret = ? AND created_at > ?',
-            [$now, $step, $user, $sealed, $lapse],
+            'UPDATE two_factor_secrets SET secret = ?, confirmed_at = ?, last_used_step = ? WHERE user_id = ? AND confirmed_at IS NULL AND secret = ? AND created_at > ?',
+            [$resealed, $now, $step, $user, $sealed, $lapse],
         ));
 
         return $confirmed === 1 ? $this->regenerateRecoveryCodes($user) : null;
@@ -241,18 +249,19 @@ final readonly class TwoFactorStore
 
     /**
      * The unconfirmed secret begin() made, while younger than
-     * PENDING_LIFETIME: as stored, and opened; null with none.
+     * PENDING_LIFETIME, opened as $session's: as stored, and opened; null
+     * with none, or with one another session began.
      *
      * @return array{string, string}|null
      */
-    private function pending(string $user): ?array
+    private function pending(string $user, #[\SensitiveParameter] string $session): ?array
     {
         $row = $this->connection->select(
             'SELECT secret FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NULL AND created_at > ?',
             [$user, $this->moment(-self::PENDING_LIFETIME)],
         )[0] ?? null;
         $sealed = $row === null ? null : (string) $row['secret'];
-        $secret = $sealed === null ? null : $this->encrypter->decrypt($sealed, self::context($user));
+        $secret = $sealed === null ? null : $this->encrypter->decrypt($sealed, self::pendingContext($user, $session));
 
         return $sealed === null || $secret === null ? null : [$sealed, $secret];
     }
@@ -260,6 +269,17 @@ final readonly class TwoFactorStore
     private static function context(string $user): string
     {
         return 'two_factor_secrets.secret:' . $user;
+    }
+
+    /**
+     * What a secret waiting on its code is sealed under: the account and,
+     * hashed, the session that began it. Opened as any other session's, it
+     * does not decrypt, so no other is shown it or may confirm it -- with no
+     * column to keep the session in, and nothing a copy of the table names.
+     */
+    private static function pendingContext(string $user, #[\SensitiveParameter] string $session): string
+    {
+        return self::context($user) . ':pending:' . hash('sha256', $session);
     }
 
     private function now(): int

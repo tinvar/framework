@@ -724,7 +724,7 @@ final class Accounts
         $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
-        $secret = $this->twoFactor->begin($user->authIdentifier());
+        $secret = $this->twoFactor->begin($user->authIdentifier(), SessionState::of($http)->id);
 
         return ['secret' => Base32::encode($secret), 'uri' => Totp::uri($secret, $this->issuer, $user->accountEmail())];
     }
@@ -734,11 +734,13 @@ final class Accounts
      * while the code is typed -- or null when setup has not begun, or began
      * more than ten minutes ago (TwoFactorStore::PENDING_LIFETIME).
      *
-     * Shown only to the session of $user's own that may finish it: not
-     * impersonated, and confirmed in the last five minutes, as beginning
-     * and confirming setup ask (ADR 0202). Null to any other -- another
-     * device of theirs, staff acting as them -- where it would otherwise be
-     * read, kept, and hold the second factor once the owner confirmed it.
+     * Shown only to the session of $user's own that began it and may
+     * finish it: not impersonated, and confirmed in the last five minutes,
+     * as beginning and confirming setup ask (ADR 0202). Null to any other
+     * -- another device of theirs, confirmed or not, staff acting as them
+     * -- where it would otherwise be read, kept, and hold the second factor
+     * once the owner confirmed it. The secret is sealed to the session that
+     * began it (TwoFactorStore), so no other may confirm it either.
      *
      * @return array{secret: string, uri: string}|null
      */
@@ -749,7 +751,7 @@ final class Accounts
             || $state->impersonation() !== null || $this->auth?->impersonator() !== null || !$this->recentlyConfirmed($http)) {
             return null;
         }
-        $secret = $this->twoFactor->pendingSecret($user->authIdentifier());
+        $secret = $this->twoFactor->pendingSecret($user->authIdentifier(), $state->id);
 
         return $secret === null ? null : ['secret' => Base32::encode($secret), 'uri' => Totp::uri($secret, $this->issuer, $user->accountEmail())];
     }
@@ -774,7 +776,7 @@ final class Accounts
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
-        $codes = $this->twoFactor->confirm($user->authIdentifier(), $code);
+        $codes = $this->twoFactor->confirm($user->authIdentifier(), SessionState::of($http)->id, $code);
         if ($codes === null) {
             throw new ValidationException(['code' => ["That code didn't match. Type the code your authenticator app shows for this account now."]]);
         }
