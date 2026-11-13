@@ -195,7 +195,7 @@ abstract class Resource
     {
         [$column, $property] = $this->definition()->columns[0];
 
-        return $property->text($record, $column->labelledBy) ?? $record->primaryKey();
+        return $this->text($column, $property, $record) ?? $record->primaryKey();
     }
 
     /**
@@ -285,7 +285,7 @@ abstract class Resource
         foreach ($result->items as $record) {
             $cells = [];
             foreach ($definition->columns as [$column, $property]) {
-                $cells[$column->key] = $property->text($record, $column->labelledBy);
+                $cells[$column->key] = $this->text($column, $property, $record);
             }
             $id = $record->primaryKey();
             $rows[] = new ResourceRowData(
@@ -347,7 +347,7 @@ abstract class Resource
                 key: $column->key,
                 label: $column->label ?? $property->label(),
                 kind: $column->kind ?? $property->columnKind(),
-                value: $property->text($record, $column->labelledBy),
+                value: $this->text($column, $property, $record),
                 options: self::options($property->enumOptions()),
             );
         }
@@ -561,6 +561,25 @@ abstract class Resource
         }
 
         return $choices;
+    }
+
+    /**
+     * What a column shows of $record. A record it belongs to is shown by
+     * its label only where that record's own policy lets the reader view
+     * it, as a field offers it only then (mayName()): otherwise as none,
+     * so a list of orders never draws a customer's email the reader may
+     * not see (ADR 0205).
+     */
+    private function text(Column $column, ModelProperty $property, Model $record): ?string
+    {
+        if ($property->type === 'relation' && $record->foreignKey($property->name) !== null) {
+            $related = $record->{$property->name};
+            if ($related instanceof Model && !$this->mayName($related)) {
+                return null;
+            }
+        }
+
+        return $property->text($record, $column->labelledBy);
     }
 
     /**

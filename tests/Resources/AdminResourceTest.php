@@ -199,6 +199,20 @@ describe('a record', function () {
             ->and($show['data']['canDelete'])->toBeFalse();
     });
 
+    // Audit 2026-11-13, M7: the list and the record's page drew a related
+    // record's label -- a customer's email -- that its own policy would
+    // not let the reader see, where the form asks it (mayName()).
+    it('shows a related record\'s label only where its policy lets the reader view it', function () {
+        $app = new App()->signIn(editor());
+        SitePolicy::$hidden = [$app->ids['site-b']];
+        $show = screen($app->get("/tickets/{$app->ids['beta']}"))['data'];
+        $list = screen($app->get('/tickets'))['data'];
+
+        expect(array_column($show['details'], 'value', 'key')['site'])->toBeNull()
+            ->and(array_column($list['rows'], 'cells', 'title')['Alpha']['site'])->toBe('Ashford')
+            ->and(array_column($list['rows'], 'cells', 'title')['Beta']['site'])->toBeNull();
+    });
+
     it('fills its edit form from the record, and its create form from the model\'s defaults', function () {
         $app = new App()->signIn(editor());
         $edit = screen($app->get("/tickets/{$app->ids['alpha']}/edit"))['data'];
