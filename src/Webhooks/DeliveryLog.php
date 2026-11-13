@@ -12,8 +12,14 @@ interface DeliveryLog
 {
     public function record(DeliveryAttempt $attempt): void;
 
-    /** @return list<DeliveryAttempt> one delivery's tries, first first */
-    public function attempts(string $delivery): array;
+    /**
+     * One delivery's tries, first first: named by tenant as well as by
+     * delivery, as recent() and forSubscription() are, so another tenant's
+     * delivery id finds nothing.
+     *
+     * @return list<DeliveryAttempt>
+     */
+    public function attempts(string $tenant, string $delivery): array;
 
     /** @return list<DeliveryAttempt> a tenant's latest tries, newest first */
     public function recent(string $tenant, int $limit = 50): array;

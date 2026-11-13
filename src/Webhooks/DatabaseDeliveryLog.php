@@ -71,11 +71,12 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
         );
     }
 
-    public function attempts(string $delivery): array
+    public function attempts(string $tenant, string $delivery): array
     {
+        // On the `_delivery` index: a delivery's few rows, then its tenant's.
         return array_map(self::attempt(...), $this->connection->select(
-            "SELECT * FROM {$this->table} WHERE delivery = ? ORDER BY attempt, attempted_at",
-            [$delivery],
+            "SELECT * FROM {$this->table} WHERE delivery = ? AND tenant = ? ORDER BY attempt, attempted_at",
+            [$delivery, $tenant],
         ));
     }
 

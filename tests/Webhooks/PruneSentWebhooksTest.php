@@ -80,9 +80,9 @@ it('forgets old tries from the database log by the index it makes, every tenant\
 
     expect($indexes)->toContain('webhook_deliveries_attempted')
         ->and($log->prune(NOW - PruneSentWebhooks::KEEP, 1))->toBe(1)
-        ->and($log->attempts('older'))->toBe([])
+        ->and($log->attempts('globex', 'older'))->toBe([])
         ->and(PruneSentWebhooks::pruneLog($log, NOW))->toBe(1)
-        ->and($log->attempts('old'))->toBe([])
+        ->and($log->attempts('acme', 'old'))->toBe([])
         ->and($log->recent('acme'))->toHaveCount(1);
 });
 

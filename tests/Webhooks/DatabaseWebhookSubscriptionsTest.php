@@ -450,7 +450,7 @@ it('ends unsent a delivery whose subscription was paused after it was queued', f
     $s->workThrough();
 
     expect($s->http->sent)->toBe([])
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts($delivery)))->toBe([[DeliveryAttempt::GONE, 'subscription_paused']]);
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts('acme', $delivery)))->toBe([[DeliveryAttempt::GONE, 'subscription_paused']]);
 });
 
 it('disables a subscription once its deliveries keep failing to the last try, and tells the notice once', function () {
@@ -522,9 +522,9 @@ it('counts a delivery whose last try failed where the queue gives up on it, thou
     $made = $s->acme(fn () => $s->subscriptions->create('https://receiver.test/hooks', ['order.placed'], '', 'm-1'));
     $job = new DeliverWebhook($made->subscription->id, '0199f1c2-7a3e-7c41-9a55-2f0e8d7b1c11', 'order.placed', '{}');
 
-    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, new \RuntimeException('lost')));
+    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, $s->h->orm, new \RuntimeException('lost')));
     $s->log->record(new DeliveryAttempt($job->delivery, $made->subscription->id, 'order.placed', 'acme', 6, DeliveryAttempt::FAILED, 503, 'status', 40, 1));
-    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, new \RuntimeException('answered 503')));
+    $s->acme(fn () => $job->failed($s->subscriptions, $s->log, $s->h->orm, new \RuntimeException('answered 503')));
 
     expect($s->acme(fn () => $s->subscriptions->get($made->subscription->id)?->consecutiveFailures))->toBe(2)
         ->and($s->acme(fn () => $s->subscriptions->get($made->subscription->id)?->lastFailure))->toBe('status_503');

@@ -15,9 +15,9 @@ final class ArrayDeliveryLog implements DeliveryLog
         $this->recorded[] = $attempt;
     }
 
-    public function attempts(string $delivery): array
+    public function attempts(string $tenant, string $delivery): array
     {
-        return array_values(array_filter($this->recorded, static fn (DeliveryAttempt $a): bool => $a->delivery === $delivery));
+        return array_values(array_filter($this->recorded, static fn (DeliveryAttempt $a): bool => $a->tenant === $tenant && $a->delivery === $delivery));
     }
 
     public function recent(string $tenant, int $limit = 50): array

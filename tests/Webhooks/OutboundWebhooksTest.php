@@ -277,7 +277,7 @@ it('tries again with backoff, signed afresh under the same nonce, and records ea
     $s->work();
 
     expect($tries)->toBe(3)
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->attempt, $a->outcome, $a->status, $a->reason, $a->milliseconds], $s->log->attempts($id)))->toBe([
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->attempt, $a->outcome, $a->status, $a->reason, $a->milliseconds], $s->log->attempts('acme', $id)))->toBe([
             [1, DeliveryAttempt::FAILED, 503, 'status', 12],
             [2, DeliveryAttempt::FAILED, null, OutboundFailed::TIMEOUT, 10_000],
             [3, DeliveryAttempt::DELIVERED, 200, null, 12],
@@ -309,7 +309,7 @@ it('ends a delivery the receiver refuses as a replay: it has it already', functi
     }
 
     expect($tries)->toBe(2)
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status, $a->reason], $s->log->attempts($id)))->toBe([
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status, $a->reason], $s->log->attempts('acme', $id)))->toBe([
             [DeliveryAttempt::FAILED, null, OutboundFailed::TIMEOUT],
             [DeliveryAttempt::DELIVERED, 409, 'already_received'],
         ])
@@ -327,7 +327,7 @@ it('ends a delivery the receiver answers 410, without trying again', function ()
     expect($s->sent())->toHaveCount(1)
         ->and($s->queue()->failed())->toHaveCount(1)
         ->and($s->queue()->failed()[0]->error)->toContain('410')
-        ->and($s->log->attempts($id)[0]->outcome)->toBe(DeliveryAttempt::GONE);
+        ->and($s->log->attempts('acme', $id)[0]->outcome)->toBe(DeliveryAttempt::GONE);
 });
 
 it('refuses a subscription pointing where outbound requests may not go, and never tries it again', function () {
@@ -338,7 +338,7 @@ it('refuses a subscription pointing where outbound requests may not go, and neve
     expect($s->sent())->toBe([])
         ->and($s->queue()->failed())->toHaveCount(1)
         ->and($s->queue()->failed()[0]->error)->toContain('refused')
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, null]])
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts('acme', $id)))->toBe([[DeliveryAttempt::REFUSED, null]])
         // The operator's record says why.
         ->and($s->queue()->failed()[0]->error)->toContain('(metadata)');
 });
@@ -351,7 +351,7 @@ it('stops when the subscription is gone by the time the delivery runs', function
     expect($s->sent())->toBe([])
         ->and($s->queue()->failed())->toBe([])
         ->and($s->queue()->size(DeliverWebhook::QUEUE))->toBe(0)
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts($id)))->toBe([[DeliveryAttempt::GONE, 'subscription_gone']]);
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts('acme', $id)))->toBe([[DeliveryAttempt::GONE, 'subscription_gone']]);
 });
 
 it('waits for the commit, and announces nothing a rollback takes back', function () {
@@ -406,13 +406,40 @@ it('keeps tries in the database, one delivery\'s in order and a tenant\'s own ne
     $log->record(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 2, DeliveryAttempt::FAILED, null, 'timeout', 10_000, 200));
     $log->record(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 3, DeliveryAttempt::DELIVERED, 204, null, 30, 300));
 
-    expect(array_column(array_map(get_object_vars(...), $log->attempts('d1')), 'attempt'))->toBe([1, 2, 3])
-        ->and($log->attempts('d1')[1])->toEqual(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 2, DeliveryAttempt::FAILED, null, 'timeout', 10_000, 200))
+    expect(array_column(array_map(get_object_vars(...), $log->attempts('acme', 'd1')), 'attempt'))->toBe([1, 2, 3])
+        ->and($log->attempts('acme', 'd1')[1])->toEqual(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 2, DeliveryAttempt::FAILED, null, 'timeout', 10_000, 200))
         ->and(array_map(static fn (DeliveryAttempt $a): ?int => $a->status, $log->recent('acme')))->toBe([204, null, 503])
         ->and($log->recent('acme', 1))->toHaveCount(1)
         ->and($log->recent('globex')[0]->delivery)->toBe('d2')
         ->and($log->recent('initech'))->toBe([])
         ->and(fn () => new DatabaseDeliveryLog($connection, 'deliveries; DROP TABLE x'))->toThrow(\InvalidArgumentException::class);
+});
+
+it('reads one delivery\'s tries only in the tenant that made them, in either log', function () {
+    $s = new Sender();
+    $connection = $s->h->fixture->connection;
+    DatabaseDeliveryLog::define(schemaOf($connection));
+
+    foreach ([new DatabaseDeliveryLog($connection), new ArrayDeliveryLog()] as $log) {
+        $log->record(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 1, DeliveryAttempt::FAILED, 503, 'status', 40, 100));
+        $log->record(new DeliveryAttempt('d1', 'scripts', 'script.ran', 'acme', 2, DeliveryAttempt::DELIVERED, 204, null, 30, 300));
+
+        // Another tenant naming acme's delivery id finds nothing, as
+        // recent() and forSubscription() never did.
+        expect($log->attempts('acme', 'd1'))->toHaveCount(2)
+            ->and($log->attempts('globex', 'd1'))->toBe([])
+            ->and($log->attempts('', 'd1'))->toBe([]);
+    }
+});
+
+it('counts a delivery\'s tries in its own tenant, so another tenant\'s tries under the same id are not its', function () {
+    $s = new Sender(static fn (): OutboundResponse => new OutboundResponse(204, [], '', 12));
+    $id = $s->sendAsAcme();
+    // A row under the same id in another tenant: never acme's first try.
+    $s->log->record(new DeliveryAttempt($id, 'scripts', 'script.ran', 'globex', 1, DeliveryAttempt::FAILED, 503, 'status', 40, 100));
+    $s->work();
+
+    expect(array_map(static fn (DeliveryAttempt $a): array => [$a->tenant, $a->attempt], $s->log->attempts('acme', $id)))->toBe([['acme', 1]]);
 });
 
 it('never sends a tenant\'s delivery to a private address the application allows for its own services', function () {
@@ -437,7 +464,7 @@ it('never sends a tenant\'s delivery to a private address the application allows
     }
 
     expect($requests)->toBe([])
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, null]])
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts('acme', $id)))->toBe([[DeliveryAttempt::REFUSED, null]])
         ->and($s->queue()->failed()[0]->error)->toContain('(loopback)');
 });
 
@@ -471,7 +498,7 @@ it('delivers over the network to a receiver on this machine, which verifies the 
     expect($requests)->toHaveCount(1)
         ->and($requests[0]['target'])->toBe('/hooks/in?account=7')
         ->and($http->publicOnly)->toBe([true])
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::DELIVERED, 202]]);
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts('acme', $id)))->toBe([[DeliveryAttempt::DELIVERED, 202]]);
 });
 
 it('refuses a tenant\'s delivery to a name resolving inside an allowed private range, through any client', function () {
@@ -481,7 +508,7 @@ it('refuses a tenant\'s delivery to a name resolving inside an allowed private r
     $s->work();
 
     expect($http->sent)->toBe([])
-        ->and($s->log->attempts($id)[0]->outcome)->toBe(DeliveryAttempt::REFUSED);
+        ->and($s->log->attempts('acme', $id)[0]->outcome)->toBe(DeliveryAttempt::REFUSED);
 });
 
 /**

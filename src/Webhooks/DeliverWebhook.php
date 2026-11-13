@@ -87,7 +87,8 @@ final readonly class DeliverWebhook implements Job
 
     public function handle(OutboundHttp $http, WebhookSubscriptions $subscriptions, DeliveryLog $log, Orm $orm, WebhookSignatureHeader $header): void
     {
-        $attempt = \count($log->attempts($this->delivery)) + 1;
+        // Counted in the tenant the job runs as, which its payload seals.
+        $attempt = \count($log->attempts($orm->tenant(), $this->delivery)) + 1;
         $record = function (string $outcome, ?int $status, ?string $reason, int $milliseconds) use ($log, $orm, $attempt): void {
             $log->record(new DeliveryAttempt(
                 $this->delivery,
@@ -182,12 +183,12 @@ final readonly class DeliverWebhook implements Job
      * a try lost before it was logged among them: the delivery is counted
      * as undelivered, with what its last logged try met.
      */
-    public function failed(WebhookSubscriptions $subscriptions, DeliveryLog $log, \Throwable $error): void
+    public function failed(WebhookSubscriptions $subscriptions, DeliveryLog $log, Orm $orm, \Throwable $error): void
     {
         if (!$subscriptions instanceof CountsDeliveryFailures) {
             return;
         }
-        $tries = $log->attempts($this->delivery);
+        $tries = $log->attempts($orm->tenant(), $this->delivery);
         $last = $tries === [] ? null : $tries[\count($tries) - 1];
         $failure = match (true) {
             $last === null => 'failed',
