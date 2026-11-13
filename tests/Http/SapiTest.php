@@ -43,6 +43,12 @@ final class CountedBody
     }
 
     public function stream_close(): void {}
+
+    /** @return array<string, int> */
+    public function stream_stat(): array
+    {
+        return [];
+    }
 }
 
 function server(array $extra = []): array
@@ -495,6 +501,34 @@ describe('the raw body', function () {
                 ->and(CountedBody::$opened)->toBeGreaterThan(0);
         } finally {
             stream_wrapper_unregister('tinvar-counted-body');
+        }
+    });
+
+    // Review S3/C1: a multipart upload over 8 MiB -- within Uploads::
+    // DEFAULT_MAX_BYTES and a post_max_size raised to take it -- was refused
+    // by its Content-Length, though PHP had already parsed it and left
+    // php://input empty. Its length is PHP's to hold, not this ceiling's.
+    it('takes a multipart body PHP has parsed whatever length it named, its input opened and held to the ceiling', function () use ($file) {
+        $multipart = static fn (string $type): array => ['CONTENT_LENGTH' => (string) (9 * 1_048_576), 'CONTENT_TYPE' => $type];
+        $empty = $file(0);
+        $over = $file(Sapi::MAX_BODY_BYTES + 1);
+        stream_wrapper_register('tinvar-counted-body', CountedBody::class);
+        try {
+            CountedBody::$opened = 0;
+            expect(Sapi::body($multipart('multipart/form-data; boundary=----x'), $empty))->toBe('')
+                ->and(Sapi::body($multipart('Multipart/Form-Data;boundary=y'), $empty))->toBe('')
+                // Opened even so, and never read past the ceiling.
+                ->and(fn () => Sapi::body($multipart('multipart/form-data; boundary=z'), 'tinvar-counted-body://input'))->toThrow(BodyTooLarge::class)
+                ->and(CountedBody::$opened)->toBe(1)
+                ->and(fn () => Sapi::body($multipart('multipart/form-data; boundary=z'), $over))->toThrow(BodyTooLarge::class)
+                // Any other type, or one merely beginning alike, is still refused by its length.
+                ->and(fn () => Sapi::body($multipart('multipart/mixed; boundary=z'), $empty))->toThrow(BodyTooLarge::class)
+                ->and(fn () => Sapi::body($multipart('multipart/form-datax'), $empty))->toThrow(BodyTooLarge::class)
+                ->and(fn () => Sapi::body($multipart('application/json'), $empty))->toThrow(BodyTooLarge::class);
+        } finally {
+            stream_wrapper_unregister('tinvar-counted-body');
+            unlink($empty);
+            unlink($over);
         }
     });
 

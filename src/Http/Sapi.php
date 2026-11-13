@@ -82,8 +82,15 @@ final class Sapi
     {
         $in = @fopen($source, 'rb');
 
+        // A multipart form is PHP's to parse, and hold to post_max_size,
+        // before any of this runs; it leaves php://input empty. Its length
+        // is not this ceiling's: a file up to Uploads::DEFAULT_MAX_BYTES
+        // arrives that way. Whatever input there is is still read bounded.
+        $type = $server['CONTENT_TYPE'] ?? null;
+        $multipart = \is_string($type) && preg_match('#^\s*multipart/form-data\s*(?:;|$)#i', $type) === 1;
+
         $length = $server['CONTENT_LENGTH'] ?? null;
-        if (\is_string($length) && preg_match('/^\d+$/D', $length) === 1
+        if (!$multipart && \is_string($length) && preg_match('/^\d+$/D', $length) === 1
             && (\strlen(ltrim($length, '0')) > 18 || (int) $length > self::MAX_BODY_BYTES)) {
             if ($in !== false) {
                 fclose($in);

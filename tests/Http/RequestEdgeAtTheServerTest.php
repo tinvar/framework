@@ -13,6 +13,8 @@ declare(strict_types=1);
  *  - A client sending its body slowly holds the one worker no longer than
  *    `read_body`; before ADR 0207, as many as there were workers stopped
  *    the app for as long as they liked.
+ *  - A multipart upload is PHP's to parse and hold to post_max_size: one
+ *    over that ceiling, within Uploads::DEFAULT_MAX_BYTES, reaches the app.
  *  - A header named with `_` never reaches PHP: FrankenPHP drops it, so
  *    `X_Forwarded_For` cannot pass for X-Forwarded-For, which a front
  *    proxy overwrites (M6, refuted here and held).
@@ -38,11 +40,12 @@ beforeAll(function () use ($root) {
 });
 
 /**
- * Runs $test against one worker under FrankenPHP, its port handed in.
+ * Runs $test against one worker under FrankenPHP, its port handed in,
+ * with PHP's defaults or the php_ini lines given.
  *
  * @param \Closure(int): void $test
  */
-function served(string $root, \Closure $test): void
+function served(string $root, \Closure $test, string $ini = ''): void
 {
     $directory = sys_get_temp_dir() . '/tinvar-edge-' . bin2hex(random_bytes(4));
     mkdir($directory, 0o700);
@@ -57,6 +60,7 @@ function served(string $root, \Closure $test): void
                 return Tinvar\\Http\\Response::make(200, json_encode([
                     'bytes' => strlen(\$rawBody),
                     'forwarded' => \$request->header('x-forwarded-for'),
+                    'files' => array_map(static fn (Tinvar\\Http\\UploadedFile \$f): int => \$f->size, \$request->files),
                 ]), ['content-type' => 'application/json']);
             }
 
@@ -80,6 +84,7 @@ function served(string $root, \Closure $test): void
                 # As in production: PHP's own warnings -- a body over
                 # post_max_size is one -- go to the log, not the response.
                 php_ini display_errors 0
+                {$ini}
                 worker {
                     file {$directory}/worker.php
                     num 1
@@ -193,6 +198,30 @@ it('refuses a body naming a length over the ceiling before any of it is sent, an
         expect($taken['status'])->toBe(200)
             ->and(json_decode($taken['body'], true)['bytes'])->toBe(9);
     });
+});
+
+// Review S3/C1: a multipart upload PHP had parsed, larger than the raw
+// body's ceiling and within Uploads::DEFAULT_MAX_BYTES, was refused 413 by
+// its Content-Length.
+it('hands the worker a multipart upload larger than the raw body ceiling, as PHP parsed it', function () use ($root) {
+    served($root, function (int $port): void {
+        $bytes = 9 * 1_048_576;
+        $body = "------tinvar\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.bin\"\r\n"
+            . "Content-Type: application/octet-stream\r\n\r\n" . str_repeat('u', $bytes) . "\r\n------tinvar--\r\n";
+        $length = \strlen($body);
+        expect($length)->toBeGreaterThan(Sapi::MAX_BODY_BYTES);
+
+        $taken = exchange($port, "POST /u HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=----tinvar\r\n"
+            . "Content-Length: {$length}\r\nConnection: close\r\n\r\n", $body);
+
+        expect($taken['status'])->toBe(200)
+            ->and(json_decode($taken['body'], true))->toMatchArray(['bytes' => 0, 'files' => ['file' => $bytes]]);
+    }, ini: <<<'INI'
+                # As the dev Caddyfile has it: PHP takes an upload up to
+                # Uploads::DEFAULT_MAX_BYTES.
+                php_ini upload_max_filesize 10M
+                php_ini post_max_size 11M
+        INI);
 });
 
 it('lets a client sending its body slowly hold the worker no longer than read_body', function () use ($root) {
