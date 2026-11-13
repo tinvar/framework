@@ -80,7 +80,12 @@ final readonly class Workflows
      * queued. Accepted (ADR 0119); start one outside a transaction to have
      * the id that does the work.
      *
+     * A unique workflow running already, started by another signed-in user
+     * -- or by the application, with nobody signed in -- is refused to a
+     * signed-in user as WorkflowHeld, never answered with its id.
+     *
      * @return string the workflow's id, which is its job's
+     * @throws WorkflowHeld when a unique workflow runs already, someone else's
      */
     public function start(Workflow $workflow, int $delay = 0): string
     {
@@ -104,13 +109,28 @@ final readonly class Workflows
         [$store, $orm, $auth] = [$this->store, $this->orm, $this->auth];
         $start = function () use ($workflow, $delay, $store, $orm, $auth): string {
             $id = $this->dispatcher->dispatch(new RunWorkflow($workflow), $delay);
+            $user = $auth->id() ?? '';
+            // A unique workflow's lock is the tenant's and panel's, not the
+            // user's: one already running answers with its id, whose record
+            // names who started it. Another signed-in user is told it runs,
+            // and never given that id -- what reads its progress and sends
+            // it signals (ADR 0221). Code with nobody signed in is the
+            // application's own, and has it.
+            $held = QueueOptions::of($workflow::class)->unique > 0 ? $store->find($id) : null;
+            if ($held !== null) {
+                if ($user !== '' && !hash_equals($held->user, $user)) {
+                    throw new WorkflowHeld($workflow::class);
+                }
+
+                return $id;
+            }
             $now = $this->now();
             $store->start(new WorkflowRecord(
                 id: $id,
                 workflow: $workflow::class,
                 tenant: $orm->tenant(),
                 panel: $this->panels?->currentOrNull() ?? '',
-                user: $auth->id() ?? '',
+                user: $user,
                 status: WorkflowRecord::QUEUED,
                 step: null,
                 steps: 0,

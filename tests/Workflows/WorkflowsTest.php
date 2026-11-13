@@ -26,6 +26,7 @@ use Tinvar\Tests\Workflows\Fixtures\OnePerOrder;
 use Tinvar\Tests\Workflows\Fixtures\Seen;
 use Tinvar\Tests\Workflows\Fixtures\ThreeSteps;
 use Tinvar\Tests\Workflows\Fixtures\Twice;
+use Tinvar\Workflows\WorkflowHeld;
 use Tinvar\Workflows\Workflows;
 
 use function Tinvar\Tests\Workflows\Fixtures\harness;
@@ -257,4 +258,20 @@ it('holds a unique workflow to its own uniqueId(), one at a time for each', func
     expect(workflows($h)->start(new OnePerOrder('order-1')))->toBe($first)
         ->and(workflows($h)->start(new OnePerOrder('order-2')))->not->toBe($first)
         ->and($h->queue->size('default'))->toBe(2);
+});
+
+it('never hands a unique workflow another user started to the next to start it', function () {
+    $h = harness();
+    $mine = $h->auth->actingAs(new User('u1'), fn () => workflows($h)->start(new OnePerOrder('order-1')), 'e1');
+
+    // u1 again: their own run, as before.
+    expect($h->auth->actingAs(new User('u1'), fn () => workflows($h)->start(new OnePerOrder('order-1')), 'e1'))->toBe($mine)
+        // u2 is told it runs, never given u1's run to read or signal.
+        ->and(fn () => $h->auth->actingAs(new User('u2'), fn () => workflows($h)->start(new OnePerOrder('order-1')), 'e2'))
+        ->toThrow(WorkflowHeld::class)
+        // Code with nobody signed in -- a schedule, a job -- is the
+        // application's own, and has the id, as it had.
+        ->and(workflows($h)->start(new OnePerOrder('order-1')))->toBe($mine)
+        ->and($h->queue->size('default'))->toBe(1)
+        ->and($h->auth->actingAs(new User('u1'), fn () => workflows($h)->progress($mine), 'e1')?->user)->toBe('u1');
 });
