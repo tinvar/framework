@@ -30,6 +30,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
+use Tinvar\Support\StateFile;
 use Tinvar\Support\Uuid;
 
 function compositionKernel(): Kernel
@@ -110,6 +111,26 @@ it('reads throttle limits from the environment, or refuses them', function () {
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=lots']))->toThrow(ConfigException::class, "TINVAR_THROTTLE's 1st value must be a whole number")
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'Actions=5']))->toThrow(ConfigException::class, 'TINVAR_THROTTLE names buckets in lower case')
         ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=99999999']))->toThrow(ConfigException::class, 'from 0 to 9999999');
+});
+
+// Never /tmp/tinvar.sock, where any local user could put a renderer (ADR
+// 0212): unset, TINVAR_SOCKET is renderer.sock in this user's state
+// directory, as the skeleton's and doctor's are -- the shop's and the docs'.
+it('keeps the examples\' default renderer socket out of /tmp, in this user\'s state directory', function () {
+    $state = getenv('XDG_STATE_HOME');
+    putenv('XDG_STATE_HOME=/state-of-this-user');
+    try {
+        $examples = \dirname(__DIR__, 4) . '/examples';
+
+        expect(Configs::load(ServerConfig::class, [])->socket)->toBeNull()
+            ->and(Configs::load(ServerConfig::class, ['TINVAR_SOCKET' => '/run/tinvar-renderer'])->socket)->toBe('/run/tinvar-renderer')
+            ->and(Kernel::rendererSocket())->toBe(StateFile::of("{$examples}/shop", 'renderer.sock'))
+            ->and(Kernel::rendererSocket())->toStartWith('/state-of-this-user/tinvar/')
+            ->and(\Docs\Kernel::rendererSocket())->toBe(StateFile::of("{$examples}/docs", 'renderer.sock'))
+            ->and(\Docs\Kernel::rendererSocket())->toStartWith('/state-of-this-user/tinvar/');
+    } finally {
+        putenv($state === false ? 'XDG_STATE_HOME' : "XDG_STATE_HOME={$state}");
+    }
 });
 
 // Signing stops a client inventing a session id. It does NOT stop fixation:

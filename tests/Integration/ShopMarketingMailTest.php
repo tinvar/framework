@@ -397,7 +397,7 @@ describe('the product announcement', function () {
     });
 
     // Plain HTTP on loopback is dev, and the mail domain stands in for the
-    // https origin -- unless the environment says production, where it is
+    // https origin -- unless the environment says nothing or production, where it is
     // a proxy's backend with SHOP_URL unset, and a stand-in would send mail
     // whose one-click link reaches nobody.
     it('stands the mail domain in for an https address on loopback, and never where the environment says production', function () {
@@ -407,7 +407,9 @@ describe('the product announcement', function () {
             ->and(new Links('http://[::1]:6123')->unsubscribeOrigin())->toBe('https://pellwick.test')
             ->and(new Links('http://127.0.0.1.shop.example')->unsubscribeOrigin())->toBeNull()
             ->and(new Links('https://shop.test')->unsubscribeOrigin())->toBe('https://shop.test')
-            ->and(new Unsubscribes(KEY, $loopback, [])->refusal())->toBeNull()
+            ->and(new Unsubscribes(KEY, $loopback, ['TINVAR_ENV' => 'local'])->refusal())->toBeNull()
+            // An environment that says nothing is no developer's (ADR 0213).
+            ->and(new Unsubscribes(KEY, $loopback, [])->refusal())->toContain('RFC 8058')
             ->and(new Unsubscribes(KEY, $loopback, ['APP_ENV' => 'production'])->refusal())->toContain('RFC 8058')
             ->and(new Unsubscribes(KEY, new Links('https://shop.test'), ['APP_ENV' => 'production'])->refusal())->toBeNull();
     });

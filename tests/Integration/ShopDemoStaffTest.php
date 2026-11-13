@@ -27,6 +27,9 @@ it('refuses to boot in production while the published staff password still signs
 
     expect(static fn () => StaffAccount::refuseInProduction($connection, ['TINVAR_ENV' => 'production']))
         ->toThrow(\RuntimeException::class, StaffAccount::EMAIL)
+        // Nor where nothing says this is a developer's machine (ADR 0213).
+        ->and(static fn () => StaffAccount::refuseInProduction($connection, []))
+        ->toThrow(\RuntimeException::class, 'TINVAR_ENV is not local, development or testing')
         // Not production: the demo account is what it is for.
         ->and(StaffAccount::refuseInProduction($connection, ['TINVAR_ENV' => 'local']))->toBeNull();
 

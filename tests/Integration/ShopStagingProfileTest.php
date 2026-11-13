@@ -9,8 +9,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopStagingProfile;
 
+use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
 use Tinvar\Http\Application;
+use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\PrivateDirectory;
 use Tinvar\Testing\Browser\BrowserTests;
 
@@ -61,12 +63,36 @@ it('refuses a staging server with no mail provider, as production', function () 
     serving([...STAGING, 'TINVAR_MAIL_PROVIDER' => null, 'TINVAR_BUILD_DIR' => build('staging')]);
 })->throws(\Tinvar\Config\ConfigException::class, 'TINVAR_MAIL_PROVIDER is required where TINVAR_ENV=staging');
 
+/**
+ * A database seeded with or without the demo staff account, whose password
+ * is published: a staging server, like production, refuses to boot on it
+ * while that password works (ADR 0213).
+ */
+function database(bool $staff): string
+{
+    $directory = PrivateDirectory::create('staging-db');
+    $path = "{$directory}/shop.sqlite";
+    new Seeder(PdoConnection::sqlite($path, 'shop', create: true))->run(customers: 1, staff: $staff);
+    $owner = getmypid();
+    register_shutdown_function(static function () use ($directory, $owner): void {
+        if (getmypid() === $owner) {
+            exec('rm -rf ' . escapeshellarg($directory));
+        }
+    });
+
+    return $path;
+}
+
 it('serves a staging build under the staging profile, with no test endpoint', function () {
-    $application = serving([...STAGING, 'TINVAR_BUILD_DIR' => build('staging')]);
+    $application = serving([...STAGING, 'TINVAR_BUILD_DIR' => build('staging'), 'SHOP_DATABASE' => database(staff: false)]);
 
     expect($application)->toBeInstanceOf(Kernel::class)
         ->and($application)->not->toBeInstanceOf(BrowserTests::class);
 });
+
+it('refuses a staging server while the published staff password signs in, as production', function () {
+    serving([...STAGING, 'TINVAR_BUILD_DIR' => build('staging'), 'SHOP_DATABASE' => database(staff: true)]);
+})->throws(\RuntimeException::class, 'and TINVAR_ENV=staging');
 
 it('refuses a production build under the staging profile', function () {
     serving([...STAGING, 'TINVAR_BUILD_DIR' => build('production')]);

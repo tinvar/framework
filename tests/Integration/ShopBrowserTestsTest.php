@@ -206,6 +206,12 @@ it('seeds no scenario where the environment says production', function () {
     Served::$kernel->seed('customer', []);
 })->throws(\LogicException::class, 'APP_ENV=production');
 
+// Nor where nothing says this is a developer's machine (ADR 0213).
+it('seeds no scenario where TINVAR_ENV says nothing', function () {
+    environment(['TINVAR_ENV' => null]);
+    Served::$kernel->seed('customer', []);
+})->throws(\LogicException::class, 'TINVAR_ENV is not local, development or testing');
+
 it('moves the clock under the test profile alone', function () {
     environment(['TINVAR_PROFILE' => null, 'TINVAR_TEST_RUN' => null]);
     Clock::move(3600);
