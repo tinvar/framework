@@ -22,6 +22,9 @@ enum SecurityEvent: string
     case EmailChanged = 'auth.email_changed';
     case TwoFactorEnabled = 'auth.two_factor_enabled';
     case TwoFactorDisabled = 'auth.two_factor_disabled';
+    case RecoveryCodesRegenerated = 'auth.recovery_codes_regenerated';
+    case PasskeyAdded = 'auth.passkey_added';
+    case PasskeyRemoved = 'auth.passkey_removed';
     case ImpersonationStarted = 'auth.impersonation_started';
     case ImpersonationStopped = 'auth.impersonation_stopped';
     case RoleChanged = 'auth.role_changed';

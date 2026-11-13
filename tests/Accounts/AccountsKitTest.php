@@ -1129,6 +1129,65 @@ it('ends every other session and token when two-factor is turned off, and tells 
     });
 })->with('drivers');
 
+// Audit 2026-11-13 (ADR 0215): turning two-factor on told nobody and left
+// every other session -- one a thief got in with the password alone, say --
+// signed in under the rule it no longer meets.
+it('ends every other session when two-factor is turned on, keeps the API tokens, and tells the owner', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $other = new Visitor($app);
+        $other->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($other->who())->toBe('ada@example.com');
+        $epoch = $app->kit->epochs->of($id);
+        $credential = $app->kit->credentials->of($id);
+
+        twoFactorOn($app, $owner);
+        $app->work();
+
+        expect($app->kit->accounts->twoFactorEnabled($user))->toBeTrue()
+            ->and($other->who())->toBeNull()
+            ->and($owner->who())->toBe('ada@example.com')
+            ->and($app->kit->epochs->of($id))->not->toBe($epoch)
+            ->and($app->kit->credentials->of($id))->toBe($credential)
+            ->and($app->links('two-factor-enabled', 'ada@example.com'))->toBe(['https://app.example/password/forgot']);
+    });
+})->with('drivers');
+
+// Audit 2026-11-13 (ADR 0215): a passkey added or removed and new recovery
+// codes changed how an account signs in, and were not in its log.
+it('records a passkey added and removed and new recovery codes in the audit log', function () {
+    onDriver('sqlite', function (MemberApp $plain): void {
+        $app = new MemberApp($plain->orm->connection(), audit: true);
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $passkey = $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+        stepUpWithKey($owner, $key);
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->regenerateRecoveryCodes($r, $user, PASSWORD));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id));
+
+        $rows = array_map(
+            static fn (array $row): array => [$row['event'], $row['actor_id'], $row['subject_id'], $row['data']],
+            $app->orm->connection()->select("SELECT event, actor_id, subject_id, data FROM audit_entries WHERE event NOT IN ('auth.signed_in') ORDER BY sequence"),
+        );
+        expect($rows)->toBe([
+            ['auth.passkey_added', $id, $id, '{"name":"Laptop"}'],
+            ['auth.two_factor_enabled', $id, $id, null],
+            ['auth.recovery_codes_regenerated', $id, $id, null],
+            ['auth.passkey_removed', $id, $id, '{"name":"Laptop"}'],
+        ]);
+    });
+});
+
 it('signs a handoff\'s arrival in on the host it came to, leaving the epoch, and ends that session when its code comes back', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $home = member($app);
@@ -1402,6 +1461,25 @@ it('makes the sign-in decoy on the first check a worker serves, whatever its ema
         ->and($passwords->verify('a wrong password', null))->toBeFalse()
         ->and($passwords->verify('a wrong password', $hash))->toBeFalse()
         ->and($sampled)->toBe(1);
+});
+
+// Audit 2026-11-13: an account made with no password yet -- an empty hash,
+// awaiting its welcome link -- was refused at once, where an unknown
+// address took a hash's time: which said it was there (ADR 0215).
+it('checks a password against the decoy for an account with no hash it can check, taking an unknown address\'s time', function () {
+    $passwords = new Passwords(static fn (int $limit): array => [password_hash('another password', PASSWORD_BCRYPT, ['cost' => 11])]);
+    $timed = static function (?string $hash) use ($passwords): float {
+        $start = hrtime(true);
+        expect($passwords->verify('a guess at it', $hash))->toBeFalse();
+
+        return (hrtime(true) - $start) / 1e6;
+    };
+    $timed(null);
+    $unknown = $timed(null);
+
+    foreach (['', '!', '*', 'no password'] as $hash) {
+        expect($timed($hash))->toBeGreaterThan($unknown / 2);
+    }
 });
 
 // A hash the app keeps is kept off the policy on purpose -- its seeded demo

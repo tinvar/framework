@@ -40,6 +40,9 @@ final class Passwords
      */
     public const int MAX_LENGTH = 1024;
 
+    /** The shortest hash crypt() makes, a DES one: anything shorter is no password (verify()). */
+    public const int SHORTEST_HASH = 13;
+
     /** How many stored hashes are read to find the cost the accounts are at. */
     public const int SAMPLE = 101;
 
@@ -72,6 +75,10 @@ final class Passwords
     /**
      * Whether $password is the one $hash was made from -- or, with no hash,
      * checked against the decoy and refused, in the time a real check takes.
+     * So is a hash shorter than any crypt() makes -- empty, or a marker such
+     * as `!` -- so an account made with no password yet is refused in an
+     * unknown address's time, not at once (ADR 0215). A legacy crypt() hash
+     * an app imported still checks as itself.
      *
      * The decoy is made first, whatever the email: made only for an unknown
      * one, the sample it reads and the hash it makes would be time a known
@@ -80,9 +87,10 @@ final class Passwords
     public function verify(#[\SensitiveParameter] string $password, ?string $hash): bool
     {
         $decoy = $this->decoy();
-        $matched = password_verify($password, $hash ?? $decoy);
+        $usable = $hash !== null && \strlen($hash) >= self::SHORTEST_HASH;
+        $matched = password_verify($password, $usable ? $hash : $decoy);
 
-        return $hash !== null && $matched;
+        return $usable && $matched;
     }
 
     /**

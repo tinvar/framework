@@ -91,8 +91,10 @@ use Tinvar\Validation\ValidationException;
  *   0194): every change above, a confirmation and an API token are refused
  *   to a session staff are acting as the account in.
  * - **What happened is in the audit log**, where the app keeps one (ADR
- *   0156, 0162): every sign-in, failed and not, every sign-out, and every
- *   change to how an account signs in, about that account.
+ *   0156, 0162): every sign-in, failed and not, every wrong second factor
+ *   (ADR 0203), every sign-out, and every change to how an account signs
+ *   in -- passkeys and recovery codes included (ADR 0215) -- about that
+ *   account.
  */
 final class Accounts
 {
@@ -757,6 +759,13 @@ final class Accounts
      * as any second factor is; the recovery codes, to show once. The
      * session must have been confirmed in the last five minutes.
      *
+     * Every other session then ends and the auth epoch moves, in one durable
+     * transaction (ADR 0215): one signed in with the password alone -- a
+     * thief's, say -- got in under a rule that no longer stands. API tokens
+     * stay; they are listed, and each was told to the owner when made. This
+     * browser stays signed in, under a new id, and the owner is told by
+     * email.
+     *
      * @return list<string>
      */
     public function confirmTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): array
@@ -770,7 +779,17 @@ final class Accounts
             throw new ValidationException(['code' => ["That code didn't match. Type the code your authenticator app shows for this account now."]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
-        $this->record(SecurityEvent::TwoFactorEnabled, $user);
+        $checked = $this->connection->durableTransaction(function () use ($user): Credentials {
+            $this->sessions->endEverywhere($user->authIdentifier());
+            $this->epochs->bump($user->authIdentifier());
+            $this->record(SecurityEvent::TwoFactorEnabled, $user);
+
+            return $this->sessions->credentials($user);
+        });
+
+        $state = SessionState::of($http);
+        $this->sessions->signIn($state, $user, $checked, $state->factors());
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::TwoFactorEnabled, userId: $user->authIdentifier()));
 
         return $codes;
     }
@@ -818,8 +837,10 @@ final class Accounts
         if (!$this->twoFactor->enabled($user->authIdentifier())) {
             throw new ValidationException(['currentPassword' => ['Two-factor sign-in is off, so there are no recovery codes to replace. Turn it on first.']]);
         }
+        $codes = $this->twoFactor->regenerateRecoveryCodes($user->authIdentifier());
+        $this->record(SecurityEvent::RecoveryCodesRegenerated, $user);
 
-        return $this->twoFactor->regenerateRecoveryCodes($user->authIdentifier());
+        return $codes;
     }
 
     // ------------------------------------------------------------- passkeys
@@ -902,6 +923,7 @@ final class Accounts
             throw new ValidationException(['credential' => ['That passkey is already on an account. Use it to sign in, or make a new one.']]);
         }
 
+        $this->record(SecurityEvent::PasskeyAdded, $user, ['name' => $label]);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyAdded, name: $label, userId: $user->authIdentifier()));
 
         foreach ($this->passkeys->of($user->authIdentifier()) as $passkey) {
@@ -976,7 +998,7 @@ final class Accounts
         if ($name === null) {
             return false;
         }
-        $checked = $this->connection->durableTransaction(function () use ($http, $user, $id): ?Credentials {
+        $checked = $this->connection->durableTransaction(function () use ($http, $user, $id, $name): ?Credentials {
             if (!$this->passkeys->remove($user->authIdentifier(), $id)) {
                 return null;
             }
@@ -984,6 +1006,7 @@ final class Accounts
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
             $this->assertSessionStands($http, $user, 'confirm');
+            $this->record(SecurityEvent::PasskeyRemoved, $user, ['name' => $name]);
 
             return $this->sessions->credentials($user);
         });
@@ -1118,6 +1141,7 @@ final class Accounts
             AccountMailKind::PasswordChanged => $user === null ? null : $this->mails->passwordChanged($user, $resetPage),
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::PasskeyRemoved => $user === null ? null : $this->mails->passkeyRemoved($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
+            AccountMailKind::TwoFactorEnabled => $user === null ? null : $this->mails->twoFactorEnabled($user, $resetPage),
             AccountMailKind::TwoFactorDisabled => $user === null ? null : $this->mails->twoFactorDisabled($user, $resetPage),
             AccountMailKind::SecondFactorFailures => $user === null ? null : $this->mails->secondFactorFailures($user, $resetPage),
             AccountMailKind::ApiTokenCreated => $user === null ? null : $this->mails->apiTokenCreated($user, $job->name, $this->links->page($this->links->paths->apiTokens), $resetPage),

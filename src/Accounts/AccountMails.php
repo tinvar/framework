@@ -59,6 +59,14 @@ interface AccountMails
     public function passkeyRemoved(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable;
 
     /**
+     * That two-factor sign-in was turned on, which signed out every other
+     * device (ADR 0215): from now on a code is asked at every sign-in, so
+     * the owner hears of it -- someone else turning it on would keep them
+     * out -- with where to reset the password from if it was not them.
+     */
+    public function twoFactorEnabled(AccountUser $user, string $resetUrl): Mailable;
+
+    /**
      * That two-factor sign-in was turned off, which signed out every other
      * device: a password alone signs in now, so the owner hears of it, with
      * where to reset the password from if it was not them.

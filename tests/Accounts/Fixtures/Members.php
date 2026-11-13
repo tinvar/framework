@@ -222,6 +222,11 @@ final readonly class MemberMails implements AccountMails, SignInLinkMails, \Tinv
         return new MemberMail($user->accountEmail(), 'passkey-removed', $accountUrl);
     }
 
+    public function twoFactorEnabled(AccountUser $user, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'two-factor-enabled', $resetUrl);
+    }
+
     public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
     {
         return new MemberMail($user->accountEmail(), 'two-factor-disabled', $resetUrl);
@@ -286,6 +291,11 @@ final readonly class PlainMemberMails implements AccountMails
     public function passkeyRemoved(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable
     {
         return $this->mails->passkeyRemoved($user, $passkeyName, $accountUrl, $resetUrl);
+    }
+
+    public function twoFactorEnabled(AccountUser $user, string $resetUrl): Mailable
+    {
+        return $this->mails->twoFactorEnabled($user, $resetUrl);
     }
 
     public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
