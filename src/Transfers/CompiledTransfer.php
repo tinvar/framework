@@ -102,6 +102,23 @@ final readonly class CompiledTransfer implements DeclaredEntryPoint
         ));
     }
 
+    /**
+     * The start checks about a class rather than an argument --
+     * Authorize('export', Order::class) -- which a download asks again:
+     * the right to export at all, withdrawn since, opens no file it wrote.
+     *
+     * @return list<Authorize>
+     */
+    public function classChecks(): array
+    {
+        return array_values(array_filter(
+            $this->startChecks(),
+            fn (Authorize $check): bool => $check->argument !== null
+                && !isset($this->models[$check->argument])
+                && !isset($this->scalars[$check->argument]),
+        ));
+    }
+
     /** How many of startChecks(), at the front, the class declared. */
     public function classLevelStartChecks(): int
     {

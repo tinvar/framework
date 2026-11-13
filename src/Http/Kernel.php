@@ -1615,6 +1615,7 @@ final class Kernel
                 middlewareResolver: self::middlewareFrom($resolver),
                 panels: $panels,
                 globalMiddleware: $globalMiddleware,
+                gate: $gate,
             );
             $this->transferStatus = new TransferStatus($transfers, $this->auth, $this->orm, $panels);
             $container?->instance(Transfers::class, $transfers)

@@ -12,6 +12,7 @@ declare(strict_types=1);
 use Tinvar\Render\SignedToken;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Transfers\Fixtures\App;
+use Tinvar\Tests\Transfers\Fixtures\WidgetPolicy;
 use Tinvar\Transfers\DownloadToken;
 use Tinvar\Transfers\TransferRecord;
 use Tinvar\Transfers\Transfers;
@@ -281,6 +282,21 @@ describe('/_download', function () {
 
         expect($app->download($link, epoch: 'e2')->status)->toBe(404)
             ->and($app->download($link, epoch: 'e1')->status)->toBe(200);
+    });
+
+    // Audit 2026-11-13: a finished export stayed downloadable after the
+    // right to export was withdrawn, where nothing moved the epoch.
+    it('is a 404 once the export\'s own #[Authorize] refuses the user', function () {
+        $app = new App();
+        $link = $app->linkFor(exported($app));
+        WidgetPolicy::$exportWithdrawn = true;
+        try {
+            expect($app->download($link)->status)->toBe(404);
+        } finally {
+            WidgetPolicy::$exportWithdrawn = false;
+        }
+
+        expect($app->download($link)->status)->toBe(200);
     });
 
     it('is a 404 in another tenant', function () {

@@ -6,6 +6,7 @@ namespace Tinvar\Transfers;
 
 use Tinvar\Attributes\Export;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\Gate;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
@@ -67,6 +68,8 @@ final readonly class DownloadEndpoint
         private AuthContext $auth,
         private Orm $orm,
         private \Closure $middlewareResolver,
+        // Asks the export's checks about a class again (classChecks()).
+        private Gate $gate,
         private ?PanelContext $panels = null,
         private array $globalMiddleware = [],
     ) {}
@@ -125,6 +128,16 @@ final readonly class DownloadEndpoint
         // The export's gates (#[RequiresPlan]), once the token holds: a
         // caller it does not hold for learns nothing of them (ADR 0150).
         EntryGates::enforce($request);
+
+        // And its checks about a class, asked again: a right to export
+        // withdrawn by the policy, with no move of the epoch, opens no
+        // file written while it held (ADR 0216).
+        $export = $this->transfers->registry->export($token->name);
+        foreach ($export?->classChecks() ?? [] as $check) {
+            if (!$this->gate->allows($check, [])) {
+                throw self::missing();
+            }
+        }
 
         $record = $this->transfers->store->find($token->transfer, $token->tenant, $token->panel, $user);
         if ($record === null

@@ -106,9 +106,12 @@ final class Widget extends Model
 /** Staff may export and restock; a locked widget may not be restocked by anyone. */
 final class WidgetPolicy
 {
+    /** Set by a test to withdraw the right to export from everyone, as a role change outside the epoch would. */
+    public static bool $exportWithdrawn = false;
+
     public function export(?Authenticatable $user, string $class): bool
     {
-        return $user !== null && str_starts_with($user->authIdentifier(), 'staff');
+        return !self::$exportWithdrawn && $user !== null && str_starts_with($user->authIdentifier(), 'staff');
     }
 
     public function restock(?Authenticatable $user, string $class): bool
