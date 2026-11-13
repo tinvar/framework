@@ -148,7 +148,11 @@ final readonly class TransferRunner
         $models = array_filter($arguments, static fn (mixed $value): bool => $value instanceof Model);
         $checks = $transfer->startChecks();
         $optional = array_keys($transfer->optionalModels);
-        if (Checks::undecided($checks, $transfer->classLevelStartChecks(), $models, $optional)) {
+        // Checks all on a row's fields leave the start asking nothing;
+        // TransferRegistry refuses such an import, and this fails closed on
+        // one compiled some other way (ADR 0204).
+        if (($transfer->checks !== [] && $checks === [])
+            || Checks::undecided($checks, $transfer->classLevelStartChecks(), $models, $optional)) {
             throw ForbiddenException::undecided($transfer->where());
         }
         foreach ($checks as $check) {
@@ -996,13 +1000,27 @@ final readonly class TransferRunner
         // sharing a row field's name), and a row's value is never put where
         // a start argument's is read.
         $allowed = true;
+        $applied = false;
         foreach ($transfer->rowChecks() as $check) {
-            if ($check->argument !== null && isset($resolved[$check->argument]) && !$this->gate->allows($check, $resolved)) {
+            if ($check->argument === null || !isset($resolved[$check->argument])) {
+                continue;
+            }
+            $applied = true;
+            if (!$this->gate->allows($check, $resolved)) {
                 $failures->add($line, $check->argument, "{$check->argument} is not one you may use here.");
                 $allowed = false;
             }
         }
         if (!$allowed) {
+            return null;
+        }
+        // A row is applied only once some check was asked of it: its own,
+        // or the start's, which every run asks again. One left with neither
+        // -- an import whose checks all name row fields, this row's blank --
+        // fails closed (ADR 0204).
+        if (!$applied && $transfer->checks !== [] && $transfer->startChecks() === []) {
+            $failures->add($line, '', 'no check this import declares applies to this row.');
+
             return null;
         }
 

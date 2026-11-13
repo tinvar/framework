@@ -247,6 +247,26 @@ final class TransferRegistry
             TagInvalidation::assertPlaceholders($class, $declaration->revalidates, [...array_keys($models), ...array_keys($scalars)]);
         }
 
+        // An import whose every check names a row field asks nothing of its
+        // start, and a row that leaves those fields blank is asked nothing
+        // at all: anyone in its panel could create rows no policy was asked
+        // about (ADR 0204). It needs a check of its own -- on the class, or
+        // on a start argument -- or #[NoAuthorization] with no checks.
+        $checks = Authorize::declaredOn($class, '__invoke');
+        if ($declaration instanceof Import && $checks !== []) {
+            $startChecks = array_filter(
+                $checks,
+                static fn (Authorize $check): bool => $check->argument === null || !isset($rowModels[$check->argument]),
+            );
+            if ($startChecks === []) {
+                throw new \InvalidArgumentException(
+                    "{$class}: every #[Authorize] names a field of its row, so it asks nothing of its start, and a row "
+                    . 'leaving those fields blank would be asked nothing. Add one about who may import at all, as in '
+                    . "Authorize('restock', Widget::class).",
+                );
+            }
+        }
+
         return new CompiledTransfer(
             kind: $declaration instanceof Export ? CompiledTransfer::EXPORT : CompiledTransfer::IMPORT,
             name: $name,
@@ -257,7 +277,7 @@ final class TransferRegistry
             formats: $formats,
             maxRows: $declaration->maxRows,
             maxBytes: $maxBytes,
-            checks: Authorize::declaredOn($class, '__invoke'),
+            checks: $checks,
             classLevelChecks: Authorize::classLevelCount($class),
             models: $models,
             optionalModels: $optional,

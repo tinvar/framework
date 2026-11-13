@@ -16,6 +16,7 @@ use Tinvar\Attributes\Import;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Data\Data;
+use Tinvar\Http\ForbiddenException;
 use Tinvar\Orm\Query;
 use Tinvar\Render\TokenError;
 use Tinvar\Support\Signer;
@@ -28,6 +29,8 @@ use Tinvar\Transfers\CompiledTransfer;
 use Tinvar\Transfers\Csv;
 use Tinvar\Transfers\DownloadToken;
 use Tinvar\Transfers\TransferRegistry;
+use Tinvar\Transfers\TransferRunner;
+use Tinvar\Transfers\RowFailures;
 use Tinvar\Validation\FormRequest;
 
 require_once __DIR__ . '/Fixtures/app.php';
@@ -116,6 +119,16 @@ final readonly class ArglessMapExport
     }
 }
 
+/**
+ * Every check names a row field: nothing is asked of the start, and a row
+ * whose cell is blank was asked nothing at all (audit 2026-11-13, M3).
+ */
+#[Import, Authorize('update', 'widget')]
+final readonly class RowCheckedOnlyImport
+{
+    public function __invoke(UncheckedRow $row): void {}
+}
+
 /** A start argument and a row field both named `widget`: one check could not say which it is about. */
 #[Import, Authorize('restock', Widget::class), Authorize('update', 'widget')]
 final readonly class CollidingImport
@@ -128,6 +141,47 @@ describe('registration', function () {
         expect(fn () => (new TransferRegistry())->register(CollidingImport::class))
             ->toThrow(\InvalidArgumentException::class, 'shares its name with a field of its row')
             ->and(TransferRegistry::check([CollidingImport::class]))->toHaveCount(1);
+    });
+
+    it('refuses an import whose every #[Authorize] names a row field: its start would ask nothing', function () {
+        expect(fn () => (new TransferRegistry())->register(RowCheckedOnlyImport::class))
+            ->toThrow(\InvalidArgumentException::class, 'asks nothing of its start')
+            ->and(TransferRegistry::check([RowCheckedOnlyImport::class]))->toHaveCount(1);
+    });
+
+    it('refuses the start of an import compiled with no start check: it fails closed', function () {
+        $import = (new TransferRegistry())->register(StockImport::class);
+        $rowOnly = new CompiledTransfer(
+            kind: $import->kind,
+            name: $import->name,
+            class: $import->class,
+            row: $import->row,
+            rowParameter: $import->rowParameter,
+            columns: $import->columns,
+            formats: $import->formats,
+            maxRows: $import->maxRows,
+            maxBytes: $import->maxBytes,
+            checks: $import->rowChecks(),
+            classLevelChecks: \count($import->rowChecks()),
+            models: [],
+            optionalModels: [],
+            scalars: [],
+            rowModels: $import->rowModels,
+            middleware: [],
+            tenantFrom: null,
+            panels: [],
+        );
+        $runner = (new \ReflectionClass(TransferRunner::class))->newInstanceWithoutConstructor();
+
+        expect(fn () => $runner->authorize($rowOnly, []))->toThrow(ForbiddenException::class, 'No check declared');
+
+        // And a row whose model cell is blank, which no row check applies
+        // to, is refused rather than applied with nothing asked.
+        $failures = new RowFailures();
+        $checkRow = new \ReflectionMethod(TransferRunner::class, 'checkRow');
+
+        expect($checkRow->invoke($runner, $rowOnly, [], 2, ['widget' => '', 'stock' => '1'], $failures))->toBeNull()
+            ->and($failures->kept)->toBe([['row' => 2, 'field' => '', 'message' => 'no check this import declares applies to this row.']]);
     });
 
     it('compiles an export and an import, their columns from their rows', function () {
