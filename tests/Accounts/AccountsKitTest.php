@@ -800,6 +800,34 @@ it('shows the secret two-factor setup waits on only to a session of its owner co
     });
 })->with('drivers');
 
+// Review of the audit fixes (C10, ADR 0202): confirming wrote to whatever
+// unconfirmed secret the account had by then, not the one its code was
+// checked against -- one begun again since, or one past its ten minutes.
+it('turns two-factor on only with the secret its code was checked against', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $setup = $owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user));
+        $code = Totp::at((string) Base32::decode($setup['secret']), $app->now);
+
+        // Between the secret's read and the write that confirms it, the
+        // secret is replaced, as setup begun again elsewhere replaces it.
+        $connection = $app->orm->connection();
+        \assert($connection instanceof PdoConnection);
+        $connection->observeStatements(static function (string $sql) use ($connection, $user): void {
+            if (str_starts_with($sql, 'SELECT secret FROM two_factor_secrets')) {
+                $connection->observeStatements(null);
+                $connection->execute("UPDATE two_factor_secrets SET secret = 'another' WHERE user_id = ?", [$user->authIdentifier()]);
+            }
+        });
+
+        expect(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, $code))))->toHaveKey('code')
+            ->and($app->kit->accounts->twoFactorEnabled($user))->toBeFalse();
+    });
+})->with('drivers');
+
 it('confirms a session with one of its account\'s passkeys, or a code from its authenticator app', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $ada = member($app, 'ada@example.com');

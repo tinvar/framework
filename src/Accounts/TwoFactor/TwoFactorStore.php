@@ -100,32 +100,32 @@ final readonly class TwoFactorStore
      */
     public function pendingSecret(string $user): ?string
     {
-        $row = $this->connection->select(
-            'SELECT secret FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NULL AND created_at > ?',
-            [$user, $this->moment(-self::PENDING_LIFETIME)],
-        )[0] ?? null;
-
-        return $row === null ? null : $this->encrypter->decrypt((string) $row['secret'], self::context($user));
+        return $this->pending($user)[1] ?? null;
     }
 
     /**
      * Turns two-factor on with a code from the pending secret, and returns
      * the recovery codes to show once; null when the code is wrong.
      *
+     * The write confirms the secret the code was checked against, and only
+     * while it is still young enough: one begun again since, or past its
+     * ten minutes by then, is left unconfirmed, and this answers null.
+     *
      * @return list<string>|null
      */
     public function confirm(string $user, #[\SensitiveParameter] string $code): ?array
     {
-        $secret = $this->pendingSecret($user);
+        [$sealed, $secret] = $this->pending($user) ?? [null, null];
         $step = $secret === null ? null : Totp::verify($secret, $code, $this->now());
-        if ($step === null) {
+        if ($sealed === null || $step === null) {
             return null;
         }
         $connection = $this->connection;
         $now = $this->moment();
+        $lapse = $this->moment(-self::PENDING_LIFETIME);
         $confirmed = $connection->transaction(static fn (): int => $connection->execute(
-            'UPDATE two_factor_secrets SET confirmed_at = ?, last_used_step = ? WHERE user_id = ? AND confirmed_at IS NULL',
-            [$now, $step, $user],
+            'UPDATE two_factor_secrets SET confirmed_at = ?, last_used_step = ? WHERE user_id = ? AND confirmed_at IS NULL AND secret = ? AND created_at > ?',
+            [$now, $step, $user, $sealed, $lapse],
         ));
 
         return $confirmed === 1 ? $this->regenerateRecoveryCodes($user) : null;
@@ -237,6 +237,24 @@ final readonly class TwoFactorStore
     private static function hashCode(#[\SensitiveParameter] string $code): string
     {
         return hash('sha256', strtolower((string) preg_replace('/[\s-]+/', '', $code)));
+    }
+
+    /**
+     * The unconfirmed secret begin() made, while younger than
+     * PENDING_LIFETIME: as stored, and opened; null with none.
+     *
+     * @return array{string, string}|null
+     */
+    private function pending(string $user): ?array
+    {
+        $row = $this->connection->select(
+            'SELECT secret FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NULL AND created_at > ?',
+            [$user, $this->moment(-self::PENDING_LIFETIME)],
+        )[0] ?? null;
+        $sealed = $row === null ? null : (string) $row['secret'];
+        $secret = $sealed === null ? null : $this->encrypter->decrypt($sealed, self::context($user));
+
+        return $sealed === null || $secret === null ? null : [$sealed, $secret];
     }
 
     private static function context(string $user): string
