@@ -528,6 +528,148 @@ it('caps the wrong codes an account takes in a day, from every address and sign-
     });
 });
 
+/**
+ * Spends the account's wrong codes for the day, as someone holding
+ * $password would: a new sign-in from a new address each fifteen minutes,
+ * five codes each. How many were taken before a 429.
+ */
+function spendTheDay(MemberApp $app, string $round, string $password = PASSWORD): int
+{
+    $guesses = 0;
+    for ($sign = 0; $sign < 10; $sign++) {
+        $app->now += SignInThrottle::ACCOUNT_WINDOW + 1;
+        $guesser = new Visitor($app, address: "198.51.{$sign}.1");
+        $guesser->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', $password));
+        for ($i = 0; $i < Accounts::SECOND_FACTOR_TRIES; $i++) {
+            $guesser->address = "198.{$round}.{$sign}.{$i}";
+            try {
+                refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, '000000')));
+                $guesses++;
+            } catch (HttpException $e) {
+                expect($e->status)->toBe(429);
+
+                return $guesses;
+            }
+        }
+    }
+
+    return $guesses;
+}
+
+/** Early in a day, as the stores keep their windows: aligned to the clock. */
+function earlyInADay(MemberApp $app): void
+{
+    $app->now = (intdiv($app->now, SignInThrottle::DAY) + 1) * SignInThrottle::DAY + 60;
+}
+
+// Review of the audit fixes (S4, ADR 0203): the day's twenty wrong codes
+// were one budget, which someone holding the password, or a stolen
+// session confirming with codes, could spend to keep the owner's own code
+// refused all day, every day.
+it('counts a signed-in session\'s wrong codes apart from the sign-ins\' day', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        earlyInADay($app);
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $secret = twoFactorOn($app, $owner);
+
+        // A stolen cookie confirms with wrong codes until it is refused.
+        $thief = new Visitor($app, address: '192.0.2.1');
+        $thief->cookie = $owner->cookie;
+        $refused = false;
+        for ($i = 0; $i < 60 && !$refused; $i++) {
+            $thief->address = "192.0.2.{$i}";
+            try {
+                refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->confirmWithCode($r, $user, '000000')));
+            } catch (HttpException $e) {
+                $refused = true;
+            }
+        }
+        expect($refused)->toBeTrue();
+
+        // The owner's sign-in still takes their code.
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now + Totp::PERIOD)));
+        expect($own->who())->toBe('ada@example.com');
+    });
+});
+
+it('hands the day\'s wrong codes back once the inbox proves the owner: a reset, or an emailed link', function (string $proof) {
+    onDriver('sqlite', function (MemberApp $app) use ($proof): void {
+        earlyInADay($app);
+        $owner = member($app);
+        $secret = twoFactorOn($app, $owner);
+        expect(spendTheDay($app, '1'))->toBe(SignInThrottle::DAILY_CEILING);
+
+        // The owner, from their inbox.
+        $own = new Visitor($app, address: '203.0.113.200');
+        if ($proof === 'reset') {
+            $own->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+            $app->work();
+            $own->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($app->links('password-reset', 'ada@example.com')[0]), 'a brand new passphrase'));
+        } else {
+            $own->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+            $app->work();
+            $own->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, token($app->links('sign-in-link', 'ada@example.com')[0])));
+        }
+        $app->now += Totp::PERIOD;
+        $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($own->who())->toBe('ada@example.com');
+    });
+})->with(['reset', 'link']);
+
+it('spends no hand-back on a day with no wrong code in it', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        earlyInADay($app);
+        $owner = member($app);
+        $secret = twoFactorOn($app, $owner);
+
+        // The owner signs in by an emailed link, with nothing to hand back.
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $own->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, token($app->links('sign-in-link', 'ada@example.com')[0])));
+
+        // Later that day the password is used against them; their reset still hands the day back.
+        expect(spendTheDay($app, '1'))->toBe(SignInThrottle::DAILY_CEILING);
+        $own = new Visitor($app, address: '203.0.113.200');
+        $own->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $own->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($app->links('password-reset', 'ada@example.com')[0]), 'a brand new passphrase'));
+        $app->now += Totp::PERIOD;
+        $own->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($own->who())->toBe('ada@example.com');
+    });
+});
+
+it('hands the day back once a day at most, so the inbox is not a fresh twenty guesses each time', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        earlyInADay($app);
+        $owner = member($app);
+        $secret = twoFactorOn($app, $owner);
+
+        // Someone with the password and the inbox: the day, a link, the day again.
+        expect(spendTheDay($app, '1'))->toBe(SignInThrottle::DAILY_CEILING);
+        $inbox = new Visitor($app, address: '192.0.2.9');
+        $inbox->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $inbox->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, token($app->links('sign-in-link', 'ada@example.com')[0])));
+        expect(spendTheDay($app, '2'))->toBe(SignInThrottle::DAILY_CEILING);
+
+        // A second link that day hands nothing back.
+        $app->now += 60;
+        $inbox = new Visitor($app, address: '192.0.2.10');
+        $inbox->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $links = $app->links('sign-in-link', 'ada@example.com');
+        $inbox->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, token($links[\count($links) - 1])));
+        expect(static fn () => $inbox->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now + Totp::PERIOD))))
+            ->toThrow(HttpException::class);
+    });
+});
+
 it('adds a passkey and signs in with it, for this host and this session alone', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $owner = member($app);

@@ -34,7 +34,9 @@ use Tinvar\Http\ThrottleStore;
  * - where asked (`dailyCeiling`), failures on one account from every
  *   address together in a day, which the second factor counts (ADR 0203):
  *   a code is six digits, and fifty guesses every fifteen minutes from
- *   someone holding the password came to about 1.4% a day.
+ *   someone holding the password came to about 1.4% a day. Spent by them,
+ *   it is handed back, once a day, when the owner proves the inbox
+ *   (forgive()).
  *
  * Only failures count against an account. An attempt is counted BEFORE its
  * password is checked, since concurrent attempts must not all pass a check
@@ -168,6 +170,43 @@ final class SignInThrottle
 
         if ($this->dailyCeiling > 0) {
             $this->store->release($this->accountDaily($email), self::DAY);
+        }
+    }
+
+    /**
+     * The same limits, counted under $prefix: another kind of guess at the
+     * same credential, which must not spend this one's budget (ADR 0203).
+     */
+    public function under(string $prefix): self
+    {
+        return new self($this->store, $this->throttle, $this->perAccount, $this->perAddress, $this->accountCeiling, $prefix, $this->dailyCeiling);
+    }
+
+    /**
+     * Hands the account its day's failures back, once its owner has proved
+     * who they are some other way -- the inbox, by a reset or an emailed
+     * link -- so whoever spent them, holding the password, cannot keep the
+     * owner's own guesses refused all day (ADR 0203). Once a day at most,
+     * and only a day that holds a failure: someone holding the inbox as
+     * well gets one day's budget more, never another for each link they
+     * ask for.
+     */
+    public function forgive(string $email): void
+    {
+        if ($this->dailyCeiling <= 0) {
+            return;
+        }
+        $day = $this->accountDaily($email);
+        // A store can only count: one counted and taken back says whether
+        // the day held a failure before it.
+        [$used] = $this->store->increment($day, self::DAY);
+        $this->store->release($day, self::DAY);
+        if ($used <= 1) {
+            return;
+        }
+        [$forgiven] = $this->store->increment($this->prefix . '|forgiven|' . hash('sha256', self::folded($email)), self::DAY);
+        if ($forgiven === 1) {
+            $this->store->release($day, self::DAY, PHP_INT_MAX);
         }
     }
 

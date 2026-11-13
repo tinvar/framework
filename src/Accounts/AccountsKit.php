@@ -105,7 +105,8 @@ final readonly class AccountsKit
      *        authenticator app files codes under
      * @param array<string, int> $limits sign-in throttle limits by bucket over the
      *        defaults -- `sign-in`, `sign-in.address`, `sign-in.account`,
-     *        `two-factor`, `two-factor.account`, `two-factor.daily` (ADR 0203),
+     *        `two-factor`, `two-factor.account`, `two-factor.daily` (ADR 0203;
+     *        a signed-in session's codes are held to the same, counted apart),
      *        `email-link`, `email-link.recipient`; 0 turns one off
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param Realms|null $realms the app's hosts, where it has more than one (ADR 0039): a

@@ -153,6 +153,14 @@ final class Accounts
     /** The issuer an authenticator app files the account's codes under. */
     private readonly string $issuer;
 
+    /**
+     * A signed-in session's guesses at a code -- confirming it with one,
+     * turning two-factor on -- counted as the second factor's are, under a
+     * prefix of their own: a stolen session spending them pauses its own
+     * confirmations, never the owner's sign-ins (ADR 0203).
+     */
+    private readonly SignInThrottle $codeConfirmations;
+
     public function __construct(
         private readonly Connection $connection,
         private readonly AccountUsers $users,
@@ -182,6 +190,7 @@ final class Accounts
         private readonly ?AuthContext $auth = null,
     ) {
         $this->issuer = $issuer;
+        $this->codeConfirmations = $secondFactorThrottle->under('two-factor-confirm');
     }
 
     public function paths(): AccountPaths
@@ -310,6 +319,9 @@ final class Accounts
 
             return $user;
         });
+        // The inbox proved the owner: the day's wrong codes, which whoever
+        // holds the password may have spent, are handed back (ADR 0203).
+        $this->secondFactorThrottle->forgive($user->authIdentifier());
 
         return $this->enter($http, $user, $checked, SignInFactor::EmailLink);
     }
@@ -480,6 +492,9 @@ final class Accounts
         });
 
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordChanged, userId: $user->authIdentifier()));
+        // Whoever spent the day's wrong codes with the old password has
+        // lost it: the owner has them back (ADR 0203).
+        $this->secondFactorThrottle->forgive($user->authIdentifier());
 
         // The link proved the inbox, as a sign-in link does.
         return $this->enter($http, $user, $checked, SignInFactor::EmailLink);
@@ -640,14 +655,14 @@ final class Accounts
     public function confirmWithCode(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): void
     {
         $this->assertNotImpersonating($http);
-        $this->secondFactorThrottle->hit($http, $user->authIdentifier());
+        $this->codeConfirmations->hit($http, $user->authIdentifier());
         $compact = (string) preg_replace('/\s+/', '', $code);
         if (preg_match('/^\d{' . Totp::DIGITS . '}\z/', $compact) !== 1 || !$this->twoFactor->verify($user->authIdentifier(), $compact)) {
             $this->record(SecurityEvent::SecondFactorFailed, $user);
 
             throw new ValidationException(['code' => ["That code didn't work. Type the code your authenticator app shows now."]]);
         }
-        $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
+        $this->codeConfirmations->succeeded($http, $user->authIdentifier());
         $this->stepUp($http, $user, SignInFactor::AuthenticatorCode, 'code');
     }
 
@@ -775,12 +790,12 @@ final class Accounts
         $this->assertNotImpersonating($http);
         $this->assertRecentlyConfirmed($http);
         $this->assertMayChangeFactors($http, $user);
-        $this->secondFactorThrottle->hit($http, $user->authIdentifier());
+        $this->codeConfirmations->hit($http, $user->authIdentifier());
         $codes = $this->twoFactor->confirm($user->authIdentifier(), SessionState::of($http)->id, $code);
         if ($codes === null) {
             throw new ValidationException(['code' => ["That code didn't match. Type the code your authenticator app shows for this account now."]]);
         }
-        $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
+        $this->codeConfirmations->succeeded($http, $user->authIdentifier());
         $checked = $this->connection->durableTransaction(function () use ($user): Credentials {
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
