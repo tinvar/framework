@@ -7,8 +7,8 @@ namespace Tinvar\Queue;
 /**
  * A queue that can forget its failed jobs once they are old (ADR 0221): a
  * failed job keeps its payload -- the job's arguments, in the clear -- and
- * its error, which is there for `queue:retry`, not for good. PruneQueue
- * forgets those that failed PruneQueue::KEEP_FAILED ago, every night.
+ * its error, which is there for `queue:retry`, not for good. The nightly
+ * queue prune forgets those that failed a month ago.
  */
 interface ForgetsFailed
 {

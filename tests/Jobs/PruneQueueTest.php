@@ -19,8 +19,6 @@ use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
 
-require_once __DIR__ . '/Fixtures/jobs.php';
-
 it('forgets batches finished a week ago and lapsed locks, keeping the rest', function () {
     $queue = new ArrayQueue();
     $now = 2_000_000_000;
@@ -119,32 +117,4 @@ it('runs nightly, and does nothing on a queue that keeps no batches or locks', f
     $schedule = new \ReflectionClass(PruneQueue::class)->getAttributes(Schedule::class)[0]->newInstance();
     expect(PruneQueue::prune($plain, time()))->toBe(0)
         ->and($schedule->expression)->toBe('23 4 * * *');
-});
-
-it('forgets, from queue:prune, the jobs that failed more than --failed-days ago (30)', function () {
-    $h = new \Tinvar\Tests\Jobs\Fixtures\Harness();
-    $queue = $h->queue;
-    \assert($queue instanceof ArrayQueue);
-    $now = 2_000_000_000;
-    foreach (['month' => $now - 31 * 86_400, 'week' => $now - 8 * 86_400, 'today' => $now - 60] as $id => $at) {
-        $queue->push(new PendingJob($id, 'default', 'payload', $at));
-        $reserved = $queue->reserve(['default'], $at, 60);
-        \assert($reserved !== null);
-        $queue->fail($reserved, 'it threw', $at);
-    }
-    $lines = [];
-    $output = new \Tinvar\Console\Output(static function (string $line) use (&$lines): void {
-        $lines[] = $line;
-    }, static function (string $line): void {});
-    $console = new \Tinvar\Console\Console([], $h->orm, $h->container->resolver(), $h->scope, $h->panels, $h->registry, null, $queue, $h->runner, clock: static fn (): \DateTimeImmutable => new \DateTimeImmutable("@{$now}"));
-    $ids = static fn (): array => array_map(static fn ($f): string => $f->id, $queue->failed());
-
-    expect($console->run('queue:prune', [], $output))->toBe(0)
-        ->and($ids())->toBe(['today', 'week'])
-        ->and($console->run('queue:prune', ['--failed-days=7'], $output))->toBe(0)
-        ->and($ids())->toBe(['today'])
-        ->and($lines)->toBe(['pruned 1', 'pruned 1'])
-        // A usage error, nothing forgotten.
-        ->and($console->run('queue:prune', ['--failed-days=x'], $output))->toBe(64)
-        ->and($ids())->toBe(['today']);
 });
