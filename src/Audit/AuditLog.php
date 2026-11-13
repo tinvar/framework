@@ -500,6 +500,14 @@ final class AuditLog implements ModelChanges, ActionObserver
      * what is left. A whole prefix of the log by place, never a gap, and
      * never past the first entry still inside the retention: an entry made
      * out of time order keeps the older ones after it until it is old too.
+     *
+     * How far is read from each entry's stored moment, which a database
+     * writer can change; so each batch first walks the chain from the
+     * anchor in force through the last entry it would take, and takes
+     * nothing, and signs no anchor, where that walk breaks (ADR 0209): a
+     * backdated or edited entry is never erased under a valid anchor. Every
+     * other tenant's log is still pruned; then this throws, naming each log
+     * it refused, for `tinvar audit:verify` to say more.
      */
     public function prune(?CarbonImmutable $now = null, int $batch = 1_000, int $mostBatches = 20): int
     {
@@ -508,6 +516,7 @@ final class AuditLog implements ModelChanges, ActionObserver
         $stored = $this->orm->timestampStorage()->format($cutoff);
         $taken = 0;
         $batches = 0;
+        $refused = [];
 
         foreach ($this->tenants() as $tenant) {
             $oldest = $connection->select(
@@ -526,34 +535,13 @@ final class AuditLog implements ModelChanges, ActionObserver
                 $upto = min($upto, (int) $kept[0]['keep'] - 1);
             }
             while ($upto > 0 && $batches < $mostBatches) {
-                $done = $this->orm->transaction(function () use ($connection, $tenant, $upto, $batch): ?int {
-                    $head = $connection->select('SELECT pruned_through FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
-                    $from = (int) ($head[0]['pruned_through'] ?? 0);
-                    if ($from >= $upto) {
-                        return null;
-                    }
-                    $through = min($upto, $from + $batch);
-                    $last = $connection->select(
-                        'SELECT hash FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence = ?',
-                        [$tenant, $through],
-                    );
-                    if ($last === []) {
-                        throw new \RuntimeException(
-                            "The audit log of tenant '{$tenant}' has no entry {$through} to prune through: run `tinvar audit:verify` to find where it was changed.",
-                        );
-                    }
-                    $anchor = (string) $last[0]['hash'];
-                    $deleted = $connection->execute(
-                        'DELETE FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence <= ?',
-                        [$tenant, $through],
-                    );
-                    $connection->execute(
-                        'UPDATE ' . AuditTable::HEADS . ' SET pruned_through = ?, anchor = ?, anchor_mac = ? WHERE tenant = ?',
-                        [$through, $anchor, $this->chain->anchor($tenant, $through, $anchor), $tenant],
-                    );
+                try {
+                    $done = $this->orm->transaction(fn (): ?int => $this->pruneBatch($connection, $tenant, $upto, $batch));
+                } catch (ChainBroken $e) {
+                    $refused[] = "tenant '{$tenant}': {$e->getMessage()}";
 
-                    return $deleted;
-                });
+                    break;
+                }
                 if ($done === null) {
                     break;
                 }
@@ -562,7 +550,78 @@ final class AuditLog implements ModelChanges, ActionObserver
             }
         }
 
+        if ($refused !== []) {
+            throw new \RuntimeException(
+                'The audit log was not pruned where its chain does not hold, so nothing there is taken away under a new anchor ('
+                . implode('; ', $refused) . '): run `tinvar audit:verify` to find where it was changed.',
+            );
+        }
+
         return $taken;
+    }
+
+    /**
+     * One batch of $tenant's pruning, inside its transaction: the chain
+     * walked from the anchor in force through the last entry it takes,
+     * then those entries taken and the anchor moved to that one. Answers
+     * how many it took, or null with nothing left to take.
+     *
+     * @throws ChainBroken where the walk breaks, before anything is written
+     */
+    private function pruneBatch(Connection $connection, string $tenant, int $upto, int $batch): ?int
+    {
+        $head = $connection->select('SELECT pruned_through, anchor, anchor_mac FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
+        if ($head === []) {
+            throw new ChainBroken('The log has entries and no head.');
+        }
+        $from = (int) $head[0]['pruned_through'];
+        if ($from >= $upto) {
+            return null;
+        }
+        $previous = (string) $head[0]['anchor'];
+        if (!$this->chain->anchorHolds($tenant, $from, $previous, (string) $head[0]['anchor_mac'])) {
+            throw new ChainBroken('Where pruning left the log has been changed.');
+        }
+        $through = min($upto, $from + $batch);
+
+        // Every entry this batch takes, recomputed from the anchor: what is
+        // signed next is a hash this walk made, never one read as stored.
+        $expected = $from + 1;
+        do {
+            $rows = $connection->select(
+                'SELECT * FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence >= ? AND sequence <= ? ORDER BY sequence LIMIT 500',
+                [$tenant, $expected, $through],
+            );
+            foreach ($rows as $row) {
+                $sequence = (int) $row['sequence'];
+                if ($sequence !== $expected) {
+                    throw new ChainBroken("Entry {$expected} is missing.");
+                }
+                if (!hash_equals($previous, (string) $row['previous_hash'])) {
+                    throw new ChainBroken("Entry {$sequence} is not chained to the one before it.");
+                }
+                $hash = $this->chain->link($previous, AuditChain::fields($row, self::moment($row['occurred_at'])));
+                if (!hash_equals($hash, (string) $row['hash'])) {
+                    throw new ChainBroken("Entry {$sequence} is not as it was written.");
+                }
+                $previous = $hash;
+                $expected++;
+            }
+        } while (\count($rows) === 500);
+        if ($expected !== $through + 1) {
+            throw new ChainBroken("Entry {$expected} is missing.");
+        }
+
+        $deleted = $connection->execute(
+            'DELETE FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence <= ?',
+            [$tenant, $through],
+        );
+        $connection->execute(
+            'UPDATE ' . AuditTable::HEADS . ' SET pruned_through = ?, anchor = ?, anchor_mac = ? WHERE tenant = ?',
+            [$through, $previous, $this->chain->anchor($tenant, $through, $previous), $tenant],
+        );
+
+        return $deleted;
     }
 
     // ----------------------------------------------------------- internals
