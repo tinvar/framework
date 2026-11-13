@@ -155,9 +155,10 @@ abstract class Resource
      * MAX_INDEXED matches of the words, in the tenant's scope, which the
      * list then reads through the ORM with its filters, order and page --
      * its order, not the index's. Any other is searched where the term
-     * appears in a searchable() column, by LIKE, so `%` and `_` in it match
-     * any text as they do in SQL, and matched as the database compares text
-     * -- SQLite and MySQL ignoring case, Postgres not. A resource searched
+     * appears in a searchable() column, by LIKE, its `%` and `_` matched as
+     * characters rather than as wildcards (Query::escapeLike(), ADR 0208),
+     * and matched as the database compares text -- SQLite and MySQL
+     * ignoring case, Postgres not. A resource searched
      * another way overrides this, and the list shows its box even with no
      * searchable column.
      *
@@ -183,7 +184,7 @@ abstract class Resource
 
         return $query->where(static function (Query $group) use ($columns, $term): Query {
             foreach ($columns as $column) {
-                $group = $group->orWhere($column, 'like', "%{$term}%");
+                $group = $group->orWhere($column, 'like', '%' . Query::escapeLike($term) . '%');
             }
 
             return $group;

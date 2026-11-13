@@ -137,6 +137,15 @@ describe('the list', function () {
         expect(titles(screen(new App()->signIn(reader())->get('/tickets?search=amm'))))->toBe(['Gamma']);
     });
 
+    it('searches for a term\'s % and _ as characters, not as wildcards matching every row', function () {
+        $app = new App()->signIn(reader());
+
+        expect(titles(screen($app->get('/tickets?search=%25'))))->toBe([])
+            ->and(titles(screen($app->get('/tickets?search=_'))))->toBe([])
+            ->and(titles(screen($app->get('/tickets?search=G_mma'))))->toBe([])
+            ->and(titles(screen($app->get('/tickets?search=mm'))))->toBe(['Gamma']);
+    });
+
     it('pages, and past the end shows the last page', function () {
         $app = new App()->signIn(reader());
 
