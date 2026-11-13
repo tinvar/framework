@@ -11,7 +11,7 @@ declare(strict_types=1);
  * log deleted whole, or cut back with its head put back to match, fails.
  */
 
-namespace Tinvar\Tests\Audit\VerifyCommand;
+namespace Tinvar\Tests\Console\AuditVerifyCommand;
 
 use Carbon\CarbonImmutable;
 use Tinvar\Audit\AuditLog;
