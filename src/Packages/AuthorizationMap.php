@@ -30,8 +30,19 @@ namespace Tinvar\Packages;
  */
 final readonly class AuthorizationMap
 {
-    /** The attributes declarative authorization is made of, by the last segment of their name, lower-cased. */
-    private const array NAMES = ['authorize', 'publicaccess', 'public', 'noauthorization'];
+    /**
+     * The attributes declarative authorization is made of, by the last
+     * segment of their name, lower-cased: the checks and their exemptions,
+     * and what decides who reaches an entry point or which policy asks --
+     * its panel and permission, its middleware, its tenant, its host, its
+     * session, the tokens and scopes it takes, a model's policy and an
+     * admin resource's panel (ADR 0216).
+     */
+    private const array NAMES = [
+        'authorize', 'publicaccess', 'public', 'noauthorization',
+        'panel', 'middleware', 'policy', 'tenantfrom', 'domain', 'withoutsession',
+        'acceptstenanttokens', 'requiresscope', 'adminresource',
+    ];
 
     private const array NAME = [\T_STRING, \T_NAME_QUALIFIED, \T_NAME_FULLY_QUALIFIED, \T_NAME_RELATIVE];
 

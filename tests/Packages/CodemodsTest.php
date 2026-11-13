@@ -492,6 +492,47 @@ it('flags an authorization check commented out by lines that never name it', fun
     ]);
 });
 
+// Audit 2026-11-13: only four attribute names were followed, so a panel's
+// permission, a middleware, or a policy's registration commented out by
+// lines that never name it went unflagged.
+it('flags a panel permission, a middleware or a policy commented out by lines that never name it', function () {
+    $this->workspace->file('app/src/Refunds.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Middleware;
+    use Tinvar\Attributes\Panel;
+    use Tinvar\Attributes\Policy;
+
+    #[Policy(Refund::class)]
+    final class Refunds
+    {
+        #[Panel('admin', permission: 'refunds.issue')]
+        #[Middleware(RequireStaff::class)]
+        public function issue(): string
+        {
+            return 'issued';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Refunds.php';
+    file_put_contents($file, str_replace(
+        ["#[Policy(Refund::class)]\n", "    #[Panel('admin', permission: 'refunds.issue')]\n    #[Middleware(RequireStaff::class)]\n"],
+        ["/*\n#[Policy(Refund::class)]\n*/\n", "    /*\n    #[Panel('admin', permission: 'refunds.issue')]\n    #[Middleware(RequireStaff::class)]\n    */\n"],
+        file_get_contents($file),
+    ));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/Refunds.php:12: authorization of App\Refunds was #[\Tinvar\Attributes\Policy(Refund::class)], now none',
+        "src/Refunds.php:18: authorization of App\\Refunds::issue() was #[\\Tinvar\\Attributes\\Panel('admin', permission:'refunds.issue')] #[\\Tinvar\\Attributes\\Middleware(RequireStaff::class)], now none",
+    ]);
+});
+
 // ClassAttributes reads a class's checks off its ancestors and traits too.
 it('flags a class that now inherits from somewhere else', function () {
     $this->workspace->file('app/src/Report.php', <<<'PHP'
