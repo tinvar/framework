@@ -108,17 +108,20 @@ final readonly class Workflows
         // would be one that may never run.
         [$store, $orm, $auth] = [$this->store, $this->orm, $this->auth];
         $start = function () use ($workflow, $delay, $store, $orm, $auth): string {
-            $id = $this->dispatcher->dispatch(new RunWorkflow($workflow), $delay);
+            [$id, $own] = $this->dispatcher->dispatchUnique(new RunWorkflow($workflow), $delay);
             $user = $auth->id() ?? '';
             // A unique workflow's lock is the tenant's and panel's, not the
             // user's: one already running answers with its id, whose record
             // names who started it. Another signed-in user is told it runs,
             // and never given that id -- what reads its progress and sends
             // it signals (ADR 0221). Code with nobody signed in is the
-            // application's own, and has it.
-            $held = QueueOptions::of($workflow::class)->unique > 0 ? $store->find($id) : null;
-            if ($held !== null) {
-                if ($user !== '' && !hash_equals($held->user, $user)) {
+            // application's own, and has it. The record is its starter's to
+            // write alone: one whose start holds the lock and has not written
+            // it yet is never written here in their place, and a signed-in
+            // user it cannot yet show to be them is refused.
+            if (!$own) {
+                $held = $store->find($id);
+                if ($user !== '' && ($held === null || !hash_equals($held->user, $user))) {
                     throw new WorkflowHeld($workflow::class);
                 }
 

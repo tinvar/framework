@@ -275,3 +275,22 @@ it('never hands a unique workflow another user started to the next to start it',
         ->and($h->queue->size('default'))->toBe(1)
         ->and($h->auth->actingAs(new User('u1'), fn () => workflows($h)->progress($mine), 'e1')?->user)->toBe('u1');
 });
+
+it('never takes a unique workflow another user has just started as its own, before their record is written', function () {
+    $h = harness();
+    // u1's start has dispatched, and holds the lock, but has not yet written
+    // the record that names them: what a second worker sees in that moment.
+    $theirs = $h->auth->actingAs(new User('u1'), fn () => $h->dispatcher->dispatch(new \Tinvar\Workflows\RunWorkflow(new OnePerOrder('order-1'))), 'e1');
+    $store = $h->container->get(\Tinvar\Workflows\WorkflowStore::class);
+    \assert($store instanceof \Tinvar\Workflows\WorkflowStore);
+
+    // u2 is told it runs, and writes no record of it as theirs.
+    expect(fn () => $h->auth->actingAs(new User('u2'), fn () => workflows($h)->start(new OnePerOrder('order-1')), 'e2'))
+        ->toThrow(WorkflowHeld::class)
+        ->and($store->find($theirs))->toBeNull()
+        // The application's own code, with nobody signed in, still has the
+        // id, and writes no record in u1's place either.
+        ->and(workflows($h)->start(new OnePerOrder('order-1')))->toBe($theirs)
+        ->and($store->find($theirs))->toBeNull()
+        ->and($h->queue->size('default'))->toBe(1);
+});

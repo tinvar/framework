@@ -84,6 +84,23 @@ final readonly class Dispatcher
      */
     public function dispatch(Job $job, int $delay = 0): string
     {
+        return $this->dispatchUnique($job, $delay)[0];
+    }
+
+    /**
+     * As dispatch(), saying too whether the id returned is this job's own.
+     * False only for a unique job whose lock another job held: the id is
+     * that one's, and whoever dispatched it may not be this caller -- what
+     * a caller keeping its own record of the work under the id must know
+     * before it writes one (Workflows::start(), ADR 0221). Inside a
+     * transaction on another store the lock is taken at the commit, and the
+     * answer is this job's id and true, as dispatch() answers its id.
+     *
+     * @return array{string, bool} the id of the job that will do the work, and
+     *         whether it is this one
+     */
+    public function dispatchUnique(Job $job, int $delay = 0): array
+    {
         $this->assertMayDispatch($delay);
         [$user, $epoch] = $this->dispatcher([$job]);
         $now = $this->now();
@@ -96,7 +113,7 @@ final readonly class Dispatcher
         if ($unique === null) {
             $this->whenCommitted(fn () => $this->queue->push($pending));
 
-            return $envelope->id;
+            return [$envelope->id, true];
         }
 
         $coordination = $this->coordination('A unique job');
@@ -113,7 +130,7 @@ final readonly class Dispatcher
             });
         });
 
-        return $holder;
+        return [$holder, $holder === $envelope->id];
     }
 
     /**
