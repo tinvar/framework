@@ -8,9 +8,42 @@ declare(strict_types=1);
  * had nothing to fill it.
  */
 
+use Tinvar\Http\BodyTooLarge;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Response;
 use Tinvar\Http\Sapi;
+
+/** A request body that counts how often it is opened and read. */
+final class CountedBody
+{
+    public static int $opened = 0;
+
+    public static int $reads = 0;
+
+    /** @var resource|null */
+    public $context;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened): bool
+    {
+        self::$opened++;
+
+        return true;
+    }
+
+    public function stream_read(int $count): string
+    {
+        self::$reads++;
+
+        return str_repeat('b', $count);
+    }
+
+    public function stream_eof(): bool
+    {
+        return false;
+    }
+
+    public function stream_close(): void {}
+}
 
 function server(array $extra = []): array
 {
@@ -423,5 +456,56 @@ describe('a body too large to hold', function () {
 
         expect(fn () => Sapi::forServer($failing, $files))->toThrow(RuntimeException::class, 'render failed')
             ->and(glob("{$files}/tinvar-spool/*"))->toBe([]);
+    });
+});
+
+// Audit 2026-11-13 M5: the whole body was read into memory before routing,
+// throttles or any limit, however large it said it was.
+describe('the raw body', function () {
+    $file = static function (int $bytes): string {
+        $path = tempnam(sys_get_temp_dir(), 'tinvar-body-');
+        file_put_contents($path, str_repeat('b', $bytes));
+
+        return $path;
+    };
+
+    it('is read whole up to the ceiling', function () use ($file) {
+        $path = $file(Sapi::MAX_BODY_BYTES);
+        try {
+            expect(strlen(Sapi::body(['CONTENT_LENGTH' => (string) Sapi::MAX_BODY_BYTES], $path)))->toBe(Sapi::MAX_BODY_BYTES)
+                ->and(Sapi::body([], $path))->toHaveLength(Sapi::MAX_BODY_BYTES);
+        } finally {
+            unlink($path);
+        }
+    });
+
+    it('is refused by its Content-Length before a byte of it is read', function () {
+        stream_wrapper_register('tinvar-counted-body', CountedBody::class);
+        try {
+            CountedBody::$reads = 0;
+            $refused = fn () => Sapi::body(['CONTENT_LENGTH' => (string) (Sapi::MAX_BODY_BYTES + 1)], 'tinvar-counted-body://input');
+
+            expect($refused)->toThrow(BodyTooLarge::class);
+            try {
+                $refused();
+            } catch (BodyTooLarge $e) {
+                expect($e->status)->toBe(413)->and($e->code_)->toBe('body_too_large');
+            }
+            expect(CountedBody::$reads)->toBe(0)
+                ->and(CountedBody::$opened)->toBeGreaterThan(0);
+        } finally {
+            stream_wrapper_unregister('tinvar-counted-body');
+        }
+    });
+
+    it('is refused once it runs past the ceiling, whatever length it named', function () use ($file) {
+        $path = $file(Sapi::MAX_BODY_BYTES + 1);
+        try {
+            expect(fn () => Sapi::body([], $path))->toThrow(BodyTooLarge::class)
+                ->and(fn () => Sapi::body(['CONTENT_LENGTH' => '10'], $path))->toThrow(BodyTooLarge::class)
+                ->and(fn () => Sapi::body(['CONTENT_LENGTH' => 'lots'], $path))->toThrow(BodyTooLarge::class);
+        } finally {
+            unlink($path);
+        }
     });
 });

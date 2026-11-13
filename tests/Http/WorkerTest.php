@@ -225,6 +225,35 @@ it('answers a path no route could hold with a 404, without the application', fun
         ->and($application->log)->toBe(['reset']);
 });
 
+// Audit 2026-11-13 M5: the body is read, bounded, before the application
+// sees the request; one too large is a 413 with nothing handled.
+it('answers a body too large to read with a 413, without the application', function () {
+    $server = new FakeServer()->request('POST', '/_action/a');
+    $application = new RecordingApplication();
+    $worker = new Worker(
+        boot: fn (): Application => $application,
+        handleRequest: function (callable $handler) use ($server): bool {
+            $server->current = array_shift($server->queue);
+            $handler();
+
+            return false;
+        },
+        globals: static fn (): array => throw new \Tinvar\Http\BodyTooLarge(),
+        send: function (Response $response) use ($server): void {
+            $server->sent[] = ['status' => $response->status, 'body' => $response->body()];
+        },
+        log: static function (\Throwable $e): void {
+            throw $e;
+        },
+    );
+
+    $worker->run();
+
+    expect($server->sent)->toHaveCount(1)
+        ->and($server->sent[0]['status'])->toBe(413)
+        ->and($application->log)->toBe(['reset']);
+});
+
 // After enough requests the loop ends and FrankenPHP starts a fresh worker,
 // so whatever leaks a little per request cannot grow without bound.
 // Review: a worker told to stop is handed no request, and was counted as

@@ -96,8 +96,27 @@ final readonly class VpsSystemdRecipe implements DeployRecipe
             # proxy by. Caddy sets X-Forwarded-For to the client it was connected
             # from, never what a client sent, and header_up overwrites any
             # X-Tinvar-Proxy a client sent (ADR 0134).
+            #
+            # A request is read within deadlines, and no body over the largest
+            # upload the app takes is passed on; a body of up to a megabyte --
+            # every action, query and webhook -- is buffered whole first, so a
+            # client sending it slowly holds this proxy, never a worker of the
+            # app's (ADR 0207).
+            {
+            	servers {
+            		timeouts {
+            			read_header 10s
+            			read_body 60s
+            		}
+            	}
+            }
+
             {$host} {
+            	request_body {
+            		max_size 11MiB
+            	}
             	reverse_proxy 127.0.0.1:8080 {
+            		request_buffers 1MiB
             		header_up X-Tinvar-Proxy {env.TINVAR_TRUSTED_PROXY_SECRET}
             	}
             }

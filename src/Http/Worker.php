@@ -148,7 +148,15 @@ final class Worker
         };
 
         try {
-            $globals = ($this->globals)();
+            try {
+                // The body is read here, bounded, before the application
+                // sees the request (ADR 0207).
+                $globals = ($this->globals)();
+            } catch (BodyTooLarge $e) {
+                $send(Response::make($e->status, 'Request body is too large.', ['content-type' => 'text/plain', 'connection' => 'close']));
+
+                return;
+            }
 
             try {
                 $request = Sapi::request($globals['server'], $globals['query'], $globals['body'], $globals['cookies'], $globals['files'] ?? []);
@@ -206,6 +214,7 @@ final class Worker
      * This request's globals. FrankenPHP replaces them before it calls the
      * handler, so they are read inside it, never kept.
      *
+     * @throws BodyTooLarge for a raw body over Sapi::MAX_BODY_BYTES
      * @return array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string, files: array<mixed>}
      */
     private static function superglobals(): array
@@ -218,7 +227,8 @@ final class Worker
             'query' => $_GET,
             'body' => $_POST,
             'cookies' => $_COOKIE,
-            'input' => (string) file_get_contents('php://input'),
+            // Never more than Sapi::MAX_BODY_BYTES of it (ADR 0207).
+            'input' => Sapi::body($server),
             // PHP wrote a multipart body's files to temporary files of its
             // own before the handler ran; this request's are these.
             'files' => $_FILES,

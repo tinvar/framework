@@ -15,13 +15,16 @@ use Tinvar\Server\CaddyfileRules;
 
 const ROOT = __DIR__ . '/../../../..';
 
+/** The skeleton's timeouts, one a line (ADR 0081, 0207). */
+const TIMEOUTS = "\t\t\tread_header 10s\n\t\t\tread_body 60s\n\t\t\twrite_idle 8s\n";
+
 /**
  * What the skeleton's `servers` block holds after its timeouts: the proxies
  * in front (ADR 0134), read from the file so the block can be taken out
  * whole.
  */
 \define('SERVERS_AFTER_TIMEOUTS', (string) preg_replace(
-    '/^.*?\n\tservers \{\n\t\ttimeouts \{\n\t\t\twrite_idle 8s\n\t\t\}\n(.*?)\t\}\n.*$/s',
+    '/^.*?\n\tservers \{\n\t\ttimeouts \{\n' . TIMEOUTS . '\t\t\}\n(.*?)\t\}\n.*$/s',
     '$1',
     (string) file_get_contents(ROOT . '/packages/skeleton/Caddyfile'),
 ));
@@ -186,8 +189,8 @@ function checkedTree(array $files, bool $holdsResponses = true): array
 it('refuses PHP served with no write_idle, or a longer one, in the global options', function (string $search, string $replace, string $message) {
     expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
 })->with([
-    'no servers block' => ["\tservers {\n\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n" . SERVERS_AFTER_TIMEOUTS . "\t}\n", '', 'serves PHP with no `servers` block for every listener setting `write_idle`'],
-    'no write_idle' => ["\t\t\twrite_idle 8s\n", "\t\t\tread_body 10s\n", '`servers` sets no `write_idle`'],
+    'no servers block' => ["\tservers {\n\t\ttimeouts {\n" . TIMEOUTS . "\t\t}\n" . SERVERS_AFTER_TIMEOUTS . "\t}\n", '', 'serves PHP with no `servers` block for every listener setting `write_idle`'],
+    'no write_idle' => ["\t\t\twrite_idle 8s\n", '', '`servers` sets no `write_idle`'],
     'a minute' => ['write_idle 8s', 'write_idle 1m', '`write_idle 1m` is not a duration of at most 8s'],
     'a placeholder' => ['write_idle 8s', 'write_idle {$IDLE:8s}', '`write_idle {$IDLE:8s}` is not a duration of at most 8s'],
     'none at all' => ['write_idle 8s', 'write_idle 0s', '`write_idle 0s` is not a duration'],
@@ -196,7 +199,7 @@ it('refuses PHP served with no write_idle, or a longer one, in the global option
 
 it('takes a shorter write_idle, one on a line, and a listener of its own held to it too', function () {
     expect(checked(skeleton('write_idle 8s', 'write_idle 2500ms')))->toBe([])
-        ->and(checked(skeleton("\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n", "\t\ttimeouts { write_idle 5s }\n")))->toBe([])
+        ->and(checked(skeleton("\t\t\twrite_idle 8s\n\t\t}\n", "\t\t}\n\t\ttimeouts { write_idle 5s }\n")))->toBe([])
         ->and(implode("\n", checked(skeleton("\tservers {", "\tservers :9000 {\n\t\tprotocols h1\n\t}\n\tservers {"))))
         ->toContain('`servers :9000` sets no `write_idle`');
 });
@@ -212,6 +215,34 @@ it('holds the development Caddyfile to write_idle too', function () {
         ->toContain('`write_idle 30s` is not a duration of at most 8s');
 });
 
+// Audit 2026-11-13 M5: a request that sends its body slowly held a worker
+// for as long as it liked -- Caddy reads a body with no deadline -- so as
+// many slow uploads as there are workers stopped the app (ADR 0207).
+it('refuses PHP served with no read deadlines, or longer ones, in the global options', function (string $search, string $replace, string $message) {
+    expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
+})->with([
+    'no read_body' => ["\t\t\tread_body 60s\n", '', '`servers` sets no `read_body`'],
+    'no read_header' => ["\t\t\tread_header 10s\n", '', '`servers` sets no `read_header`'],
+    'a long read_body' => ['read_body 60s', 'read_body 5m', '`read_body 5m` is not a duration of at most 60s'],
+    'a long read_header' => ['read_header 10s', 'read_header 1m', '`read_header 1m` is not a duration of at most 10s'],
+]);
+
+// And a body larger than any the app takes is cut off by Caddy, before PHP.
+it('refuses PHP served with no request_body max_size around it', function (string $search, string $replace, string $message) {
+    expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
+})->with([
+    'none' => ["\trequest_body {\n\t\tmax_size 11MiB\n\t}\n", '', 'is served with no `request_body` setting `max_size`'],
+    'no size' => ["\t\tmax_size 11MiB\n", "\t\timmediate_errors\n", 'is served with no `request_body` setting `max_size`'],
+    'under a matcher' => ["\trequest_body {", "\trequest_body /api/* {", 'is served with no `request_body` setting `max_size`'],
+    'a size it cannot read' => ['max_size 11MiB', 'max_size {$BODY}', 'is served with no `request_body` setting `max_size`'],
+]);
+
+it('takes request_body in the PHP directive\'s own block', function () {
+    $moved = skeleton("\trequest_body {\n\t\tmax_size 11MiB\n\t}\n", '');
+
+    expect(checked(str_replace("\t\trewrite * /worker.php\n", "\t\trewrite * /worker.php\n\t\trequest_body {\n\t\t\tmax_size 4MB\n\t\t}\n", $moved)))->toBe([]);
+});
+
 // What an import brings in is held to the rules where it lands.
 it('follows a snippet, a file and a glob, putting in their arguments', function () {
     $site = skeleton();
@@ -224,7 +255,7 @@ it('follows a snippet, a file and a glob, putting in their arguments', function 
     $snippet = "(app) {\n" . str_replace(['{$APP_STORAGE:/nonexistent/tinvar-storage}', '"{$APP_STORAGE}"'], ['{args[0]}', '"{args[0]}"'], $handle) . "}\n";
     $first = strpos($bare, "\n}\n") + 3;
     $file = substr($bare, 0, $first) . "\n" . $snippet . substr($bare, $first);
-    expect(checkedTree(['Caddyfile' => $file, 'limits/write.caddy' => "servers {\n\ttimeouts {\n\t\twrite_idle 8s\n\t}\n}\n"]))->toBe([]);
+    expect(checkedTree(['Caddyfile' => $file, 'limits/write.caddy' => "servers {\n\ttimeouts {\n\t\tread_header 5s\n\t\tread_body 30s\n\t\twrite_idle 8s\n\t}\n}\n"]))->toBe([]);
 
     // The same handler, missing its intercept, refused where it is written.
     $broken = (string) preg_replace('/\n\t\tintercept \{.*?\n\t\t\}\n/s', "\n", $handle);

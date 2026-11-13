@@ -584,7 +584,7 @@ final class AppConsole
             // Read through its imports: every PHP response held whole, the
             // X-Accel headers kept from clients, and a stalled write cut off
             // by `write_idle` (ADR 0081, 0105).
-            ['Caddyfile failed:', CaddyfileRules::check("{$this->root}/Caddyfile"), ['ok: Caddyfile holds every PHP response whole, keeps the X-Accel headers from clients and cuts off a stalled write']],
+            ['Caddyfile failed:', CaddyfileRules::check("{$this->root}/Caddyfile"), ['ok: Caddyfile holds every PHP response whole, keeps the X-Accel headers from clients, cuts off a stalled write or a slow request, and caps a body']],
         ];
         foreach ($this->checks as [$heading, $check, $passed]) {
             $results[] = [$heading, $check(), [$passed]];

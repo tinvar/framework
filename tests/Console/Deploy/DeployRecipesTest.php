@@ -110,6 +110,21 @@ it('puts no secret in a file it writes, and pins proxies only where one proves i
     }
 });
 
+// Audit 2026-11-13 M5: the Caddy a recipe puts in front read a request for
+// as long as its client liked and passed any body on, a byte at a time, to
+// a worker. It now holds the request to deadlines and a ceiling, and buffers
+// a small body before the app sees it (ADR 0207).
+it('holds the Caddy it puts in front to read deadlines and a body ceiling, and buffers a small body whole', function () {
+    foreach (['vps-compose' => 'deploy/vps-compose/Caddyfile', 'vps-systemd' => 'deploy/vps-systemd/Caddyfile'] as $case => $path) {
+        [$target, $app] = cases()[$case];
+        $caddyfile = rendered($target->recipe()->write($app))[$path];
+
+        expect($caddyfile)->toMatch('/\n\t\ttimeouts \{\n\t\t\tread_header 10s\n\t\t\tread_body 60s\n/')
+            ->and($caddyfile)->toMatch('/\n\trequest_body \{\n\t\tmax_size 11MiB\n\t\}\n/')
+            ->and($caddyfile)->toContain("\t\trequest_buffers 1MiB\n");
+    }
+});
+
 // The skeleton refuses to boot in production without APP_URL, which its
 // account links and passkeys are built on, and APP_MAIL_FROM.
 it('sets the origin the app builds its links on, and says what else production refuses to boot without', function () {

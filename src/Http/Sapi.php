@@ -54,6 +54,63 @@ final class Sapi
     public const int SPOOL_KEPT_SECONDS = 600;
 
     /**
+     * The largest raw body read for a request (ADR 0207): the most an
+     * endpoint may be configured to take (Endpoints\Limits::
+     * MAX_BODY_BYTES_CEILING), and well over a resumable chunk. A file
+     * larger than this is a multipart upload, which PHP parses itself,
+     * within post_max_size, before any of this runs.
+     */
+    public const int MAX_BODY_BYTES = 8 * 1_048_576;
+
+    /**
+     * The request's raw body, read from $source (php://input), never more
+     * than MAX_BODY_BYTES of it (ADR 0207). A Content-Length over the
+     * ceiling is refused before a byte is read; a body that runs past it --
+     * chunked, or longer than it said -- is refused once it does, having
+     * read one byte more than the ceiling and no further.
+     *
+     * php://input is opened first, whatever comes of it: PHP reads and
+     * discards whatever of a body is left unread when a request ends --
+     * holding the worker until the last byte comes or `read_body` cuts it
+     * off -- unless the request's input was opened. Opened, nothing is
+     * drained, and the server closes a connection whose body was refused.
+     *
+     * @param array<string, mixed> $server $_SERVER
+     * @throws BodyTooLarge
+     */
+    public static function body(array $server, string $source = 'php://input'): string
+    {
+        $in = @fopen($source, 'rb');
+
+        $length = $server['CONTENT_LENGTH'] ?? null;
+        if (\is_string($length) && preg_match('/^\d+$/D', $length) === 1
+            && (\strlen(ltrim($length, '0')) > 18 || (int) $length > self::MAX_BODY_BYTES)) {
+            if ($in !== false) {
+                fclose($in);
+            }
+
+            throw new BodyTooLarge();
+        }
+
+        if ($in === false) {
+            return '';
+        }
+        try {
+            $body = stream_get_contents($in, self::MAX_BODY_BYTES + 1);
+        } finally {
+            fclose($in);
+        }
+        if ($body === false) {
+            return '';
+        }
+        if (\strlen($body) > self::MAX_BODY_BYTES) {
+            throw new BodyTooLarge();
+        }
+
+        return $body;
+    }
+
+    /**
      * Builds a Request from SAPI values. Throws NotFoundException for a path
      * Request refuses; the caller answers that as a 404.
      *

@@ -31,7 +31,12 @@
 	# stops reading would hold every other request's response behind it
 	# (ADR 0051, 0081). `tinvar check` holds an app's Caddyfile to the same.
 	servers {
+		# A request is read within deadlines: its headers in 10 s, the whole
+		# of it in 60 s, or a client sending a body slowly holds a PHP thread
+		# for as long as it likes (ADR 0207).
 		timeouts {
+			read_header 10s
+			read_body 60s
 			write_idle 8s
 		}
 	}
@@ -46,6 +51,12 @@
 
 http://:{$TINVAR_PORT} {
 	bind {$TINVAR_HOST}
+
+	# No body larger than the largest upload the framework takes, and its
+	# form around it, as PHP is told above (ADR 0207).
+	request_body {
+		max_size 11MiB
+	}
 
 	# Only a request naming this machine. Dev listens on loopback, and a page
 	# that points a name of its own at 127.0.0.1 -- DNS rebinding -- reaches

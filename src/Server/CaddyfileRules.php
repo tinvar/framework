@@ -43,6 +43,15 @@ namespace Tinvar\Server;
  * response in development -- and what bounds how long one holds Caddy's
  * copy of the rest; Caddy's own default is a minute.
  *
+ * Beside it, in the same blocks, how long a request may take to arrive
+ * (ADR 0207): `read_header` within READ_HEADER_MAX and `read_body` within
+ * READ_BODY_MAX. FrankenPHP hands a request to a worker before its body has
+ * arrived, and Caddy's default is no deadline at all, so a client sending
+ * its body slowly held a worker for as long as it liked. And around every
+ * PHP directive -- in its block or one around it, with no matcher -- a
+ * `request_body` setting a `max_size`, so no body larger than the app
+ * takes reaches PHP at all.
+ *
  * The file is read as Caddy reads its tokens -- whitespace, quotes,
  * comments, and a `{` or `}` alone opening or closing a block -- with each
  * `import` followed as Caddy follows it: a snippet defined with `(name)`,
@@ -66,6 +75,12 @@ final class CaddyfileRules
 
     /** The longest a write to a client may stall, in seconds (ADR 0053). */
     public const int WRITE_IDLE_MAX = 8;
+
+    /** The longest a request's headers may take to arrive, in seconds (ADR 0207). */
+    public const int READ_HEADER_MAX = 10;
+
+    /** The longest a whole request, its body with it, may take to arrive, in seconds (ADR 0207). */
+    public const int READ_BODY_MAX = 60;
 
     /** How deep imports may nest before the check says it stopped following. */
     private const int MAX_IMPORT_DEPTH = 16;
@@ -91,7 +106,7 @@ final class CaddyfileRules
         $violations = [];
         self::walk($tree, null, [], $holdsResponses, $violations);
         if (self::servesPhp($tree)) {
-            $violations = [...$violations, ...self::writeIdleProblems($tree, basename($path))];
+            $violations = [...$violations, ...self::timeoutProblems($tree, basename($path))];
         }
 
         return $violations;
@@ -305,17 +320,24 @@ final class CaddyfileRules
     }
 
     /**
-     * What the global options are missing to bound a stalled write: a
-     * `servers` block with no address, and each one there is, setting
-     * `write_idle` no longer than WRITE_IDLE_MAX.
+     * What the global options are missing to bound a stalled write and a
+     * slow request: a `servers` block with no address, and each one there
+     * is, setting `write_idle`, `read_header` and `read_body` no longer than
+     * their maxima.
      *
      * @param list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $tree
      * @return list<string>
      */
-    private static function writeIdleProblems(array $tree, string $file): array
+    private static function timeoutProblems(array $tree, string $file): array
     {
-        $why = 'so a client that stops reading holds what is written to it for Caddy\'s default minute: add '
-            . '`servers { timeouts { write_idle ' . self::WRITE_IDLE_MAX . 's } }` to the global options, as the skeleton\'s Caddyfile has (ADR 0081).';
+        $limits = [
+            'write_idle' => [self::WRITE_IDLE_MAX, 'so a client that stops reading holds what is written to it for Caddy\'s default minute: add '
+                . '`servers { timeouts { write_idle ' . self::WRITE_IDLE_MAX . 's } }` to the global options, as the skeleton\'s Caddyfile has (ADR 0081).'],
+            'read_header' => [self::READ_HEADER_MAX, 'so a client may take as long as it likes to send a request\'s headers: add `read_header '
+                . self::READ_HEADER_MAX . 's` to the `timeouts` in the global options, as the skeleton\'s Caddyfile has (ADR 0207).'],
+            'read_body' => [self::READ_BODY_MAX, 'so a client sending a body slowly holds a worker for as long as it likes, and as many as there are '
+                . 'workers stop the app: add `read_body ' . self::READ_BODY_MAX . 's` to the `timeouts` in the global options, as the skeleton\'s Caddyfile has (ADR 0207).'],
+        ];
 
         $servers = [];
         $where = "{$file}:1";
@@ -338,7 +360,7 @@ final class CaddyfileRules
         foreach ($servers as $block) {
             $everyListener = $everyListener || $block['args'] === [];
             $named = $block['args'] === [] ? '`servers`' : '`servers ' . implode(' ', $block['args']) . '`';
-            $idle = null;
+            $set = [];
             /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $settings */
             $settings = $block['children'];
             foreach ($settings as $setting) {
@@ -348,28 +370,49 @@ final class CaddyfileRules
                 /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $timeouts */
                 $timeouts = $setting['children'];
                 foreach ($timeouts as $timeout) {
-                    if ($timeout['name'] === 'write_idle') {
-                        $idle = $timeout;
+                    if (isset($limits[$timeout['name']])) {
+                        $set[$timeout['name']] = $timeout;
                     }
                 }
             }
             $at = "{$block['file']}:{$block['line']}";
-            if ($idle === null) {
-                $problems[] = "{$at}: {$named} sets no `write_idle`, {$why}";
+            foreach ($limits as $name => [$max, $why]) {
+                $timeout = $set[$name] ?? null;
+                if ($timeout === null) {
+                    $problems[] = "{$at}: {$named} sets no `{$name}`, {$why}";
 
-                continue;
-            }
-            $seconds = \count($idle['args']) === 1 ? self::seconds($idle['args'][0]) : null;
-            if ($seconds === null || $seconds <= 0 || $seconds > self::WRITE_IDLE_MAX) {
-                $problems[] = "{$idle['file']}:{$idle['line']}: `write_idle " . implode(' ', $idle['args']) . '` is not a duration of at most '
-                    . self::WRITE_IDLE_MAX . "s this check can read, {$why}";
+                    continue;
+                }
+                $seconds = \count($timeout['args']) === 1 ? self::seconds($timeout['args'][0]) : null;
+                if ($seconds === null || $seconds <= 0 || $seconds > $max) {
+                    $problems[] = "{$timeout['file']}:{$timeout['line']}: `{$name} " . implode(' ', $timeout['args']) . '` is not a duration of at most '
+                        . "{$max}s this check can read, {$why}";
+                }
             }
         }
         if (!$everyListener) {
-            array_unshift($problems, "{$where}: serves PHP with no `servers` block for every listener setting `write_idle`, {$why}");
+            $missing = [];
+            foreach ($limits as $name => [, $why]) {
+                $missing[] = "{$where}: serves PHP with no `servers` block for every listener setting `{$name}`, {$why}";
+            }
+            array_unshift($problems, ...$missing);
         }
 
         return $problems;
+    }
+
+    /**
+     * A Caddy size -- `11MiB`, `10MB`, `1048576` -- in bytes; null for
+     * anything else, a placeholder among them.
+     */
+    private static function bytes(string $size): ?int
+    {
+        if (preg_match('/^(\d+(?:\.\d+)?)\s*(?:([kmgt])(i)?)?b?$/Di', $size, $parts) !== 1) {
+            return null;
+        }
+        $power = ['' => 0, 'k' => 1, 'm' => 2, 'g' => 3, 't' => 4][strtolower($parts[2] ?? '')];
+
+        return (int) ((float) $parts[1] * ((($parts[3] ?? '') !== '' ? 1024 : 1000) ** $power));
     }
 
     /**
@@ -435,6 +478,27 @@ final class CaddyfileRules
                 $problems[] = "is served with nothing removing {$header} from its responses: add `header -{$header}`, "
                     . 'with no matcher, beside it. The header is for Caddy, never for the client';
             }
+        }
+
+        $capped = false;
+        foreach ([...$around, $block, $block[$php]['children']] as $scope) {
+            /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $scope */
+            foreach ($scope as $node) {
+                if ($node['name'] !== 'request_body' || $node['args'] !== []) {
+                    continue;
+                }
+                /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $limits */
+                $limits = $node['children'];
+                foreach ($limits as $limit) {
+                    if ($limit['name'] === 'max_size' && \count($limit['args']) === 1 && (self::bytes($limit['args'][0]) ?? 0) > 0) {
+                        $capped = true;
+                    }
+                }
+            }
+        }
+        if (!$capped) {
+            $problems[] = 'is served with no `request_body` setting `max_size` around it, with no matcher, so a body of any size '
+                . 'reaches PHP: add `request_body { max_size 11MiB }` beside it, as the skeleton\'s Caddyfile has (ADR 0207)';
         }
 
         if (!$holdsResponses) {
