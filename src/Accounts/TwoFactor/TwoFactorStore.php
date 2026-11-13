@@ -21,7 +21,8 @@ use Tinvar\Support\Encrypter;
  * with the account's id in the context, so a value copied onto another
  * account's row does not decrypt there. It is the account's second factor
  * only once a code from it has been typed (confirm()): until then it is a
- * secret on its way to an authenticator app, which signs nothing in.
+ * secret on its way to an authenticator app, which signs nothing in -- for
+ * ten minutes, after which it is neither shown nor confirmed (ADR 0202).
  *
  * Recovery codes are random enough to keep as a plain SHA-256, and each is
  * spent once, in one conditional write a race can win only once. So is a
@@ -33,6 +34,13 @@ final readonly class TwoFactorStore
 {
     /** Recovery codes made at a time: ten, each good once. */
     public const int RECOVERY_CODES = 10;
+
+    /**
+     * How long a secret begin() made waits for the code that confirms it, in
+     * seconds: ten minutes (ADR 0202). One left longer was shown to someone
+     * who did not finish, and is no secret to set up with.
+     */
+    public const int PENDING_LIFETIME = 600;
 
     /** @var \Closure(): int */
     private \Closure $clock;
@@ -86,10 +94,16 @@ final readonly class TwoFactorStore
         return $secret;
     }
 
-    /** The secret begin() made and no code has confirmed yet; null with none. */
+    /**
+     * The secret begin() made and no code has confirmed yet, while it is
+     * younger than PENDING_LIFETIME; null with none (ADR 0202).
+     */
     public function pendingSecret(string $user): ?string
     {
-        $row = $this->connection->select('SELECT secret FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NULL', [$user])[0] ?? null;
+        $row = $this->connection->select(
+            'SELECT secret FROM two_factor_secrets WHERE user_id = ? AND confirmed_at IS NULL AND created_at > ?',
+            [$user, $this->moment(-self::PENDING_LIFETIME)],
+        )[0] ?? null;
 
         return $row === null ? null : $this->encrypter->decrypt((string) $row['secret'], self::context($user));
     }
@@ -235,8 +249,9 @@ final readonly class TwoFactorStore
         return ($this->clock)();
     }
 
-    private function moment(): string
+    /** Now, $offset seconds on, as the columns keep a moment. */
+    private function moment(int $offset = 0): string
     {
-        return TimestampStorage::for($this->connection)->format(CarbonImmutable::createFromTimestampUTC($this->now()));
+        return TimestampStorage::for($this->connection)->format(CarbonImmutable::createFromTimestampUTC($this->now() + $offset));
     }
 }

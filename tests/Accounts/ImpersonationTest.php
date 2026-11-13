@@ -456,6 +456,26 @@ it('refuses every change to how the user signs in while impersonating them, and 
     });
 })->with('drivers');
 
+// Audit 2026-11-13 (M1, ADR 0202): the secret the user's two-factor setup
+// waits on was handed to any session of theirs, an impersonator's too.
+it('never shows staff impersonating a user the secret their two-factor setup waits on', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $accounts = $app->kit->accounts;
+        $own = new Browser($app)->signIn('ada@example.com');
+        $ada = $own->user();
+        $own->do(static fn (Request $r): mixed => $accounts->confirmWithPassword($r, $ada, PASSWORD));
+        $setup = $own->do(static fn (Request $r): array => $accounts->beginTwoFactor($r, $ada));
+        expect($own->do(static fn (Request $r): ?array => $accounts->pendingTwoFactor($r, $ada)))->toBe($setup);
+
+        $staff = new Browser($app)->signIn('staff@example.com');
+        start($staff, 'ada@example.com');
+        // Even were the impersonated session stamped confirmed, which nothing it may do stamps.
+        $app->orm->connection()->execute('UPDATE sessions SET confirmed_at = ? WHERE impersonation IS NOT NULL', [$app->now]);
+        expect($staff->do(static fn (Request $r): ?array => $accounts->pendingTwoFactor($r, $ada)))->toBeNull()
+            ->and($staff->who())->toBe('ada@example.com');
+    });
+});
+
 it('signs out of an impersonation and the parked session both', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $staff = new Browser($app)->signIn('staff@example.com');

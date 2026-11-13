@@ -658,6 +658,50 @@ it('asks a session to confirm it is its owner before it adds a passkey or turns 
     });
 })->with('drivers');
 
+// Audit 2026-11-13 (M1, ADR 0202): the secret setup waits on was handed to
+// any session of the account, for as long as it waited, so whoever read it
+// held the second factor once the owner finished setting it up.
+it('shows the secret two-factor setup waits on only to a session of its owner confirmed lately, and for ten minutes', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $setup = $owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user));
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBe($setup);
+
+        // Another session of the account, its password typed but not again: nothing.
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($phone->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull();
+        // Another account's session, confirmed: nothing of this one's.
+        $bob = member($app, 'bob@example.com');
+        $bob->confirm();
+        expect($bob->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull();
+
+        // The owner's own, once its confirmation has lapsed: nothing, until confirmed again.
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull();
+        $owner->confirm();
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBe($setup);
+
+        // Ten minutes after it was made, the secret is gone: neither shown nor confirmed.
+        $app->now += 301;
+        $owner->confirm();
+        $secret = (string) Base32::decode($setup['secret']);
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull()
+            ->and(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)))))->toHaveKey('code')
+            ->and($app->kit->accounts->twoFactorEnabled($user))->toBeFalse();
+
+        // Begun again, a new secret, which confirms.
+        $again = $owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user));
+        expect($again['secret'])->not->toBe($setup['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at((string) Base32::decode($again['secret']), $app->now)));
+        expect($app->kit->accounts->twoFactorEnabled($user))->toBeTrue()
+            ->and($owner->do(static fn (Accounts $a, Request $r) => $a->pendingTwoFactor($r, $user)))->toBeNull();
+    });
+})->with('drivers');
+
 it('confirms a session with one of its account\'s passkeys, or a code from its authenticator app', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $ada = member($app, 'ada@example.com');

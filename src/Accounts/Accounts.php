@@ -706,12 +706,24 @@ final class Accounts
 
     /**
      * The secret setup is waiting on, again -- for the page that shows it
-     * while the code is typed -- or null when setup has not begun.
+     * while the code is typed -- or null when setup has not begun, or began
+     * more than ten minutes ago (TwoFactorStore::PENDING_LIFETIME).
+     *
+     * Shown only to the session of $user's own that may finish it: not
+     * impersonated, and confirmed in the last five minutes, as beginning
+     * and confirming setup ask (ADR 0202). Null to any other -- another
+     * device of theirs, staff acting as them -- where it would otherwise be
+     * read, kept, and hold the second factor once the owner confirmed it.
      *
      * @return array{secret: string, uri: string}|null
      */
-    public function pendingTwoFactor(AccountUser $user): ?array
+    public function pendingTwoFactor(Request $http, AccountUser $user): ?array
     {
+        $state = $http->attribute(SessionState::ATTRIBUTE);
+        if (!$state instanceof SessionState || $state->user()?->authIdentifier() !== $user->authIdentifier()
+            || $state->impersonation() !== null || $this->auth?->impersonator() !== null || !$this->recentlyConfirmed($http)) {
+            return null;
+        }
         $secret = $this->twoFactor->pendingSecret($user->authIdentifier());
 
         return $secret === null ? null : ['secret' => Base32::encode($secret), 'uri' => Totp::uri($secret, $this->issuer, $user->accountEmail())];
