@@ -794,6 +794,36 @@ it('runs where none of them is under what the sandbox shows', function () {
     expect(Codemods::bubblewrap('/tmp/r', '/usr/bin/php', [], ['/srv/shop', '/home/dev', '/tmp']))->toContain('--unshare-all');
 });
 
+// macOS's sandbox allowed every read, leaving the app's .env, the home and
+// every other temporary file to open_basedir alone, which PHP's own
+// functions honour and an extension need not (ADR 0218). The profile
+// itself now refuses them: a program with no open_basedir at all, cat,
+// reads its own copy and nothing else.
+it('lets a codemod on macOS read its own copy, and nothing in the app, the home or the temporary directory', function () {
+    $temp = realpath(sys_get_temp_dir()) . '/tvcm-' . bin2hex(random_bytes(4));
+    mkdir("{$temp}/run", 0o700, true);
+    mkdir("{$temp}/app");
+    file_put_contents("{$temp}/run/mine", 'mine');
+    file_put_contents("{$temp}/app/.env", 'APP_KEY=secret');
+    file_put_contents("{$temp}/beside", 'another run');
+    $profile = Codemods::seatbelt("{$temp}/run", "{$temp}/app", (string) realpath(\PHP_BINARY), (string) getenv('HOME'), $temp);
+    $cat = static function (string $file) use ($profile): array {
+        exec('/usr/bin/sandbox-exec -p ' . escapeshellarg($profile) . ' /bin/cat ' . escapeshellarg($file) . ' 2>/dev/null', $out, $status);
+
+        return [$status, implode("\n", $out)];
+    };
+
+    try {
+        expect($cat("{$temp}/run/mine"))->toBe([0, 'mine'])
+            ->and($cat("{$temp}/app/.env")[0])->not->toBe(0)
+            ->and($cat("{$temp}/beside")[0])->not->toBe(0)
+            ->and($profile)->toContain('(subpath "' . getenv('HOME') . '")')
+            ->and($profile)->toContain('(subpath "/Users")');
+    } finally {
+        exec('rm -rf ' . escapeshellarg($temp));
+    }
+})->skip(\PHP_OS_FAMILY !== 'Darwin' || !is_executable('/usr/bin/sandbox-exec'), 'macOS only.');
+
 // The console's descriptors -- a file it read, a socket it listens on -- are
 // not opened close-on-exec, and a child holds each one under the same
 // number, where php://fd reaches it past open_basedir.

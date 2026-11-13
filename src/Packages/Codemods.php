@@ -218,16 +218,15 @@ final class Codemods
         }
 
         if (\PHP_OS_FAMILY === 'Darwin' && is_executable('/usr/bin/sandbox-exec')) {
-            $profile = implode('', [
-                '(version 1)',
-                '(allow default)',
-                '(deny network*)',
-                '(deny process-fork)',
-                '(deny file-write*)',
-                '(allow file-write* (subpath "' . $root . '"))',
-            ]);
+            $home = getenv('HOME');
 
-            return ['/usr/bin/sandbox-exec', '-p', $profile];
+            return ['/usr/bin/sandbox-exec', '-p', self::seatbelt(
+                $root,
+                $app,
+                (string) realpath(\PHP_BINARY),
+                \is_string($home) && $home !== '' ? (realpath($home) ?: $home) : null,
+                realpath(sys_get_temp_dir()) ?: sys_get_temp_dir(),
+            )];
         }
 
         if (\PHP_OS_FAMILY === 'Linux') {
@@ -249,6 +248,38 @@ final class Codemods
         throw new \RuntimeException(
             'No operating-system sandbox to run codemods in: install bubblewrap (bwrap) on Linux; macOS has sandbox-exec.',
         );
+    }
+
+    /**
+     * macOS's sandbox profile for a run under $root: no network (Unix
+     * sockets included), no new process, writes only under $root -- and no
+     * file's contents read in the app, the home, the temporary directory or
+     * anywhere users and volumes keep files, but $root's and PHP's own
+     * binary (ADR 0218). Reads were all allowed, and only open_basedir,
+     * which an extension need not honour, kept a codemod from the app's
+     * .env. A file's metadata stays readable: the loader walks the paths.
+     *
+     * @internal
+     */
+    public static function seatbelt(string $root, string $app, string $php, ?string $home, string $temp): string
+    {
+        foreach ([$root, $app, $php, $home ?? '', $temp] as $path) {
+            if (preg_match('/["\\\\\x00-\x1f]/', $path) === 1) {
+                throw new \RuntimeException("Cannot sandbox a run with {$path} in its profile.");
+            }
+        }
+        $hidden = array_unique(array_filter([$app, $home, $temp, '/Users', '/Volumes', '/private/tmp', '/private/var/tmp', '/private/var/folders'], static fn (?string $path): bool => $path !== null && $path !== ''));
+
+        return implode('', [
+            '(version 1)',
+            '(allow default)',
+            '(deny network*)',
+            '(deny process-fork)',
+            '(deny file-write*)',
+            '(allow file-write* (subpath "' . $root . '"))',
+            '(deny file-read-data ' . implode(' ', array_map(static fn (string $path): string => '(subpath "' . $path . '")', $hidden)) . ')',
+            '(allow file-read-data (subpath "' . $root . '") (literal "' . $php . '"))',
+        ]);
     }
 
     /**
