@@ -477,8 +477,50 @@ final class AuditLog implements ModelChanges, ActionObserver
     }
 
     /**
+     * Whether $tenant's log -- named as verify() names it -- still reaches
+     * the head an operator kept elsewhere (head(), at $sequence with
+     * $hash): what the chain cannot show alone, a tail taken away with the
+     * head put back to match, or the log deleted whole (ADR 0210). Holds
+     * where the entry at that place, or the anchor pruning left there, has
+     * that hash; a head kept from before what pruning took cannot be
+     * compared, and does not hold.
+     */
+    public function reaches(?string $tenant, int $sequence, string $hash): ChainVerification
+    {
+        if ($sequence < 1) {
+            throw new \InvalidArgumentException('A head kept is at entry 1 or later: a log has a head once it has an entry.');
+        }
+        $tenant = $this->tenantNamed($tenant);
+        $connection = $this->orm->statements();
+        $heads = $connection->select('SELECT sequence, pruned_through, anchor FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
+        if ($heads === []) {
+            return new ChainVerification($tenant, false, 0, 1, "The log has no head, and one was expected at entry {$sequence}.");
+        }
+        $last = (int) $heads[0]['sequence'];
+        $prunedThrough = (int) $heads[0]['pruned_through'];
+        if ($last < $sequence) {
+            return new ChainVerification($tenant, false, 0, $last + 1, "The log ends at entry {$last}, before the head expected at entry {$sequence}.");
+        }
+        if ($sequence < $prunedThrough) {
+            return new ChainVerification($tenant, false, 0, $sequence, "Entry {$sequence} has been pruned, so the head expected cannot be compared: keep a newer one.");
+        }
+        // The last entry pruning took is still there to compare, as the
+        // anchor (whose MAC verify() checks).
+        $entry = $sequence === $prunedThrough
+            ? [['hash' => $heads[0]['anchor']]]
+            : $connection->select('SELECT hash FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence = ?', [$tenant, $sequence]);
+        if ($entry === [] || !hash_equals((string) $entry[0]['hash'], $hash)) {
+            return new ChainVerification($tenant, false, 0, $sequence, "Entry {$sequence} is not the one expected.");
+        }
+
+        return new ChainVerification($tenant, true, 0);
+    }
+
+    /**
      * Every tenant with a log, for a check across them all -- a command's,
-     * outside any tenant.
+     * outside any tenant: each with a head, and each with an entry, so a
+     * log whose head was deleted is checked, and found, rather than left
+     * out (ADR 0210).
      *
      * @return list<string>
      */
@@ -486,7 +528,9 @@ final class AuditLog implements ModelChanges, ActionObserver
     {
         return array_map(
             static fn (array $row): string => (string) $row['tenant'],
-            $this->orm->statements()->select('SELECT tenant FROM ' . AuditTable::HEADS . ' ORDER BY tenant'),
+            $this->orm->statements()->select(
+                'SELECT tenant FROM ' . AuditTable::HEADS . ' UNION SELECT DISTINCT tenant FROM ' . AuditTable::ENTRIES . ' ORDER BY tenant',
+            ),
         );
     }
 

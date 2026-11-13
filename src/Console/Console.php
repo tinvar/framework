@@ -246,9 +246,10 @@ final class Console
                 throw new \InvalidArgumentException("{$name} runs as a tenant: name it with --" . self::TENANT_OPTION . '=ID.');
             }
             $input = $input->without(self::TENANT_OPTION);
-        } elseif ($input->option(self::TENANT_OPTION) !== null || $input->flag(self::TENANT_OPTION)) {
+        } elseif (!is_subclass_of($class, ChoosesTenant::class) && ($input->option(self::TENANT_OPTION) !== null || $input->flag(self::TENANT_OPTION))) {
             // `--tenant acme`, as most command lines take a value, reads as
-            // a flag and an argument: refused like `--tenant=acme`.
+            // a flag and an argument: refused like `--tenant=acme`. A command
+            // that chooses its own tenant to look at reads it itself.
             throw new \InvalidArgumentException("{$name} does not run as a tenant, so --" . self::TENANT_OPTION . ' would scope nothing.');
         }
 
@@ -517,6 +518,11 @@ final class Console
         $source = TenantFrom::declaredOn($class);
         if ($source === null) {
             return;
+        }
+        if (is_subclass_of($class, ChoosesTenant::class)) {
+            throw new \InvalidArgumentException(
+                "{$class} declares #[TenantFrom({$source})] and chooses its own tenant (ChoosesTenant): it runs as a tenant, or reads --" . self::TENANT_OPTION . ', not both.',
+            );
         }
 
         ($this->tenants ?? throw new \InvalidArgumentException(
