@@ -38,10 +38,13 @@ final class Schema
      * connection, which the connection objects cannot tell apart.
      *
      * SQLite: the file's real path, or null in memory (two in-memory
-     * databases are two). Postgres: the database, the schema, the server's
-     * address and port, and when the postmaster started -- the one thing
-     * two servers at one address never share. MySQL: the database and the
-     * server's own uuid. Every part is what any role may read.
+     * databases are two). Postgres: the database, the schema, the port the
+     * server listens on, and when the postmaster started -- the one thing
+     * two servers never share. Never the address the connection reached it
+     * at, which is 127.0.0.1 over TCP and nothing over a Unix socket: one
+     * database reached both ways looked like two (ADR 0216). MySQL: the
+     * database and the server's own uuid. Every part is what any role may
+     * read.
      */
     public function identity(): ?string
     {
@@ -52,7 +55,7 @@ final class Schema
         }
 
         $row = $this->pdo->query(match ($this->driver) {
-            'pgsql' => 'SELECT current_database() AS a, current_schema() AS b, host(inet_server_addr()) AS c, inet_server_port() AS d, pg_postmaster_start_time() AS e',
+            'pgsql' => "SELECT current_database() AS a, current_schema() AS b, current_setting('port') AS c, NULL AS d, pg_postmaster_start_time() AS e",
             default => 'SELECT DATABASE() AS a, @@server_uuid AS b, @@port AS c, NULL AS d, NULL AS e',
         });
         $parts = $row === false ? false : $row->fetch(\PDO::FETCH_ASSOC);
