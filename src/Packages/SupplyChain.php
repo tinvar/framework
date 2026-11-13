@@ -128,6 +128,10 @@ final class SupplyChain
         if (($config['secure-http'] ?? true) !== true || ($config['disable-tls'] ?? false) !== false) {
             $violations[] = 'composer.json turns off secure-http or TLS: packages must download over https.';
         }
+        foreach (self::auditHidden($config) as $key) {
+            $violations[] = "composer.json sets config.{$key}, which hides what composer audit finds from `tinvar audit`: "
+                . 'excuse an advisory in ' . Advisories::FILE . ', reviewed and dated.';
+        }
 
         $allowPlugins = $config['allow-plugins'] ?? [];
         if (!\is_array($allowPlugins)) {
@@ -183,6 +187,67 @@ final class SupplyChain
         }
 
         return $violations;
+    }
+
+    /**
+     * The keys of composer.json's config that take something out of what
+     * `composer audit` fails on (ADR 0211): an ignore list of any kind, a
+     * finding audited as less than a failure, a policy turned off, or an
+     * unreachable advisory source passed over in an audit. Composer moves
+     * an advisory it ignores out of `advisories`, so an ignore here would
+     * excuse it without the reason and date audit-exceptions.json asks for.
+     * `tinvar audit` fails on them too, from whatever config they come.
+     *
+     * @param array<mixed> $config
+     * @return list<string>
+     */
+    private static function auditHidden(array $config): array
+    {
+        $hidden = [];
+        $audit = \is_array($config['audit'] ?? null) ? $config['audit'] : [];
+        foreach (['ignore', 'ignore-severity', 'ignore-abandoned'] as $key) {
+            if (($audit[$key] ?? []) !== []) {
+                $hidden[] = "audit.{$key}";
+            }
+        }
+        if (($audit['ignore-unreachable'] ?? false) !== false) {
+            $hidden[] = 'audit.ignore-unreachable';
+        }
+        if (\array_key_exists('abandoned', $audit) && $audit['abandoned'] !== 'fail') {
+            $hidden[] = 'audit.abandoned';
+        }
+
+        if (!\array_key_exists('policy', $config)) {
+            return $hidden;
+        }
+        $policy = $config['policy'];
+        if (!\is_array($policy)) {
+            return $policy === true ? $hidden : [...$hidden, 'policy'];
+        }
+        foreach (['advisories', 'malware', 'abandoned'] as $kind) {
+            if (!\array_key_exists($kind, $policy) || $policy[$kind] === true) {
+                continue;
+            }
+            if (!\is_array($policy[$kind])) {
+                $hidden[] = "policy.{$kind}";
+
+                continue;
+            }
+            foreach (['ignore', 'ignore-id', 'ignore-severity', 'ignore-source'] as $key) {
+                if (($policy[$kind][$key] ?? []) !== []) {
+                    $hidden[] = "policy.{$kind}.{$key}";
+                }
+            }
+            if (\array_key_exists('audit', $policy[$kind]) && $policy[$kind]['audit'] !== 'fail') {
+                $hidden[] = "policy.{$kind}.audit";
+            }
+        }
+        $unreachable = $policy['ignore-unreachable'] ?? null;
+        if ($unreachable === true || (\is_array($unreachable) && \in_array('audit', $unreachable, true))) {
+            $hidden[] = 'policy.ignore-unreachable';
+        }
+
+        return $hidden;
     }
 
     /** @param list<LockedPackage> $packages

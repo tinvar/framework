@@ -435,6 +435,40 @@ describe('install scripts and plugins', function () {
             ->toBe(['composer.json turns off secure-http or TLS: packages must download over https.']);
     });
 
+    // Composer's own ignore lists move an advisory out of what
+    // `tinvar audit` reads as failing, with no reason and no date: an
+    // exception goes in audit-exceptions.json (ADR 0211).
+    it('refuses Composer config that ignores advisories, abandoned packages or malware in its audit', function (array $config, string $key) {
+        $this->workspace->composerJson['config'] = [...$this->workspace->composerJson['config'] ?? [], ...$config];
+
+        expect(violations($this->workspace))->toBe([
+            "composer.json sets config.{$key}, which hides what composer audit finds from `tinvar audit`: excuse an advisory in audit-exceptions.json, reviewed and dated.",
+        ]);
+    })->with([
+        'audit.ignore' => [['audit' => ['ignore' => ['GHSA-wxmh-65f7-jcvw']]], 'audit.ignore'],
+        'audit.ignore by package' => [['audit' => ['ignore' => ['guzzlehttp/psr7' => 'reviewed']]], 'audit.ignore'],
+        'audit.ignore-severity' => [['audit' => ['ignore-severity' => ['low']]], 'audit.ignore-severity'],
+        'audit.ignore-abandoned' => [['audit' => ['ignore-abandoned' => ['acme/old']]], 'audit.ignore-abandoned'],
+        'audit.ignore-unreachable' => [['audit' => ['ignore-unreachable' => true]], 'audit.ignore-unreachable'],
+        'audit.abandoned' => [['audit' => ['abandoned' => 'ignore']], 'audit.abandoned'],
+        'policy off' => [['policy' => false], 'policy'],
+        'policy.advisories off' => [['policy' => ['advisories' => false]], 'policy.advisories'],
+        'policy.advisories.ignore-id' => [['policy' => ['advisories' => ['ignore-id' => ['PKSA-vznr-tgp9-fd7d']]]], 'policy.advisories.ignore-id'],
+        'policy.advisories.ignore' => [['policy' => ['advisories' => ['ignore' => ['guzzlehttp/psr7']]]], 'policy.advisories.ignore'],
+        'policy.advisories.ignore-severity' => [['policy' => ['advisories' => ['ignore-severity' => ['medium']]]], 'policy.advisories.ignore-severity'],
+        'policy.advisories.audit' => [['policy' => ['advisories' => ['audit' => 'report']]], 'policy.advisories.audit'],
+        'policy.malware.ignore' => [['policy' => ['malware' => ['ignore' => ['acme/x']]]], 'policy.malware.ignore'],
+        'policy.abandoned.audit' => [['policy' => ['abandoned' => ['audit' => 'ignore']]], 'policy.abandoned.audit'],
+        'policy.ignore-unreachable' => [['policy' => ['ignore-unreachable' => ['audit']]], 'policy.ignore-unreachable'],
+    ]);
+
+    it('lets Composer config fail an abandoned package, or block an advisory on update, as it does unset', function () {
+        $this->workspace->composerJson['config']['audit'] = ['abandoned' => 'fail', 'block-insecure' => true];
+        $this->workspace->composerJson['config']['policy'] = ['advisories' => ['block' => true, 'audit' => 'fail'], 'abandoned' => ['audit' => 'fail'], 'ignore-unreachable' => ['install', 'update']];
+
+        expect(violations($this->workspace))->toBe([]);
+    });
+
     // Composer reads a lock entry's transport-options and applies them to
     // that package's download, so a line in composer.lock turned TLS
     // verification off, or trusted a CA of its own, for one package, where

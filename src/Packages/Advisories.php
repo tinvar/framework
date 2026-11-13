@@ -29,7 +29,9 @@ use Tinvar\Console\Prompts\Width;
  * to a version: one past its day fails, one more than a year out is
  * refused, and one that matches no advisory either database reported fails
  * too, so a fixed advisory takes its exception out with it. A database
- * that did not answer fails: nothing heard is not nothing found.
+ * that did not answer fails: nothing heard is not nothing found. Nor is
+ * an advisory Composer's own config ignored, nor a failing exit status
+ * nothing reported explains (ADR 0211).
  */
 final readonly class Advisories
 {
@@ -70,7 +72,7 @@ final readonly class Advisories
             $failures = [...$failures, ...$problems];
         }
         if ($npm !== null) {
-            [$advisories, $problems] = self::npm($npm[0]);
+            [$advisories, $problems] = self::npm(...$npm);
             $reported = [...$reported, ...$advisories];
             $failures = [...$failures, ...$problems];
         }
@@ -178,6 +180,14 @@ final readonly class Advisories
     }
 
     /**
+     * Composer's report: every advisory under `advisories`, and every one
+     * under `ignored-advisories` too -- where Composer's own config
+     * (config.audit.ignore or ignore-severity, config.policy.advisories'
+     * ignore lists, in composer.json or Composer's global config) moved
+     * it, unreviewed and undated. Each fails unless an exception excuses
+     * it, and so does Composer's having ignored any: that config is taken
+     * out, and the exception put here (ADR 0211).
+     *
      * @return array{list<array{ecosystem: string, package: string, ids: list<string>, severity: string, title: string, fails: bool}>, list<string>}
      */
     private static function composer(string $json, int $status): array
@@ -187,8 +197,36 @@ final readonly class Advisories
             return [[], ["composer audit gave no report (exit {$status}): it needs the network."]];
         }
 
+        $advisories = self::composerList($decoded['advisories']);
+        $ignored = self::composerList(\is_array($decoded['ignored-advisories'] ?? null) ? $decoded['ignored-advisories'] : []);
+
+        $problems = [];
+        if ($ignored !== []) {
+            $problems[] = 'composer audit ignored ' . \count($ignored) . ' ' . (\count($ignored) === 1 ? 'advisory' : 'advisories')
+                . " because its config said to (config.audit.ignore or ignore-severity, or config.policy.advisories' ignore lists, in composer.json "
+                . "or Composer's global config): remove that config, and excuse an advisory in " . self::FILE . ', reviewed and dated, if it must be.';
+        }
+        $abandoned = \is_array($decoded['abandoned'] ?? null) ? array_keys($decoded['abandoned']) : [];
+        if (($status & self::COMPOSER_ABANDONED) !== 0 && $abandoned !== []) {
+            $problems[] = self::printable('composer audit found abandoned packages: ' . implode(', ', $abandoned) . '.');
+        }
+        // A failing status that nothing read here explains -- a kind of
+        // finding this does not know yet -- fails rather than passing.
+        if ($status !== 0 && $advisories === [] && $abandoned === []) {
+            $problems[] = "composer audit exited {$status} and reported nothing that says why: it is taken as failing.";
+        }
+
+        return [[...$advisories, ...$ignored], $problems];
+    }
+
+    /**
+     * @param array<mixed> $byPackage
+     * @return list<array{ecosystem: string, package: string, ids: list<string>, severity: string, title: string, fails: bool}>
+     */
+    private static function composerList(array $byPackage): array
+    {
         $advisories = [];
-        foreach ($decoded['advisories'] as $package => $list) {
+        foreach ($byPackage as $package => $list) {
             foreach (\is_array($list) ? $list : [] as $advisory) {
                 if (!\is_array($advisory)) {
                     continue;
@@ -215,19 +253,13 @@ final readonly class Advisories
             }
         }
 
-        $problems = [];
-        $abandoned = \is_array($decoded['abandoned'] ?? null) ? array_keys($decoded['abandoned']) : [];
-        if (($status & self::COMPOSER_ABANDONED) !== 0 && $abandoned !== []) {
-            $problems[] = self::printable('composer audit found abandoned packages: ' . implode(', ', $abandoned) . '.');
-        }
-
-        return [$advisories, $problems];
+        return $advisories;
     }
 
     /**
      * @return array{list<array{ecosystem: string, package: string, ids: list<string>, severity: string, title: string, fails: bool}>, list<string>}
      */
-    private static function npm(string $json): array
+    private static function npm(string $json, int $status): array
     {
         $decoded = json_decode($json, true);
         if (!\is_array($decoded) || !\is_array($decoded['vulnerabilities'] ?? null)) {
@@ -259,6 +291,12 @@ final readonly class Advisories
                     'fails' => \in_array($severity, self::NPM_FAILING, true) || $severity === 'unknown',
                 ];
             }
+        }
+
+        // npm exits 1 for any advisory, a low one too; for none, it is
+        // something this did not read, and fails rather than passing.
+        if ($status !== 0 && $advisories === []) {
+            return [[], ["npm audit exited {$status} and reported nothing that says why: it is taken as failing."]];
         }
 
         return [$advisories, []];

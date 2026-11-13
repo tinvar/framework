@@ -160,3 +160,57 @@ it('shows a control character in what a database reported, never sends it to the
         ->and($failures[0])->toContain('PKSA-1')
         ->and($failures[0])->toContain("Hostile\u{241B}]0;pwned\u{2407} title\u{FFFD}2J");
 });
+
+/**
+ * What Composer 2.11's `composer audit --locked --format=json` prints with
+ * config.audit.ignore (or config.policy.advisories.ignore-id) naming one of
+ * a package's advisories: that one moves under `ignored-advisories`, with
+ * its `ignoreReason` where the config gave one, and the exit status counts
+ * only what is left (ADR 0211).
+ */
+function ignoring(bool $all): string
+{
+    $advisory = static fn (string $id, string $cve): array => [
+        'advisoryId' => $id, 'packageName' => 'guzzlehttp/psr7', 'affectedVersions' => '<2.12.3', 'title' => 'Host confusion', 'cve' => $cve,
+        'link' => 'https://github.com/advisories/GHSA-c2w2-prh8-qm98', 'reportedAt' => '2026-07-21T18:35:25+00:00',
+        'sources' => [['name' => 'GitHub', 'remoteId' => 'GHSA-c2w2-prh8-qm98']], 'severity' => 'medium',
+    ];
+
+    return json_encode([
+        'advisories' => $all ? [] : ['guzzlehttp/psr7' => [$advisory('PKSA-7qs6-zvnz-h66r', 'CVE-2026-55766')]],
+        'ignored-advisories' => ['guzzlehttp/psr7' => [[...$advisory('PKSA-vznr-tgp9-fd7d', 'CVE-2026-59882'), 'ignoreReason' => 'reviewed']]],
+        'abandoned' => [],
+        'filter' => [],
+        'cooldown' => [],
+    ], JSON_THROW_ON_ERROR);
+}
+
+it('fails an advisory Composer\'s own config told it to ignore, which audit-exceptions.json alone may excuse', function () {
+    $advisories = new Advisories($this->root, $this->today);
+
+    // Every advisory ignored: Composer exits 0 with `advisories` empty.
+    $failures = $advisories->judge([ignoring(all: true), 0], null)['failures'];
+    expect($failures)->toHaveCount(2)
+        ->and($failures[0])->toContain('composer audit ignored 1 advisory')
+        ->and($failures[0])->toContain('config.audit')
+        ->and($failures[1])->toContain('PKSA-vznr-tgp9-fd7d');
+
+    expect($advisories->judge([ignoring(all: false), 1], null)['failures'])->toHaveCount(3);
+
+    // Excused in audit-exceptions.json, it is still Composer's config that must go.
+    exceptions($this->root, [['advisory' => 'CVE-2026-59882', 'ecosystem' => 'composer', 'package' => 'guzzlehttp/psr7', 'reason' => 'Unreached.', 'expires' => '2027-01-01']]);
+    $failures = new Advisories($this->root, $this->today)->judge([ignoring(all: true), 0], null)['failures'];
+    expect($failures)->toHaveCount(1)
+        ->and($failures[0])->toContain('composer audit ignored 1 advisory');
+});
+
+it('fails a database that exited failing and reported nothing to say why', function () {
+    $advisories = new Advisories($this->root, $this->today);
+
+    expect($advisories->judge([CLEAN_COMPOSER, 1], null)['failures'])->toBe(['composer audit exited 1 and reported nothing that says why: it is taken as failing.'])
+        ->and($advisories->judge(null, ['{"auditReportVersion": 2, "vulnerabilities": {}}', 1])['failures'])
+        ->toBe(['npm audit exited 1 and reported nothing that says why: it is taken as failing.'])
+        // A low advisory is why npm exits 1, and the gate passes it.
+        ->and($advisories->judge(null, [npm(), 1])['failures'])->toBe([])
+        ->and($advisories->judge([CLEAN_COMPOSER, 0], ['{"auditReportVersion": 2, "vulnerabilities": {}}', 0])['failures'])->toBe([]);
+});
