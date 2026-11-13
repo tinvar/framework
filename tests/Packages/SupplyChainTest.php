@@ -395,6 +395,34 @@ describe('install scripts and plugins', function () {
         ]);
     });
 
+    // The audit of 2026-11-13: an option's value before the command, a
+    // line continued, npm quoted or named by its path, all read as no
+    // install (ADR 0218).
+    it('finds an npm install however its command line is spelled', function () {
+        $this->workspace->workflows['ci.yml'] = <<<'YAML'
+        on: [push]
+        jobs:
+          test:
+            steps:
+              - run: npm --prefix web ci
+              - run: |
+                  npm \
+                    install
+              - run: '"npm" ci && n''p''m i left-pad'
+              - run: /usr/local/bin/npm --workspace=web --loglevel warn ci
+              - run: npm --prefix web ci --ignore-scripts && npm --prefix web run install && npm run ci
+        YAML;
+
+        $because = 'which runs every package\'s install scripts before tinvar check holds them to PackagePolicy::$installScripts: add --ignore-scripts.';
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/ci.yml jobs.test.steps[0] runs `npm --prefix web ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[1] runs `npm install`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[2] runs `\"npm\" ci`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[2] runs `n'p'm i left-pad`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[3] runs `/usr/local/bin/npm --workspace=web --loglevel warn ci`, {$because}",
+        ]);
+    });
+
     it('asks why an install script is allowed', function () {
         new PackagePolicy(installScripts: ['native' => ' ']);
     })->throws(\InvalidArgumentException::class, 'Say why native may run an install script');
@@ -814,6 +842,17 @@ describe('workflows', function () {
         expect(violations($this->workspace))->toBe([
             ".github/workflows/a.yml triggers on pull_request_target, which runs on a fork's behalf with the repository's secrets.",
             ".github/workflows/b.yaml triggers on workflow_run, which runs on a fork's behalf with the repository's secrets.",
+        ]);
+    });
+
+    // Anyone may comment on a pull request, and a workflow it triggers runs
+    // on the default branch with the repository's secrets: the usual way a
+    // fork's code is checked out under them (ADR 0218).
+    it('refuses a workflow a comment triggers', function () {
+        $this->workspace->workflows['a.yml'] = "on:\n  issue_comment:\n    types: [created]\n";
+
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/a.yml triggers on issue_comment, which runs on a fork's behalf with the repository's secrets.",
         ]);
     });
 

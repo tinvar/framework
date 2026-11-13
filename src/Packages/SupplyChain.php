@@ -478,7 +478,9 @@ final class SupplyChain
 
                         break;
                     }
-                    if (\in_array(strtolower($event), ['pull_request_target', 'workflow_run'], true)) {
+                    // issue_comment too: anyone may comment on a pull
+                    // request, and its run has the secrets (ADR 0218).
+                    if (\in_array(strtolower($event), ['pull_request_target', 'workflow_run', 'issue_comment'], true)) {
                         $violations[] = "{$name} triggers on {$event}, which runs on a fork's behalf with the repository's secrets.";
                     }
                 }
@@ -755,24 +757,63 @@ final class SupplyChain
      * install script would run before the check held it to
      * PackagePolicy::$installScripts. `npm rebuild`, which runs a named
      * package's scripts on purpose, and `npm run`, the project's own, are
-     * left alone. Read command by command, split at `&&`, `||`, `;`, `|`
-     * and line ends -- stricter than a shell where one of those is quoted.
+     * left alone. Read command by command, split at `&&`, `||`, `;`, `|`,
+     * backticks, parentheses and line ends -- stricter than a shell where
+     * one of those is quoted -- with a line continued read as one, and each
+     * word with its quotes and escapes gone, so neither `"npm" ci`, nor
+     * `npm --prefix web ci`, nor `/usr/bin/npm ci` passes (ADR 0218).
      *
      * @return list<string>
      */
     private static function npmScripts(string $at, string $script): array
     {
         $violations = [];
-        foreach (preg_split('/&&|\|\||[;|\n]/', $script) ?: [] as $command) {
-            $command = trim($command);
-            if (preg_match('/(?:^|\s)npm(?:\s+-\S+)*\s+(?:ci|clean-install|install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add|update|up|upgrade|udpate|install-test|it|install-ci-test|cit|clean-install-test|sit)(?:\s|$)/', $command) === 1
-                && preg_match('/(?:^|\s)--ignore-scripts(?:=true)?(?:\s|$)/', $command) !== 1) {
-                $violations[] = "{$at} runs `{$command}`, which runs every package's install scripts before tinvar check holds them to PackagePolicy::\$installScripts: add --ignore-scripts.";
+        // A line continued is one command; a subshell's is a command too.
+        $script = (string) preg_replace('/\\\\\r?\n/', ' ', $script);
+        foreach (preg_split('/&&|\|\||[;|\n`()]/', $script) ?: [] as $command) {
+            $command = trim((string) preg_replace('/\s+/', ' ', $command));
+            // Each word as the shell hands it on, its quotes and escapes
+            // gone: `"npm"`, `n'p'm` and `\npm` are all npm.
+            $words = array_map(static fn (string $word): string => str_replace(['"', "'", '\\'], '', $word), self::shellWords($command));
+            if (array_intersect($words, ['--ignore-scripts', '--ignore-scripts=true']) !== []) {
+                continue;
+            }
+            foreach ($words as $i => $word) {
+                if (basename($word) !== 'npm') {
+                    continue;
+                }
+                // npm's command is its first word that is no option; a word
+                // that is neither an option nor a command npm has is read
+                // as an option's value (`--prefix web`), and passed over.
+                foreach (\array_slice($words, $i + 1) as $next) {
+                    if (str_starts_with($next, '-')) {
+                        continue;
+                    }
+                    if (\in_array($next, self::NPM_INSTALLS, true)) {
+                        $violations[] = "{$at} runs `{$command}`, which runs every package's install scripts before tinvar check holds them to PackagePolicy::\$installScripts: add --ignore-scripts.";
+
+                        break 2;
+                    }
+                    if (\in_array($next, self::NPM_COMMANDS, true)) {
+                        break;
+                    }
+                }
             }
         }
 
         return $violations;
     }
+
+    /** npm's commands that install, with their aliases and the misspellings npm takes for them. */
+    private const array NPM_INSTALLS = ['ci', 'clean-install', 'install', 'i', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal', 'isntall',
+        'add', 'update', 'up', 'upgrade', 'udpate', 'install-test', 'it', 'install-ci-test', 'cit', 'clean-install-test', 'sit'];
+
+    /** npm's other commands, after which a word is that command's own: `npm run ci` runs a script. */
+    private const array NPM_COMMANDS = ['run', 'run-script', 'rum', 'urn', 'exec', 'x', 'rebuild', 'rb', 'test', 't', 'tst', 'start', 'stop', 'restart',
+        'help', 'pack', 'publish', 'version', 'view', 'info', 'show', 'ls', 'list', 'll', 'la', 'config', 'c', 'get', 'set', 'cache', 'audit', 'prune', 'dedupe',
+        'outdated', 'init', 'create', 'uninstall', 'remove', 'rm', 'r', 'un', 'unlink', 'explain', 'why', 'fund', 'doctor', 'query', 'pkg', 'sbom', 'link', 'ln',
+        'search', 'find', 's', 'diff', 'dist-tag', 'deprecate', 'owner', 'access', 'token', 'login', 'logout', 'whoami', 'ping', 'root', 'prefix', 'bin',
+        'docs', 'home', 'bugs', 'repo', 'edit', 'explore', 'completion', 'shrinkwrap', 'org', 'team', 'profile', 'star', 'stars', 'unstar', 'unpublish', 'hook'];
 
     /**
      * An ADD source fetched from anywhere but the build context: any
