@@ -12,10 +12,13 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopUploads;
 
+use Shop\Database\Models\Account\Receipt;
+use Shop\Http\Actions\Account\AccountActions;
 use Shop\Database\Seeders\Seeder;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
+use Tinvar\Actions\ActionResult;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
@@ -291,12 +294,24 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
         expect($other->action('account.removeReceipt', ['receipt' => $receiptRow['id']])->status)->toBe(403);
         $storage->assertExists($receiptKey);
 
+        // A second submit, its receipt read before the first removed it,
+        // reaches the body once the row is gone: it answers as the first
+        // did, rather than with MissingRow's 500 (ADR 0208).
+        $stale = $kernel->orm->find(Receipt::class, (string) $receiptRow['id']);
+        expect($stale)->not->toBeNull();
+
         $removed = $customer->action('account.removeReceipt', ['receipt' => $receiptRow['id']]);
         expect($removed->status)->toBe(200, $removed->body())
             ->and(json_decode($removed->body(), true)['revalidated'])->toBe(['shop.account'])
             ->and($pdo->query('SELECT COUNT(*) FROM receipts')?->fetchColumn())->toBe(0)
             ->and($pdo->query('SELECT COUNT(*) FROM uploads WHERE storage_key = ' . $pdo->quote($receiptKey))?->fetchColumn())->toBe(0);
         $storage->assertMissing($receiptKey)->assertCount(1);
+
+        $instance = $kernel->actions->instanceFor($kernel->actions->get('account.removeReceipt'));
+        \assert($instance instanceof AccountActions && $stale instanceof Receipt);
+        $again = $kernel->orm->transaction(static fn (): ActionResult => $instance->removeReceipt($stale));
+        expect($again->revalidatedRoutes)->toBe(['shop.account']);
+        $storage->assertCount(1);
         expect($customer->payload('/account')->body())->toContain('No receipts yet');
     } finally {
         $renderer->stop();
