@@ -503,6 +503,7 @@ final class UploadEndpoint
         }
 
         $arrived = false;
+        $consumed = null;
         try {
             try {
                 $out = fopen($path, 'wb');
@@ -536,12 +537,17 @@ final class UploadEndpoint
                 // under it puts the file there again: the intent is kept,
                 // consumed, and pruning removes its key once the URL is dead
                 // and INCOMING_GRACE has passed -- the intent's own expiry,
-                // which COMPLETE_TTL already puts that far out. A file that
-                // did not arrive whole is counted no less until then (ADR
-                // 0206): the URL may yet fill the bucket with it, so the
-                // record stays its owner's, at its size, against the cap
-                // and the quota. One kept is counted by the upload instead.
-                $this->uploads->store->add($intent->consumed($now, 0, counted: !$arrived));
+                // which COMPLETE_TTL already puts that far out. Until then
+                // the record stays its owner's, at its size, against the
+                // cap and the quota, whatever comes of the completion (ADR
+                // 0206): the URL may yet fill the bucket with the file,
+                // arrived or not, kept, refused or kept and discarded.
+                // Only while a file that arrived whole is being kept is the
+                // record left uncounted -- so the keep is not held to the
+                // quota twice for one file -- and it is counted again
+                // below, however the keep ends.
+                $consumed = $intent->consumed($now, 0, counted: !$arrived);
+                $this->uploads->store->add($consumed);
                 $this->uploads->store->forget($intent->id);
             }
             if (!$found || $bytes !== $intent->size) {
@@ -557,6 +563,12 @@ final class UploadEndpoint
             return $this->keep($ticket, $declared, $path, $intent->name);
         } finally {
             @unlink($path);
+            if ($arrived && $consumed !== null) {
+                // Counted again before the uncounted record goes, so the
+                // key is never in no record's keeping.
+                $this->uploads->store->add($intent->consumed($now, 0, counted: true));
+                $this->uploads->store->forget($consumed->id);
+            }
         }
     }
 

@@ -247,14 +247,17 @@ it('removes what a presigned PUT replayed after /complete leaves, once the URL i
         ->and($app->uploads->prune())->toBe(0);
 });
 
-it('completes a file as large as the quota, the consumed intent counting for nothing', function () {
+// The consumed intent is left out of the quota while its file is kept, so
+// a file as large as the quota is not refused for being counted twice; it
+// counts again once kept (review S1).
+it('completes a file as large as the quota, the consumed intent counted only once the file is kept', function () {
     $bytes = png();
     [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(strlen($bytes) + 200));
     [$ticket, $intent] = begun($app, strlen($bytes));
     $s3->browser('PUT', $intent['url'], $bytes, $intent['headers']);
 
     expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(201)
-        ->and($app->store->pendingCount($app->uploads->ownerHash('u-1'), $app->now))->toBe(1);
+        ->and($app->store->pendingCount($app->uploads->ownerHash('u-1'), $app->now))->toBe(2);
 });
 
 // Where the store lists what is in it, pruning also removes whatever lies
@@ -371,4 +374,59 @@ it('keeps an intent completed before its file arrived counted against the quota 
         ->and(incoming($s3))->toBe([])
         ->and($app->store->bytesHeld($owner, $app->now))->toBe(0)
         ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(201);
+});
+
+// Review S1: the record stopped counting once the file had arrived whole,
+// whether it was then kept or refused. The URL is good no less: refused
+// (a page, a failed scan, the quota), or kept and then discarded, its file
+// was PUT there again outside the quota and the cap. Whatever comes of the
+// completion, the record stays owned and sized until pruning removes what
+// the URL put.
+it('keeps an intent whose file arrived and was refused counted against the quota and the cap until pruning', function () {
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(4000));
+    $s3->listing = false;
+    $html = str_pad('<html><script>alert(1)</script></html>', 4000);
+    [$ticket, $intent] = begun($app, strlen($html));
+    $s3->browser('PUT', $intent['url'], $html, $intent['headers']);
+    $owner = $app->uploads->ownerHash('u-1');
+
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(415)
+        ->and($app->store->pendingCount($owner, $app->now))->toBe(1)
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(4000)
+        ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 1])->status)->toBe(507);
+
+    // Put there again under the same URL: counted still, and pruned in time.
+    expect($s3->browser('PUT', $intent['url'], $html, $intent['headers'])->status)->toBe(200)
+        ->and(incoming($s3))->toHaveCount(1);
+    $app->now += UploadEndpoint::COMPLETE_TTL + Uploads::PRUNE_GRACE + 1;
+    $s3->now = $app->now;
+    expect($app->uploads->prune())->toBe(1)
+        ->and(incoming($s3))->toBe([])
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(0);
+});
+
+it('keeps an intent whose file was kept counted beside the upload until pruning', function () {
+    $bytes = png();
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(10_000));
+    $s3->listing = false;
+    [$ticket, $intent] = begun($app, strlen($bytes));
+    $s3->browser('PUT', $intent['url'], $bytes, $intent['headers']);
+    $owner = $app->uploads->ownerHash('u-1');
+
+    $done = postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']]);
+    expect($done->status)->toBe(201);
+    $kept = $app->store->find((string) json($done)['upload']);
+
+    // The upload, and beside it the URL that may put the file there again.
+    expect($app->store->pendingCount($owner, $app->now))->toBe(2)
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe((int) $kept?->size + strlen($bytes));
+
+    // Discarded, the upload gives its room back; the URL's does not, until pruning.
+    $app->store->forget((string) $kept?->id);
+    expect($app->store->pendingCount($owner, $app->now))->toBe(1)
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(strlen($bytes));
+    $app->now += UploadEndpoint::COMPLETE_TTL + Uploads::PRUNE_GRACE + 1;
+    $s3->now = $app->now;
+    $app->uploads->prune();
+    expect($app->store->bytesHeld($owner, $app->now))->toBe(0);
 });

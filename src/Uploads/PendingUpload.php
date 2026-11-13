@@ -49,17 +49,16 @@ final readonly class PendingUpload
      * be pruned $grace seconds after its URL runs out, and nothing else.
      *
      * A record of its own, under an ID no client was given, bound to no
-     * session, user, action or record, of no type and no size, owned by no
-     * one: so nothing completes it again or is handed it, and it counts
-     * against no cap or quota -- the file kept from it is counted already.
-     * Unclaimed, it is pruned as any expired upload is (Uploads::prune()):
-     * its key removed, then the record.
+     * session, user, action or record, and of no type: so nothing completes
+     * it again or is handed it. Unclaimed, it is pruned as any expired
+     * upload is (Uploads::prune()): its key removed, then the record.
      *
-     * $counted, for an intent whose file never arrived whole (ADR 0206):
-     * the record keeps its owner and its size, so it goes on counting
-     * against their cap and quota until pruning removes whatever the URL
-     * still puts at its key -- or completing before the PUT gave the room
-     * back while the URL went on filling the store.
+     * $counted (ADR 0206): the record keeps its owner and its size, so it
+     * goes on counting against their cap and quota until pruning removes
+     * whatever the URL still puts at its key -- whatever came of the
+     * completion, since the URL takes the file again either way. Uncounted,
+     * owned by no one and of no size, only while a file that arrived whole
+     * is being kept, so the keep does not count it twice.
      */
     public function consumed(int $now, int $grace, bool $counted = false): self
     {
