@@ -84,7 +84,7 @@ final class Sapi
 
         // A multipart form is PHP's to parse, and hold to post_max_size,
         // before any of this runs; it leaves php://input empty. Its length
-        // is not this ceiling's: a file up to Uploads::DEFAULT_MAX_BYTES
+        // is not this ceiling's: a file up to the uploads module's own ceiling
         // arrives that way. Whatever input there is is still read bounded.
         $type = $server['CONTENT_TYPE'] ?? null;
         $multipart = \is_string($type) && preg_match('#^\s*multipart/form-data\s*(?:;|$)#i', $type) === 1;
