@@ -13,8 +13,8 @@ use Tinvar\Support\DevMode;
 
 /**
  * What the production profile refuses, asked before the server is: dev
- * mode and the dev toolbar beside a production marker (DevMode,
- * DevToolbar), a profile the environment does not allow
+ * mode and the dev toolbar wherever TINVAR_ENV does not say local,
+ * development or testing (DevMode, DevToolbar, ADR 0213), a profile the environment does not allow
  * (BuildProfile::resolve()), a browser test run's variables, and loopback
  * let into the probes where the renderers share it
  * (TINVAR_PROBE_TRUST_LOOPBACK). Each is the framework's own refusal,
@@ -40,7 +40,7 @@ final readonly class ProductionCheck implements DoctorCheck
         }
         // Asked only where it would refuse: on a developer's machine it
         // reads the running toolbar's key, which is no business of this.
-        if (DevMode::productionMarker($env) !== null) {
+        if (DevMode::notDevelopment($env) !== null) {
             try {
                 DevToolbar::fromEnvironment(static fn (): string => '', $env, $dev);
             } catch (\RuntimeException $e) {

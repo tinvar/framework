@@ -409,6 +409,15 @@ describe('the build, the renderers and production', function () {
             ->and(severities(new ProductionCheck()->run(context(app()))))->toBe(['ok']);
     });
 
+    // ADR 0213: the toolbar is refused wherever TINVAR_ENV does not say
+    // local, development or testing, so the doctor asks there too.
+    it('says the dev toolbar is refused on a server whose environment names no environment', function () {
+        $findings = new ProductionCheck()->run(new DoctorContext(root: app(), env: ['TINVAR_DEV_TOOLBAR' => '/tmp/toolbar']));
+
+        expect(implode("\n", array_map(static fn (Finding $f): string => $f->message, $findings)))
+            ->toContain('TINVAR_DEV_TOOLBAR is refused');
+    });
+
     it('finds secrets and a database other users may read', function () {
         $root = app();
         mkdir("{$root}/state", 0o755);
