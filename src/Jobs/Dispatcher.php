@@ -92,7 +92,7 @@ final readonly class Dispatcher
      * False only for a unique job whose lock another job held: the id is
      * that one's, and whoever dispatched it may not be this caller -- what
      * a caller keeping its own record of the work under the id must know
-     * before it writes one (Workflows::start(), ADR 0221). Inside a
+     * before it writes one (a unique workflow's start, ADR 0221). Inside a
      * transaction on another store the lock is taken at the commit, and the
      * answer is this job's id and true, as dispatch() answers its id.
      *
