@@ -204,9 +204,11 @@ final readonly class DatabaseUploadStore implements UploadStore
     public function pendingCount(string $ownerHash, int $now): int
     {
         $row = $this->connection->select(
-            // Expired or not: its file is kept until pruning removes it.
-            "SELECT COUNT(*) AS n FROM {$this->table} WHERE owner_hash = ? AND claimed_at IS NULL",
-            [$ownerHash],
+            // Expired or not: its file is kept until pruning removes it --
+            // a consumed intent only while its URL is good (PendingUpload::countsAt()).
+            "SELECT COUNT(*) AS n FROM {$this->table} WHERE owner_hash = ? AND claimed_at IS NULL"
+            . " AND (action <> '' OR expires_at > ?)",
+            [$ownerHash, $now + UploadEndpoint::INCOMING_GRACE],
         )[0] ?? [];
 
         return self::int($row['n'] ?? 0);
@@ -215,9 +217,11 @@ final readonly class DatabaseUploadStore implements UploadStore
     public function bytesHeld(string $ownerHash, int $now): int
     {
         $row = $this->connection->select(
-            // Every record, until pruning or a discard forgets it.
-            "SELECT COALESCE(SUM(size), 0) AS n FROM {$this->table} WHERE owner_hash = ?",
-            [$ownerHash],
+            // Every record, until pruning or a discard forgets it; a
+            // consumed intent only while its URL is good.
+            "SELECT COALESCE(SUM(size), 0) AS n FROM {$this->table} WHERE owner_hash = ?"
+            . " AND (action <> '' OR expires_at > ?)",
+            [$ownerHash, $now + UploadEndpoint::INCOMING_GRACE],
         )[0] ?? [];
 
         return self::int($row['n'] ?? 0);

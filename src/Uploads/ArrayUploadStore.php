@@ -40,7 +40,7 @@ final class ArrayUploadStore implements UploadStore
     {
         return \count(array_filter(
             $this->uploads,
-            static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null,
+            static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null && $u->countsAt($now),
         ));
     }
 
@@ -49,8 +49,9 @@ final class ArrayUploadStore implements UploadStore
         $held = 0;
         foreach ($this->uploads as $upload) {
             // Every record, until pruning or a discard forgets it: its
-            // file is kept until then.
-            if ($upload->ownerHash === $ownerHash) {
+            // file is kept until then -- but a consumed intent only while
+            // its URL is good (PendingUpload::countsAt()).
+            if ($upload->ownerHash === $ownerHash && $upload->countsAt($now)) {
                 $held += $upload->size;
             }
         }

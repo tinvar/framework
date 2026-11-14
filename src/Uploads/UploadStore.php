@@ -44,7 +44,8 @@ interface UploadStore
      * The bytes the user $ownerHash names holds: every upload of theirs
      * claimed and not yet given up (Uploads::discard()), and every one
      * unclaimed and not yet pruned, past its expiry or not -- its file is
-     * kept until then. What a quota counts.
+     * kept until then. A direct upload's consumed intent only while its URL
+     * is good (PendingUpload::countsAt()). What a quota counts.
      */
     public function bytesHeld(string $ownerHash, int $now): int;
 
@@ -57,7 +58,9 @@ interface UploadStore
      * How many uploads of the user $ownerHash names (Uploads::ownerHash())
      * are unclaimed and not yet pruned. One past its expiry still counts:
      * its file is kept until pruning removes it, and a cap that let it go
-     * at its expiry let a user keep files waiting several times over.
+     * at its expiry let a user keep files waiting several times over. A
+     * direct upload's consumed intent counts only while its URL is good
+     * (PendingUpload::countsAt()).
      */
     public function pendingCount(string $ownerHash, int $now): int;
 

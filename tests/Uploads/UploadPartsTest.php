@@ -26,6 +26,7 @@ use Tinvar\Uploads\DatabaseUploadStore;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\PendingUpload;
 use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadEndpoint;
 use Tinvar\Uploads\UploadName;
 use Tinvar\Uploads\UploadStore;
 use Tinvar\Uploads\UploadTicket;
@@ -383,6 +384,27 @@ describe('an upload store', function () {
         $store->forget(str_repeat('c', 32));
         expect($store->find(str_repeat('b', 32)))->toBeNull()
             ->and($store->bytesHeld('u', 1500))->toBe(6);
+    })->with('upload stores');
+
+    // Review S1 follow-up: a direct upload's consumed intent counts while
+    // its presigned URL could still put the file at its key, and not after,
+    // though pruning keeps the record for INCOMING_GRACE more.
+    it('counts a consumed intent against the cap and the quota only until its URL runs out', function (\Closure $make) {
+        /** @var UploadStore $store */
+        $store = $make();
+        $intent = new PendingUpload(str_repeat('i', 32), 'tinvar-incoming/i', 'a', 'f', 'C', 't', 'avatars', '', '', 's', 'u@e1', 'n.png', '', 5, 1000, 1000 + UploadEndpoint::COMPLETE_TTL, ownerHash: 'u');
+        $consumed = $intent->consumed(1100, 0, counted: true);
+        $store->add($consumed);
+        $urlDies = 1000 + UploadEndpoint::DIRECT_TTL;
+
+        expect($store->pendingCount('u', $urlDies - 1))->toBe(1)
+            ->and($store->bytesHeld('u', $urlDies - 1))->toBe(5)
+            ->and($store->pendingCount('u', $urlDies))->toBe(0)
+            ->and($store->bytesHeld('u', $urlDies))->toBe(0)
+            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 9000), 1, $urlDies, quotaBytes: 3))->toBeTrue()
+            // Still there, for pruning to remove what the URL put.
+            ->and($store->find($consumed->id))->not->toBeNull()
+            ->and(array_map(static fn (PendingUpload $u): string => $u->id, $store->expired($urlDies, 10)))->not->toContain($consumed->id);
     })->with('upload stores');
 
     it('gives a table made before it looked uploads up by key the index, once', function () {

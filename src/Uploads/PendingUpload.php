@@ -54,9 +54,10 @@ final readonly class PendingUpload
      * upload is (Uploads::prune()): its key removed, then the record.
      *
      * $counted (ADR 0206): the record keeps its owner and its size, so it
-     * goes on counting against their cap and quota until pruning removes
-     * whatever the URL still puts at its key -- whatever came of the
-     * completion, since the URL takes the file again either way. Uncounted,
+     * goes on counting against their cap and quota while its URL could
+     * still put the file at its key (countsAt()) -- whatever came of the
+     * completion, since the URL takes the file again either way. Pruning
+     * removes the key, and the record, later. Uncounted,
      * owned by no one and of no size, only while a file that arrived whole
      * is being kept, so the keep does not count it twice.
      */
@@ -81,6 +82,20 @@ final readonly class PendingUpload
             expiresAt: $this->expiresAt + $grace,
             ownerHash: $counted ? $this->ownerHash : '',
         );
+    }
+
+    /**
+     * Whether it counts against its owner's cap and quota at $now. Every
+     * upload does until pruning or a discard forgets it -- but a direct
+     * upload's consumed intent (action '', made by consumed() alone) only
+     * while its presigned URL could still put the file at its key: until
+     * UploadEndpoint::INCOMING_GRACE before its expiry, the URL's own. Past
+     * that the record is kept for pruning alone (ADR 0206). The stores
+     * hold to the same rule in their queries.
+     */
+    public function countsAt(int $now): bool
+    {
+        return $this->action !== '' || $this->expiresAt - UploadEndpoint::INCOMING_GRACE > $now;
     }
 
     /** What an action is handed for it. */

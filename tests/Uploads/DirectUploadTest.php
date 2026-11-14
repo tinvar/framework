@@ -405,6 +405,36 @@ it('keeps an intent whose file arrived and was refused counted against the quota
         ->and($app->store->bytesHeld($owner, $app->now))->toBe(0);
 });
 
+// Review S1 follow-up: counted until pruning, a kept direct upload held
+// its room twice for seventy minutes. The URL can put the file again only
+// while it is good: once it runs out the room is given back, the record
+// kept for pruning to remove what the URL put.
+it('gives a consumed intent\'s room back once its URL runs out, the record kept for pruning', function () {
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(4000));
+    $s3->listing = false;
+    $html = str_pad('<html><script>alert(1)</script></html>', 4000);
+    [$ticket, $intent] = begun($app, strlen($html));
+    $s3->browser('PUT', $intent['url'], $html, $intent['headers']);
+    $owner = $app->uploads->ownerHash('u-1');
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(415);
+    // Put there again while the URL is good.
+    $s3->browser('PUT', $intent['url'], $html, $intent['headers']);
+
+    $app->now += UploadEndpoint::DIRECT_TTL;
+    $s3->now = $app->now;
+    expect($app->store->pendingCount($owner, $app->now))->toBe(0)
+        ->and($app->store->bytesHeld($owner, $app->now))->toBe(0)
+        ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(201)
+        ->and($app->uploads->prune())->toBe(0)
+        ->and(incoming($s3))->toHaveCount(1);
+
+    // The record outlived its counting: pruning removes what the URL put.
+    $app->now += UploadEndpoint::INCOMING_GRACE + Uploads::PRUNE_GRACE + 1;
+    $s3->now = $app->now;
+    expect($app->uploads->prune())->toBe(1)
+        ->and(incoming($s3))->toBe([]);
+});
+
 it('keeps an intent whose file was kept counted beside the upload until pruning', function () {
     $bytes = png();
     [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(10_000));
